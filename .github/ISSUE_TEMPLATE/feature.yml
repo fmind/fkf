@@ -1,0 +1,28 @@
+name: Feature request
+description: Propose a focused improvement to collection, retrieval, or the agent surface.
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is currently difficult, and for whom?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: The smallest useful change, and what it would let a base reach that it cannot today.
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: The proposal works on the supported Linux and macOS release targets.
+          required: true
+        - label: The proposal keeps a base's contents private and reads no credential.
+          required: true

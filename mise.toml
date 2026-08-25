@@ -1,0 +1,216 @@
+[tools]
+actionlint = "1.7.12"
+dprint = "0.56.1"
+gitleaks = "8.30.1"
+go = "1.27.0"
+golangci-lint = "2.13.1"
+goreleaser = "2.18.0"
+gotestsum = "1.13.0"
+hugo-extended = "0.165.0"
+lefthook = "2.1.11"
+lychee = "0.24.2"
+shellcheck = "0.11.0"
+trivy = "0.74.0"
+zizmor = "1.29.0"
+
+[settings]
+aqua.cosign = true
+github_attestations = true
+locked_verify_provenance = true
+lockfile = true
+lockfile_platforms = ["linux-x64", "linux-arm64", "macos-x64", "macos-arm64"]
+minimum_release_age = "0d"
+slsa = true
+
+[settings.task]
+run_auto_install = false
+
+[tasks.all]
+alias = "a"
+description = "Format, check, test, and build the project"
+run = [
+  "mise run format",
+  "mise run check",
+  "mise run test",
+  "mise run check:coverage",
+  "mise run build",
+]
+
+[tasks.build]
+alias = "b"
+description = "Build the fkf binary"
+# skills/ and presets/ are embedded by embed.go, so editing either must invalidate the build.
+sources = ["go.mod", "go.sum", "embed.go", "skills/**/*", "presets/**/*", "**/*.go"]
+outputs = ["bin/fkf"]
+run = "go build -o bin/fkf ./cmd/fkf"
+
+[tasks.benchmark]
+description = "Measure the supported 100k-record and 500k-edge envelope"
+depends = ["build"]
+run = "go test ./cmd/fkf -run '^TestScaleCorpusShape$' -bench '^BenchmarkScaleEnvelope$' -benchtime=1x -count=1"
+
+[tasks.check]
+alias = "c"
+description = "Run every static check in parallel"
+depends = [
+  "check:docs",
+  "check:format",
+  "check:leaks",
+  "check:links",
+  "check:lint",
+  "check:notices",
+  "check:scan",
+  "check:shell",
+  "check:vuln",
+  "check:workflows",
+]
+
+[tasks."check:docs"]
+description = "Build the documentation site strictly and verify every link it renders"
+# The root base URL lets lychee resolve rendered links; Git dates are disabled because an
+# uncommitted page has none.
+env = { HUGO_ENABLEGITINFO = "false" }
+run = [
+  "rm -rf docs/tmp/check",
+  "hugo build --source docs --destination tmp/check --baseURL http://localhost/ --logLevel warn --panicOnWarning --printPathWarnings",
+  "FKF_DOCS_BUILD_DIR=\"$PWD/docs/tmp/check\" go test ./services -run '^TestDocumentationDistributionContracts$' -count=1",
+  "lychee --offline --root-dir docs/tmp/check --no-progress 'docs/tmp/check/**/*.html'",
+]
+
+[tasks."docs:build"]
+description = "Build the production documentation site into docs/public"
+dir = "docs"
+run = "hugo build --gc --minify"
+
+[tasks."docs:watch"]
+alias = "w"
+description = "Serve the documentation site locally with live reload"
+dir = "docs"
+run = "hugo server --buildDrafts --navigateToChanged"
+
+[tasks."check:format"]
+alias = "cf"
+description = "Check Go, config, markup, and whitespace formatting without rewriting"
+run = [
+  "dprint check",
+  "golangci-lint fmt --diff",
+  "git diff --check \"$(git hash-object -t tree /dev/null)\"",
+]
+
+[tasks."check:leaks"]
+alias = "cs"
+description = "Audit the git history for leaked secrets (gitleaks)"
+run = "gitleaks git --verbose"
+
+[tasks."check:links"]
+description = "Validate links in the repository's own Markdown"
+# docs/ is deliberately excluded: a Hugo page's links resolve through Hugo's routing rather
+# than the filesystem, so check:docs is what validates those, after rendering.
+run = "git ls-files -z '*.md' ':!:docs/**' | xargs -0 lychee --offline --no-progress"
+
+[tasks."check:notices"]
+description = "Verify legal notices match the runtime and linked Go modules"
+run = "go test ./services -run '^TestThirdPartyNoticesAreCurrent$' -count=1"
+
+[tasks."check:lint"]
+alias = "cl"
+description = "Lint Go sources (golangci-lint)"
+run = "golangci-lint run ./..."
+
+[tasks."check:outdated"]
+description = "Report drift in the pinned toolchain (needs the network, never fails)"
+# The pinned tools belong to no Dependabot ecosystem, so this is the only thing that looks at
+# them. Non-blocking on purpose: a stale pin is a decision to make, not a static check failure.
+run = "mise outdated || true"
+
+[tasks."check:scan"]
+description = "Scan the repository for vulnerabilities, secrets, licenses, and misconfigurations"
+run = "trivy --config trivy.yaml fs ."
+
+[tasks."check:shell"]
+description = "Lint every shipped and release shell helper"
+run = "shellcheck -S warning install.sh presets/bin/* scripts/release-notes"
+
+[tasks."check:vuln"]
+alias = "cv"
+description = "Scan Go code for known vulnerabilities (govulncheck)"
+run = "go tool govulncheck ./..."
+
+[tasks."check:workflows"]
+description = "Validate the CI/CD workflows and the release configuration"
+run = ["actionlint", "zizmor --offline --persona=pedantic .github/workflows", "goreleaser check"]
+
+[tasks.clean]
+alias = "n"
+description = "Remove build artifacts and generated output"
+run = "rm -rf bin dist fkf coverage.out docs/public docs/tmp docs/resources docs/.hugo_build.lock"
+
+[tasks.format]
+alias = "f"
+description = "Format all sources and documents"
+depends = ["format:dprint", "format:go"]
+
+[tasks."format:dprint"]
+description = "Format JSON, Markdown, TOML, and YAML"
+run = "dprint fmt"
+
+[tasks."format:go"]
+description = "Format Go sources and imports (gofumpt + goimports)"
+# Through golangci-lint, which already configures both formatters in .golangci.yml.
+run = "golangci-lint fmt"
+
+[tasks.install]
+alias = "i"
+description = "Sync dependencies, install the fkf binary, and install Git hooks"
+run = ["go mod tidy", "mise run install:binary", "lefthook install"]
+
+[tasks."install:binary"]
+description = "Install fkf into ~/.local/bin"
+depends = ["build"]
+run = "install -Dm755 bin/fkf $HOME/.local/bin/fkf && $HOME/.local/bin/fkf --version"
+
+[tasks."generate:schema"]
+description = "Rewrite docs/static/fkf.schema.json from the configuration loader"
+run = "go run ./cmd/fkf config schema > docs/static/fkf.schema.json"
+
+[tasks."generate:notices"]
+description = "Rewrite legal notices for the runtime and linked Go modules"
+run = "go test ./services -run '^TestThirdPartyNoticesAreCurrent$' -count=1 -args -update-third-party-notices"
+
+[tasks."release:build"]
+description = "Build release archives into dist/ with GoReleaser"
+run = "goreleaser release --clean --snapshot"
+
+[tasks.test]
+alias = "t"
+description = "Run the hermetic test suite with race detection and coverage"
+shell = "bash -c"
+# A temporary HOME with FKF_BASE unset and XDG_STATE_HOME redirected is what stops the suite
+# from discovering a real base or trusting one. The two Go caches are carried across so a
+# changed HOME does not also mean a cold build.
+run = '''
+set -euo pipefail
+home=$(mktemp -d)
+trap 'rm -rf "$home"' EXIT
+env -u FKF_BASE HOME="$home" XDG_STATE_HOME="$home/state" \
+  GOCACHE="$(go env GOCACHE)" GOMODCACHE="$(go env GOMODCACHE)" \
+  gotestsum --format pkgname -- -race -coverpkg=./... -coverprofile=coverage.out ./...
+'''
+
+[tasks.coverage]
+alias = "v"
+description = "Show per-function statement coverage (run `mise run test` first)"
+run = "go tool cover -func=coverage.out"
+
+[tasks."check:coverage"]
+description = "Fail when total statement coverage falls below the floor (run `mise run test` first)"
+shell = "bash -c"
+# A ratchet: raise the floor as coverage improves, never lower it to make a change pass.
+# pipefail is what makes a missing or corrupt coverage.out fail here rather than pass silently.
+run = '''
+set -euo pipefail
+go tool cover -func=coverage.out | awk -v floor=85 '/^total:/ {
+  printf "coverage %s (floor %d%%)\n", $NF, floor
+  exit ($NF + 0 < floor)
+}'
+'''

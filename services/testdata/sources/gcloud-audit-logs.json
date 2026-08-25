@@ -1,0 +1,28 @@
+[
+  {
+    "uid": "example-project@abc123def456@2026-05-04T09:00:00Z",
+    "insertId": "abc123def456",
+    "timestamp": "2026-05-04T09:00:00Z",
+    "resource": { "labels": { "project_id": "example-project" } },
+    "protoPayload": {
+      "methodName": "google.cloud.resourcemanager.v3.Projects.GetProject",
+      "authenticationInfo": {
+        "principalEmail": "marc@example.test",
+        "principal_uri": "person:email/marc@example.test"
+      }
+    }
+  },
+  {
+    "uid": "example-project@abc123def456@2026-05-04T09:00:01Z",
+    "insertId": "abc123def456",
+    "timestamp": "2026-05-04T09:00:01Z",
+    "resource": { "labels": { "project_id": "example-project" } },
+    "protoPayload": {
+      "methodName": "google.cloud.resourcemanager.v3.Projects.GetProject",
+      "authenticationInfo": {
+        "principalEmail": "marc@example.test",
+        "principal_uri": "person:email/marc@example.test"
+      }
+    }
+  }
+]

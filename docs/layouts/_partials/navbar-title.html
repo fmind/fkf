@@ -1,0 +1,8 @@
+{{- $logoPath := .Site.Params.navbar.logo.path -}}
+{{- $logoWidth := .Site.Params.navbar.logo.width | default "28" -}}
+{{- $logoHeight := .Site.Params.navbar.logo.height | default "28" -}}
+
+<a class="hx:flex hx:items-center hx:hover:opacity-75 hx:ltr:mr-auto hx:rtl:ml-auto" href="{{ .Site.Home.RelPermalink }}">
+  <img class="hx:mr-2 hx:block" src="{{ $logoPath | relURL }}" alt="" height="{{ $logoHeight }}" width="{{ $logoWidth }}" />
+  <span class="hx:mr-2 hx:font-extrabold hx:inline hx:select-none">{{ .Site.Title }}</span>
+</a>

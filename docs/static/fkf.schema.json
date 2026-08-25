@@ -1,0 +1,398 @@
+{
+  "$id": "https://fmind.github.io/fkf/fkf.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The committed definition of one fkf base. It holds no secret.",
+  "properties": {
+    "bin": {
+      "description": "Absolute or ~-relative machine-local directories outside the base, prepended to PATH for every declared command. Put base-controlled executables in \u003cbase\u003e/bin so trust hashes them.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "fkf": {
+      "const": 1,
+      "description": "Configuration contract marker. v1 accepts exactly fkf: 1.",
+      "type": "integer"
+    },
+    "layers": {
+      "additionalProperties": false,
+      "description": "Explicit activation. A disabled layer is not created, listed, served, or scanned.",
+      "properties": {
+        "events": {
+          "description": "Dated collected documents (JSON).",
+          "type": "boolean"
+        },
+        "index": {
+          "description": "Point-in-time collected documents (JSON).",
+          "type": "boolean"
+        },
+        "projects": {
+          "description": "Intent and decisions over weeks (Markdown, status-bearing).",
+          "type": "boolean"
+        },
+        "tasks": {
+          "description": "Execution evidence (Markdown).",
+          "type": "boolean"
+        },
+        "wiki": {
+          "description": "Durable approved knowledge (Markdown, OKF v0.2).",
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "name": {
+      "description": "MCP server name and resource URI authority; informational elsewhere.",
+      "maxLength": 63,
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "type": "string"
+    },
+    "schema": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "cardinality": {
+            "description": "Allowed scalar count per record or explicit Markdown relation list.",
+            "enum": [
+              "one",
+              "optional",
+              "many"
+            ],
+            "type": "string"
+          },
+          "description": {
+            "description": "Shared human and machine meaning of this field across sources and authored relations.",
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "examples": {
+            "description": "Bounded examples that clarify the semantic value or URI shape.",
+            "items": {
+              "maxLength": 512,
+              "type": "string"
+            },
+            "maxItems": 8,
+            "type": "array"
+          },
+          "relation": {
+            "default": false,
+            "description": "Values are canonical fkf URIs transcribed as graph edges of this field name.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "description",
+          "cardinality"
+        ],
+        "type": "object"
+      },
+      "description": "Open semantic dictionary shared by every source and authored relation. id must have cardinality one; fkf enforces cross-field rules while loading.",
+      "maxProperties": 64,
+      "minProperties": 1,
+      "propertyNames": {
+        "maxLength": 64,
+        "pattern": "^[a-z][a-z0-9_-]*$"
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "sources": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "description": "Argv (never a shell string) fetching one record's body on demand. Must name {{id}} and may name any declared field plus {{base}} or {{home}}.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "description": "Literal executable: a bare name resolved on PATH or an absolute machine-local path outside the base. Placeholders and base-relative paths are refused.",
+                "minLength": 1,
+                "not": {
+                  "pattern": "\\{\\{"
+                },
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "enabled": {
+            "description": "Whether sync runs this source. Disabled entries are still validated.",
+            "type": "boolean"
+          },
+          "fields": {
+            "additionalProperties": {
+              "oneOf": [
+                {
+                  "description": "A declared semantic projection indexed for lexical context; every path contributes scalar values. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                  "pattern": "^\\.",
+                  "type": "string"
+                },
+                {
+                  "items": {
+                    "description": "A declared semantic projection indexed for lexical context; every path contributes scalar values. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                    "pattern": "^\\.",
+                    "type": "string"
+                  },
+                  "maxItems": 32,
+                  "minItems": 1,
+                  "type": "array"
+                }
+              ]
+            },
+            "description": "Associates root schema names with provider paths. id and event time are required; every declared value is indexed lexically and relation fields are transcribed into the graph.",
+            "maxProperties": 64,
+            "minProperties": 1,
+            "properties": {
+              "id": {
+                "oneOf": [
+                  {
+                    "description": "Required. Exactly one scalar is the record identity that its URI fragment names. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                    "pattern": "^\\.",
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "description": "Required. Exactly one scalar is the record identity that its URI fragment names. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                      "pattern": "^\\.",
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                ]
+              },
+              "time": {
+                "oneOf": [
+                  {
+                    "description": "Required for an events source. Exactly one scalar is the record timestamp. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                    "pattern": "^\\.",
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "description": "Required for an events source. Exactly one scalar is the record timestamp. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                      "pattern": "^\\.",
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                ]
+              },
+              "title": {
+                "oneOf": [
+                  {
+                    "description": "Suggested human-readable label; at most one scalar. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                    "pattern": "^\\.",
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "description": "Suggested human-readable label; at most one scalar. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                      "pattern": "^\\.",
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                ]
+              },
+              "url": {
+                "oneOf": [
+                  {
+                    "description": "Suggested provider URL; at most one scalar. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                    "pattern": "^\\.",
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "description": "Suggested provider URL; at most one scalar. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                      "pattern": "^\\.",
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                ]
+              }
+            },
+            "propertyNames": {
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_-]*$"
+            },
+            "required": [
+              "id"
+            ],
+            "type": "object"
+          },
+          "format": {
+            "default": "json",
+            "description": "json expects one document; ndjson expects one JSON value per line.",
+            "enum": [
+              "json",
+              "ndjson"
+            ],
+            "type": "string"
+          },
+          "install": {
+            "description": "Printed by `fkf status` when the binary is missing. Never executed.",
+            "type": "string"
+          },
+          "layer": {
+            "default": "events",
+            "description": "events files one document per day under events/; index files one point-in-time document under index/.",
+            "enum": [
+              "events",
+              "index"
+            ],
+            "type": "string"
+          },
+          "min_interval": {
+            "description": "Least time between two invocations of THIS source across the whole sync. Retry spaces the attempts of one failing call; this spaces every call, which is what a provider's rate limit actually counts.",
+            "pattern": "^(0|([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+)$",
+            "type": "string"
+          },
+          "records": {
+            "description": "Path to the records inside each decoded document or page. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+            "pattern": "^\\.",
+            "type": "string"
+          },
+          "requires": {
+            "description": "Executable names fkf status checks on PATH, including helpers and non-standard interpreters. FKF never infers dependencies from argv or helper contents.",
+            "items": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$",
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": true
+          },
+          "retry": {
+            "additionalProperties": false,
+            "dependentRequired": {
+              "backoff": [
+                "attempts"
+              ],
+              "on": [
+                "attempts"
+              ]
+            },
+            "description": "How fkf re-invokes this command, never what it is — the same relationship `timeout:` has to `run:`. `fkf trust` prints it beside the line it modifies.",
+            "properties": {
+              "attempts": {
+                "description": "Total runs allowed, including the first.",
+                "maximum": 5,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "backoff": {
+                "description": "Wait before the next attempt, growing linearly with the attempt number.",
+                "pattern": "^(0|([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+)$",
+                "type": "string"
+              },
+              "on": {
+                "description": "Which failures may be retried: `exit:\u003cn\u003e`, or a substring matched against the command's stderr. Required whenever attempts exceeds one — retrying every failure is how a source failing for a real reason hammers a provider quietly. The matched text is never logged or stored.",
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "type": "object"
+          },
+          "run": {
+            "description": "Direct argv producing JSON; no shell parses it. A helper shebang selects its interpreter. Argument placeholders: {{date}}, {{next_date}}, {{start}}, {{end}}, {{base}}, {{home}}. No collected data is ever substituted.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "prefixItems": [
+              {
+                "description": "Literal executable: a bare name resolved on PATH or an absolute machine-local path outside the base.",
+                "minLength": 1,
+                "not": {
+                  "pattern": "\\{\\{"
+                },
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "timeout": {
+            "description": "Per-command timeout; overrides sync.timeout.",
+            "pattern": "^(0|([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+)$",
+            "type": "string"
+          },
+          "window": {
+            "default": false,
+            "description": "Render run: ONCE for the whole requested range — {{start}}/{{end}} span every day being collected, not one — and bucket the records it returns into one document per day by each record's own declared fields.time. Only an events source may declare it: a whole-range collection buckets by day, and an index source has no day.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run",
+          "fields"
+        ],
+        "type": "object"
+      },
+      "description": "Declared collection commands, keyed by \u003cprovider\u003e-\u003cresource\u003e.",
+      "propertyNames": {
+        "maxLength": 250,
+        "pattern": "^[a-z0-9][a-z0-9-]*$"
+      },
+      "type": "object"
+    },
+    "sync": {
+      "additionalProperties": false,
+      "properties": {
+        "concurrency": {
+          "default": 4,
+          "maximum": 4,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "days": {
+          "default": 30,
+          "description": "Completed local days to collect when no --date is given.",
+          "maximum": 366,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "index_max_age_hours": {
+          "default": 168,
+          "description": "Refresh an index document only when it is older than this; 1..87600.",
+          "maximum": 87600,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "timeout": {
+          "description": "Per-command timeout, 1s..1h.",
+          "pattern": "^(0|([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+)$",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "fkf",
+    "name",
+    "schema",
+    "layers"
+  ],
+  "title": "fkf base configuration",
+  "type": "object"
+}

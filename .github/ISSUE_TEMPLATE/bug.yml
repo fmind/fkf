@@ -1,0 +1,56 @@
+name: Bug report
+description: Report a reproducible problem without sharing anything a base collected.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A base holds real activity. Review and redact every line before pasting: no credentials, personal data, customer names, record content, private repository names, or home paths. `fkf status` does not print whole records or command stdout, but diagnostics can include source names, paths, record identifiers, and timestamps.
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      description: The command that misbehaved.
+      placeholder: fkf sync github-pull-requests --date 2026-05-04
+    validations:
+      required: true
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: What happened?
+      description: The observed and the expected behaviour, with synthetic examples.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: >-
+        The smallest safe sequence of commands. If collection broke, include the substituted command from `fkf sync --dry-run` — it holds dates and paths, never a value.
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: Status output
+      description: Redacted output of `fkf status`.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: fkf version
+      placeholder: fkf --version
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS Apple Silicon
+        - macOS Intel
+        - Other
+    validations:
+      required: true

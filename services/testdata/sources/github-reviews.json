@@ -1,0 +1,34 @@
+[
+  {
+    "id": "repos/fmind/fkf/pulls/501/reviews/9001",
+    "reviewId": "PRR_kwDOExample1",
+    "occurredAt": "2026-05-04T09:00:00Z",
+    "submittedAt": "2026-05-04T09:00:00Z",
+    "state": "APPROVED",
+    "url": "https://github.com/fmind/fkf/pull/501#pullrequestreview-9001",
+    "title": "Review token budget receipt",
+    "pullRequest": {
+      "number": 501,
+      "title": "Review token budget receipt",
+      "url": "https://github.com/fmind/fkf/pull/501"
+    },
+    "repo": "fmind/fkf",
+    "reviewer": "nadia"
+  },
+  {
+    "id": "repos/acme/other/pulls/501/reviews/9002",
+    "reviewId": "PRR_kwDOExample2",
+    "occurredAt": "2026-05-04T10:00:00Z",
+    "submittedAt": "2026-05-04T10:00:00Z",
+    "state": "CHANGES_REQUESTED",
+    "url": "https://github.com/acme/other/pull/501#pullrequestreview-9002",
+    "title": "Review source identity",
+    "pullRequest": {
+      "number": 501,
+      "title": "Review source identity",
+      "url": "https://github.com/acme/other/pull/501"
+    },
+    "repo": "acme/other",
+    "reviewer": "nadia"
+  }
+]

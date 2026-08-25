@@ -1,0 +1,15 @@
+{
+  "name": "fkf — Fmind Knowledge Framework",
+  "short_name": "fkf",
+  "start_url": "./",
+  "icons": [
+    {
+      "src": "fmind-logo.webp",
+      "sizes": "96x96",
+      "type": "image/webp"
+    }
+  ],
+  "theme_color": "#0f172a",
+  "background_color": "#0f172a",
+  "display": "standalone"
+}

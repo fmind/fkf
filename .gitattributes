@@ -1,0 +1,6 @@
+# Preserve opaque vendored assets byte for byte.
+docs/assets/vendor/flexsearch-0.8.143/flexsearch.bundle.min.js -text -diff
+docs/static/third-party/flexsearch-0.8.143-LICENSE.txt -text -diff
+services/testdata/notices/mgo-LICENSE.txt -text -diff
+services/testdata/notices/upb-LICENSE.txt -text -diff
+services/testdata/notices/xrash-smetrics-LICENSE.txt -text -diff

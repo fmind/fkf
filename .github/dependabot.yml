@@ -1,0 +1,47 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      actions:
+        patterns:
+          - "*"
+        update-types:
+          - major
+          - minor
+          - patch
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      go-modules:
+        patterns:
+          - "*"
+        update-types:
+          - major
+          - minor
+          - patch
+  - package-ecosystem: gomod
+    directory: /docs
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      docs-go-modules:
+        patterns:
+          - "*"
+        update-types:
+          - major
+          - minor
+          - patch

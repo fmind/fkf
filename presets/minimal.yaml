@@ -1,0 +1,17 @@
+sources: {}
+# A minimal base declares no source. Add one when you know what you want it to collect:
+#
+#   sources:
+#     my-source:
+#       enabled: true
+#       layer: events                   # or index
+#       requires: [some-cli]            # explicit readiness checks; never inferred from run:
+#       run: [some-cli, --since, "{{date}}", --until, "{{next_date}}", --json]
+#       fields:                         # open mapping: add the meanings useful to this base
+#         id: .id                       # required: the identity a record's URI names
+#         time: .updated_at             # required for an events source
+#         title: .title                 # every mapped scalar is indexed lexically
+#
+# Keep direct provider argv in `run:`; move pipelines or expansion into a helper under bin/.
+# fkf substitutes only {{date}}, {{next_date}}, {{start}}, {{end}}, {{base}}, and
+# {{home}} — never collected data. Run `fkf config schema` for the complete grammar.

@@ -1,0 +1,58 @@
+#!/bin/sh
+# gws-calendar-json <start> <end> <date> <next-date> — collect event-start metadata over one
+# exact half-open window. Google Calendar's timeMin filters event ends, so overlapping events
+# are returned by the provider and must be removed locally before fkf verifies the window.
+set -eu
+
+page_validator=$(cd "$(dirname "$0")" && pwd)/gws-page-json
+
+start=${1:?usage: gws-calendar-json <start> <end> <date> <next-date>}
+end=${2:?usage: gws-calendar-json <start> <end> <date> <next-date>}
+date=${3:?usage: gws-calendar-json <start> <end> <date> <next-date>}
+next_date=${4:?usage: gws-calendar-json <start> <end> <date> <next-date>}
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+params=$(jq -cn --arg start "$start" --arg end "$end" \
+  '{calendarId:"primary",timeMin:$start,timeMax:$end,singleEvents:true}')
+
+# Keep the provider and projection as separate stages so a failed request cannot become an
+# empty complete-looking array under POSIX shell pipeline semantics.
+gws calendar events list --params "$params" --page-all --page-limit 100 > "$tmp/raw-pages.json"
+"$page_validator" items < "$tmp/raw-pages.json" > "$tmp/pages.json"
+jq -s -c --arg start "$start" --arg end "$end" --arg date "$date" --arg next_date "$next_date" '
+  def epoch:
+    capture("^(?<stamp>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.[0-9]+)?(?<zone>Z|[+-][0-9]{2}:[0-9]{2})$") as $parsed
+    | ($parsed.stamp + "Z" | fromdateiso8601) as $local
+    | if $parsed.zone == "Z" then $local
+      else ($parsed.zone | capture("^(?<sign>[+-])(?<hour>[0-9]{2}):(?<minute>[0-9]{2})$")) as $offset
+      | (($offset.hour | tonumber) * 3600 + ($offset.minute | tonumber) * 60) as $seconds
+      | if $offset.sign == "+" then $local - $seconds else $local + $seconds end
+      end;
+  def compact: with_entries(select(.value != null));
+  def fkf_identity: @uri | gsub("%3A"; ":") | gsub("%2F"; "/")
+    | gsub("%40"; "@") | gsub("%2B"; "+") | gsub("~"; "%7E");
+  ($start | epoch) as $start_epoch
+  | ($end | epoch) as $end_epoch
+  | [.[].items[]?
+      | (.start.dateTime // .start.date) as $at
+      | select(
+          if .start.date != null then $at >= $date and $at < $next_date
+          else (($at | epoch) >= $start_epoch and ($at | epoch) < $end_epoch)
+          end)
+      | {
+          id, status, eventType, created, updated, summary, htmlLink, iCalUID,
+          recurringEventId, at: $at, transparency, visibility,
+          start: (.start | {date, dateTime, timeZone} | compact),
+          end: (.end | {date, dateTime, timeZone} | compact),
+          creator: ((.creator // {}) | {email, self} | compact),
+          organizer: ((.organizer // {}) | {email, self} | compact),
+          attendees: [(.attendees // [])[] | {email, responseStatus, self, optional, resource} | compact],
+          participant_uris: ([.organizer.email, (.attendees // [])[].email]
+            | map(select(type == "string" and length > 0)
+              | "person:email/" + (ascii_downcase | fkf_identity))
+            | unique)
+        }
+      | compact]
+  | sort_by(.at, .id)
+' "$tmp/pages.json"

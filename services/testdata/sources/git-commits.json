@@ -1,0 +1,18 @@
+[
+  {
+    "uid": "fmind/fkf@a1b2c3d4e5f6",
+    "hash": "a1b2c3d4e5f6",
+    "time": "2026-05-04T09:00:00Z",
+    "message": "Fix retrieval boundary",
+    "repo_full": "fmind/fkf",
+    "author_email": "marc@example.test"
+  },
+  {
+    "uid": "acme/other@a1b2c3d4e5f6",
+    "hash": "a1b2c3d4e5f6",
+    "time": "2026-05-04T10:00:00Z",
+    "message": "Fix retrieval boundary",
+    "repo_full": "acme/other",
+    "author_email": "marc@example.test"
+  }
+]

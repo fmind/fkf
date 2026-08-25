@@ -1,0 +1,15 @@
+# Build artifacts. `go build ./cmd/fkf` from the root writes ./fkf; mise writes bin/fkf.
+/bin/
+/dist/
+/fkf
+/coverage.out
+
+# Machine-local: a developer's exported credentials, agent scratch space, prompts, and local
+# skills. The rest of .agents/ is versioned so this repository can carry contributor skills.
+/.env
+/.agents/AGENTS.md
+/.agents/tmp/
+/.agents/prompts/
+/.agents/skills/local-*/
+
+.DS_Store

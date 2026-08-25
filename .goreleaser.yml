@@ -1,0 +1,38 @@
+version: 2
+project_name: fkf
+builds:
+  - main: ./cmd/fkf
+    binary: fkf
+    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags: -s -w -X github.com/fmind/fkf/core.version={{ .Tag }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+# Each archive is one attestable install unit: binary, license, usage, and linked-dependency notices.
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    builds_info:
+      owner: root
+      group: root
+      mtime: "{{ .CommitDate }}"
+    files:
+      - src: LICENSE
+        info: &archive-file-info
+          owner: root
+          group: root
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+      - src: README.md
+        info: *archive-file-info
+      - src: THIRD_PARTY_NOTICES.md
+        info: *archive-file-info
+checksum:
+  name_template: checksums.txt
+release:
+  # CD publishes only after attesting every draft asset.
+  draft: true
+  replace_existing_draft: true
+  replace_existing_artifacts: true
+  prerelease: auto

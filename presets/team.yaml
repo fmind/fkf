@@ -1,0 +1,19 @@
+sources:
+  # A team base declares only an explicitly organization-scoped snapshot. It starts disabled:
+  # replacing the sentinel and enabling it is the reviewed disclosure decision.
+  # When the team account differs from your personal one, launch fkf with GH_CONFIG_DIR in the
+  # process environment (or a trusted wrapper) — it is a machine fact, not a team fact.
+  github-repositories:
+    enabled: false
+    layer: index
+    requires: [github-list-json, gh, jq]
+    # Replace the sentinel with this base's one organization before enabling. Using /user/repos
+    # here would cross the team boundary by also collecting the operator's personal repositories.
+    format: ndjson
+    run: [github-list-json, org-repositories, REPLACE_WITH_ORG]
+    fields:
+      id: .nameWithOwner
+      url: .url
+      repo: .nameWithOwner
+      repository: .repository_uri
+    install: mise use -g gh@latest jq@latest

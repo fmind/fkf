@@ -1,0 +1,11 @@
+[
+  {
+    "id": "claude:a1b2c3",
+    "time": "2026-05-04T09:10:00Z",
+    "title": "Fix retrieval boundary",
+    "repo": "fmind/fkf",
+    "agent": "claude",
+    "cwd": "/home/marc/fkf",
+    "branch": "main"
+  }
+]

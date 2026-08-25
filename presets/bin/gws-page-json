@@ -1,0 +1,89 @@
+#!/bin/sh
+# gws-page-json <collection-field> [command [argument...]] — run an optional provider command,
+# then validate the NDJSON pages emitted by `gws --page-all --page-limit 100`. Capturing the
+# provider first preserves pipeline failure semantics without requiring a particular shell.
+set -eu
+
+collection=${1:-}
+case "$collection" in spaces | files | connections | items | messages | conferenceRecords | otherContacts) ;;
+  *) echo "usage: gws-page-json <spaces|files|connections|items|messages|conferenceRecords|otherContacts> [command [argument...]]" >&2; exit 2 ;;
+esac
+shift
+
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/fkf-gws-pages.XXXXXX")
+pages=$work_dir/pages.ndjson
+validated=$work_dir/validated.ndjson
+trap 'exit 1' HUP INT TERM
+trap 'rm -rf "$work_dir"' 0
+if [ "$#" -gt 0 ]; then
+  "$@" > "$pages"
+else
+  cat > "$pages"
+fi
+
+if ! jq -c -s -e --arg collection "$collection" '
+  . as $pages
+  | select(type == "array" and length > 0 and length <= 100)
+  | select(all(.[];
+      type == "object"
+      and ((.[$collection]? == null) or (.[$collection] | type == "array"))
+      and ((.nextPageToken? == null)
+        or (.nextPageToken | type == "string" and length > 0))))
+  | select(all(.[0:-1][]; .nextPageToken | type == "string" and length > 0))
+  | select(.[-1].nextPageToken? == null)
+  | ([.[] | .nextPageToken? | select(. != null)]) as $tokens
+  | select(($tokens | unique | length) == ($tokens | length))
+  | .[]
+' "$pages" > "$validated"; then
+  echo "gws-page-json: invalid token chain or page limit reached; cannot prove completeness" >&2
+  exit 1
+fi
+case "$collection" in
+  spaces)
+    jq -c '
+      def compact: with_entries(select(.value != null));
+      {spaces: [(.spaces // [])[] | {
+        name, displayName, spaceType, spaceThreadingState,
+        lastActiveTime, membershipCount, spaceUri
+      } | compact]}
+    ' "$validated"
+    ;;
+  files)
+    jq -c '
+      def compact: with_entries(select(.value != null));
+      def fkf_identity: @uri | gsub("%3A"; ":") | gsub("%2F"; "/")
+        | gsub("%40"; "@") | gsub("%2B"; "+") | gsub("~"; "%7E");
+      {files: [(.files // [])[] | {
+        id, name, mimeType, webViewLink, modifiedTime, createdTime, size,
+        shared, trashed, parents,
+        owners: [(.owners // [])[] | {displayName, emailAddress,
+          uri: (if (.emailAddress // "") == "" then null
+            else ("person:email/" + (.emailAddress | ascii_downcase | fkf_identity)) end)} | compact]
+      } | compact]}
+    ' "$validated"
+    ;;
+  connections)
+    jq -c '
+      def compact: with_entries(select(.value != null));
+      def fkf_identity: @uri | gsub("%3A"; ":") | gsub("%2F"; "/")
+        | gsub("%40"; "@") | gsub("%2B"; "+") | gsub("~"; "%7E");
+      def field_metadata:
+        if . == null then null else {primary} | compact end;
+      {connections: [(.connections // [])[] | {
+        resourceName,
+        names: [(.names // [])[] | {
+          displayName, displayNameLastFirst, unstructuredName,
+          familyName, givenName, middleName, honorificPrefix, honorificSuffix,
+          metadata: (.metadata | field_metadata)
+        } | compact],
+        emailAddresses: [(.emailAddresses // [])[] | {
+          value, type, formattedType, displayName,
+          uri: (if (.value // "") == "" then null
+            else ("person:email/" + (.value | ascii_downcase | fkf_identity)) end),
+          metadata: (.metadata | field_metadata)
+        } | compact]
+      } | compact]}
+    ' "$validated"
+    ;;
+  *) jq -c 'del(.nextPageToken)' "$validated" ;;
+esac

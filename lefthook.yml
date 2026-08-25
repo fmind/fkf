@@ -1,0 +1,30 @@
+pre-commit:
+  parallel: false
+  commands:
+    format:dprint:
+      priority: 1
+      glob: "*.{md,json,jsonc,yaml,yml,toml}"
+      run: mise run format:dprint {staged_files}
+      stage_fixed: true
+    format:go:
+      priority: 2
+      glob: "*.go"
+      run: mise run format:go {staged_files}
+      stage_fixed: true
+    # check:leaks scans committed history, which by definition cannot see what is staged.
+    leaks:
+      priority: 3
+      run: mise run check:leaks --staged
+    check:
+      priority: 4
+      run: mise run check
+pre-push:
+  parallel: false
+  commands:
+    test:
+      priority: 1
+      run: mise run test
+    # Reads the coverage.out the step above just wrote, so the ratchet costs milliseconds.
+    coverage:
+      priority: 2
+      run: mise run check:coverage

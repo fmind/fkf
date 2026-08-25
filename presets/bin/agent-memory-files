@@ -1,0 +1,75 @@
+#!/bin/sh
+# agent-memory-files <start> <end> — written into <base>/bin by `fkf init --preset personal`.
+#
+# Prints one JSON array with one record per coding-agent memory file touched in the half-open
+# UTC window, one root per harness:
+#   Claude Code  ~/.claude/projects/<cwd>/memory/*.md   MEMORY.md index plus one file per topic
+#   Codex CLI    ~/.codex/memories/**/*.md              MEMORY.md, raw memories, rollout summaries
+#   Gemini CLI   ~/.gemini/tmp/<project>/memory/*.md    per-project memory, MEMORY.md index
+# Those files are where an agent's decisions and insights land today, per tool and per project,
+# unversioned and invisible to every other harness; a record here is what lets the fkf-learn skill
+# find them and promote the durable ones into the base.
+#
+# Metadata only: the path (the id), the modification time, and a title — the frontmatter `name`
+# when the file has one, else its first heading, else the file name. Only a bounded 64 KiB,
+# 256-line prefix is inspected and none of it is stored; the agent opens the file itself. A file
+# touched on two days is recorded on the day of its last touch, because mtime is its only clock.
+#
+# Needs POSIX find, stat, and jq. After init writes it, it is yours: add a root per harness you
+# use.
+set -eu
+
+start=${1:?usage: agent-memory-files <start> <end>}
+end=${2:?usage: agent-memory-files <start> <end>}
+command -v jq >/dev/null 2>&1 || { echo "agent-memory-files: jq is required" >&2; exit 1; }
+start_epoch=$(jq -ern --arg time "$start" '$time | fromdateiso8601')
+end_epoch=$(jq -ern --arg time "$end" '$time | fromdateiso8601')
+
+# touched <directory> <path pattern> <agent>: the files modified in the window, one per line as
+# path, epoch mtime, agent. A root that does not exist is a harness that is not installed here,
+# which is an empty contribution rather than a failure.
+touched() {
+  [ -d "$1" ] || return 0
+  find "$1" -type f -path "$2" -name '*.md' > "$found"
+  while IFS= read -r file; do
+    if mtime=$(stat -c %Y "$file" 2>/dev/null); then
+      : # GNU stat.
+    elif mtime=$(stat -f %m "$file" 2>/dev/null); then
+      : # BSD/macOS stat.
+    else
+      echo "agent-memory-files: stat could not read $file" >&2
+      return 1
+    fi
+    if awk -v value="$mtime" -v start="$start_epoch" -v end="$end_epoch" \
+      'BEGIN { exit !(value + 0 >= start && value + 0 < end) }'; then
+      printf '%s\t%s\t%s\n' "$file" "$mtime" "$3"
+    fi
+  done < "$found"
+}
+
+# title_of <file> reads the frontmatter `name:` when the file opens with a frontmatter block,
+# else the first Markdown heading. The preview is capped at 64 KiB and 256 lines, so a file
+# without either cannot turn a metadata collection into a full-body read.
+title_of() {
+  dd if="$1" of="$preview" bs=65536 count=1 2>/dev/null
+  awk 'NR == 1 && $0 != "---" { front = 0 } NR == 1 && $0 == "---" { front = 1; next }
+       NR > 256 { exit }
+       front && /^---$/ { front = 0; next }
+       front && /^name: / { sub(/^name: */, ""); print; exit }
+       !front && /^# / { sub(/^# */, ""); print; exit }' "$preview"
+}
+
+paths=$(mktemp); raw=$(mktemp); found=$(mktemp); preview=$(mktemp)
+trap 'rm -f "$paths" "$raw" "$found" "$preview"' EXIT
+{
+  touched "$HOME/.claude/projects" '*/memory/*' claude
+  touched "$HOME/.codex/memories" '*' codex
+  touched "$HOME/.gemini/tmp" '*/memory/*' gemini
+} > "$paths"
+while IFS="$(printf '\t')" read -r file mtime agent; do
+  title=$(title_of "$file")
+  [ -n "$title" ] || title=$(basename "$file" .md)
+  jq -cn --arg id "$file" --arg time "$mtime" --arg title "$title" --arg agent "$agent" \
+    '{id: $id, time: ($time | tonumber | floor | todate), title: $title, agent: $agent}'
+done < "$paths" > "$raw"
+jq -s '.' < "$raw"

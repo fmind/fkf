@@ -1,0 +1,55 @@
+version: "2"
+run:
+  timeout: 10m
+  relative-path-mode: cfg
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    gofumpt:
+      extra:
+        group-params: true
+    goimports:
+      local-prefixes: ["github.com/fmind/fkf"]
+linters:
+  default: standard
+  enable:
+    - copyloopvar
+    - errorlint
+    - gocognit
+    - gosec
+    - misspell
+    - revive
+    - sloglint
+    - unparam
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [gosec]
+      - path: ^core/(io|read)\.go$
+        text: "G304:"
+        linters: [gosec]
+  settings:
+    # A ratchet, not a target: this is today's worst function exactly. Lower it as splits land.
+    gocognit:
+      min-complexity: 30
+    errcheck:
+      check-type-assertions: true
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment # trades readable field order for padding bytes this program never feels
+        - shadow # fires on the standard `if err := f(); err != nil` idiom
+    gosec:
+      severity: medium
+      confidence: medium
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

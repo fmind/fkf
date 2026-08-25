@@ -1,0 +1,14 @@
+severity:
+  - HIGH
+  - CRITICAL
+exit-code: 1
+scan:
+  scanners:
+    - license
+    - misconfig
+    - secret
+    - vuln
+vulnerability:
+  # A CRITICAL with no patch available is exactly the finding that needs a decision, so it must
+  # surface rather than be filtered out into a green run.
+  ignore-unfixed: false

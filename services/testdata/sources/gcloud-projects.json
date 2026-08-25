@@ -1,0 +1,10 @@
+[
+  {
+    "projectId": "fkf-project-123",
+    "name": "fkf-project",
+    "projectNumber": "1234567890",
+    "lifecycleState": "ACTIVE",
+    "createTime": "2026-05-04T09:00:00Z",
+    "parent": { "type": "organization", "id": "123456" }
+  }
+]

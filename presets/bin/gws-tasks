@@ -1,0 +1,43 @@
+#!/bin/sh
+# gws-tasks <start> <end> — collect every task list over one exact half-open window.
+set -eu
+
+page_validator=$(cd "$(dirname "$0")" && pwd)/gws-page-json
+
+start=${1:?usage: gws-tasks <start> <end>}
+end=${2:?usage: gws-tasks <start> <end>}
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# Fetch and decode in separate commands so a provider failure cannot be hidden by a successful
+# downstream jq. Base64 keeps an arbitrary task-list title on one shell-safe line.
+gws tasks tasklists list --params '{"maxResults":100}' --page-all --page-limit 100 > "$tmp/raw-tasklists.json"
+"$page_validator" items < "$tmp/raw-tasklists.json" > "$tmp/tasklists.json"
+jq -r '.items[]? | @base64' "$tmp/tasklists.json" > "$tmp/tasklists"
+[ -s "$tmp/tasklists" ] || {
+  echo "gws-tasks: the account returned no task list; refusing a complete-looking empty window" >&2
+  exit 1
+}
+: > "$tmp/fragments.json"
+
+while IFS= read -r encoded; do
+  tasklist=$(printf '%s' "$encoded" | jq -rR '@base64d | fromjson | .id')
+  title=$(printf '%s' "$encoded" | jq -rR '@base64d | fromjson | .title // ""')
+  params=$(jq -cn --arg tasklist "$tasklist" --arg updated "$start" \
+    '{tasklist:$tasklist,showCompleted:true,showHidden:true,showDeleted:true,showAssigned:true,updatedMin:$updated}')
+  gws tasks tasks list --params "$params" --page-all --page-limit 100 > "$tmp/raw-tasks.json"
+  "$page_validator" items < "$tmp/raw-tasks.json" > "$tmp/tasks.json"
+  jq -c --arg list "$tasklist" --arg list_title "$title" --arg end "$end" '
+    def epoch: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
+    ($end | epoch) as $end_epoch
+    | [(.items // [])[] | select((.updated | epoch) < $end_epoch)
+      | {
+          id, uid: ($list + "~" + .id), list: $list, listTitle: $list_title,
+          title, updated, status, due, completed, deleted, hidden, parent, position, webViewLink
+        }
+      | with_entries(select(.value != null))]
+  ' "$tmp/tasks.json" >> "$tmp/fragments.json"
+done < "$tmp/tasklists"
+
+jq -s -c 'add // [] | unique_by(.uid) | sort_by(.updated, .uid)' "$tmp/fragments.json"

@@ -1,0 +1,86 @@
+baseURL: https://fmind.github.io/fkf/
+locale: en-us
+title: fkf
+copyright: © 2026 Médéric Hurier (Fmind).
+
+# Fail builds on missing pages/refs instead of silently emitting broken links.
+refLinksErrorLevel: ERROR
+
+enableGitInfo: true # last-modified dates from git (Hextra shows them in the footer)
+
+module:
+  hugoVersion:
+    extended: true
+    min: "0.164.0"
+  imports:
+    - path: github.com/imfing/hextra
+      # Hextra's static mount contains its own product icons and manifest. fkf owns those
+      # public identity files, so import only the theme components the site actually uses.
+      mounts:
+        - source: assets
+          target: assets
+        - source: data
+          target: data
+        - source: i18n
+          target: i18n
+        - source: layouts
+          target: layouts
+
+markup:
+  goldmark:
+    renderer:
+      unsafe: true # allow inline HTML in Markdown (required by some Hextra shortcodes)
+    extensions:
+      passthrough: # hand LaTeX through to KaTeX untouched (enable math per page)
+        enable: true
+        delimiters:
+          block: [['\[', '\]'], ["$$", "$$"]]
+          inline: [['\(', '\)']]
+  highlight:
+    noClasses: false # use CSS classes so Hextra's dark/light themes style code blocks
+
+menu:
+  main:
+    - name: Documentation
+      pageRef: /docs
+      weight: 1
+    - name: Search
+      weight: 2
+      params:
+        type: search
+    - name: GitHub
+      weight: 3
+      url: https://github.com/fmind/fkf
+      params:
+        icon: github
+
+params:
+  navbar:
+    displayTitle: true
+    displayLogo: true
+    logo:
+      path: fmind-logo.webp
+      width: 28
+      height: 28
+  theme:
+    default: system # light, dark, or follow the visitor's OS
+    displayToggle: true
+  page:
+    width: normal
+  footer:
+    # custom/footer.html prints the project's copyright and notices link. Keep the theme
+    # credit, but never fall through to Hextra's own default copyright string.
+    displayCopyright: false
+    displayPoweredBy: true
+  editURL:
+    enable: true
+    # Hugo appends the page path relative to the CONTENT directory, and this site's content
+    # lives at docs/content/. Without that suffix every "Edit this page" link pointed at
+    # docs/<page>.md, which is where these files used to be before the Hugo migration.
+    base: https://github.com/fmind/fkf/edit/main/docs/content
+  search:
+    enable: true
+    type: flexsearch # client-side search, no external service
+    flexsearch:
+      # Vendored exact npm artifact: clean builds never fetch executable JavaScript.
+      js: vendor/flexsearch-0.8.143/flexsearch.bundle.min.js

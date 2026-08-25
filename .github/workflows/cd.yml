@@ -1,0 +1,151 @@
+name: CD
+on:
+  push:
+    tags: ["v*"]
+  workflow_run: # zizmor: ignore[dangerous-triggers] guarded below before checkout or permissions
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    name: Publish release binaries
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # create the release and upload its archives
+      id-token: write # mint the OIDC token the provenance attestation is signed with
+      attestations: write # record build provenance for each published archive
+      artifact-metadata: write # associate the attested files with this repository
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install locked toolchain
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.12
+          cache: false # a release must not consume a cache a pull request could have poisoned
+      - name: Run project gate
+        run: mise run all
+      - name: Verify clean checkout
+        run: test -z "$(git status --porcelain)"
+      - name: Build draft release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          scripts/release-notes "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+          goreleaser release --clean --release-notes "$RUNNER_TEMP/release-notes.md"
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/fkf_*.tar.gz
+            dist/checksums.txt
+      - name: Publish attested release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --verify-tag
+  pages_candidate:
+    name: Admit current documentation candidate
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      deploy: ${{ steps.gate.outputs.deploy }}
+    steps:
+      - name: Refuse a superseded main candidate
+        id: gate
+        env:
+          FKF_CANDIDATE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          FKF_CANDIDATE_REF: ${{ github.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$FKF_CANDIDATE_REF" != refs/heads/main ]; then
+            echo "deploy=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::Skipping documentation because manual deployment must target main."
+            exit 0
+          fi
+          fkf_current_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          if [ "$FKF_CANDIDATE_SHA" = "$fkf_current_sha" ]; then
+            echo "deploy=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::Skipping documentation for a superseded main commit."
+          fi
+  pages:
+    name: Publish documentation
+    needs: pages_candidate
+    if: needs.pages_candidate.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write # configure-pages turns Pages on, deploy-pages publishes the artifact
+      id-token: write # authenticate both calls through GitHub's OIDC boundary
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      HUGO_ENVIRONMENT: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0 # enableGitInfo needs file history
+          persist-credentials: false
+      - name: Install locked toolchain
+        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        with:
+          version: 2026.8.12
+          cache: false # publishing must not consume a pull-request cache
+      - name: Verify documentation
+        run: mise run check:docs
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+        with:
+          enablement: true # the first run has to turn Pages on; idempotent afterwards
+      - name: Build documentation
+        env:
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
+        run: mise run docs:build -- --baseURL "$PAGES_BASE_URL/"
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: docs/public
+      - name: Recheck main immediately before deployment
+        id: current
+        env:
+          FKF_CANDIDATE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          fkf_current_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          if [ "$FKF_CANDIDATE_SHA" = "$fkf_current_sha" ]; then
+            echo "deploy=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "deploy=false" >>"$GITHUB_OUTPUT"
+            echo "::notice::Skipping deployment because main advanced during the build."
+          fi
+      - name: Deploy documentation
+        id: deployment
+        if: steps.current.outputs.deploy == 'true'
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
