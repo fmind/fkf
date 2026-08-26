@@ -313,7 +313,7 @@ func TestGitLogJSONEmitsTheSameCommitterClockItFilters(t *testing.T) {
 	syntheticGit(t, env, repo, "add", "rebased.txt")
 	commitEnv := append(append([]string{}, env...),
 		"GIT_AUTHOR_DATE=2026-08-20T10:00:00Z",
-		"GIT_COMMITTER_DATE=2026-08-24T12:00:00Z",
+		"GIT_COMMITTER_DATE=2026-08-24T12:00:00-07:00",
 	)
 	syntheticGit(t, commitEnv, repo, "commit", "-m", "rebased commit")
 	hash := syntheticGit(t, env, repo, "rev-parse", "HEAD")
@@ -329,7 +329,7 @@ func TestGitLogJSONEmitsTheSameCommitterClockItFilters(t *testing.T) {
 	if found == nil {
 		t.Fatalf("rebased commit %s missing from %+v", hash, records)
 	}
-	if found.Time != "2026-08-24T12:00:00+00:00" {
+	if found.Time != "2026-08-24T19:00:00Z" {
 		t.Fatalf("record time = %q, want the in-window committer time", found.Time)
 	}
 }

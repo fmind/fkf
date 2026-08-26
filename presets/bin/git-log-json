@@ -172,17 +172,16 @@ while read -r gitdir; do
 	# identity is reviewed configuration, not a pattern: a dot in an email must match a dot.
   git --git-dir="$gitdir" log --all --fixed-strings "$@" \
     --since="$since" --until="$until" \
-    --pretty=format:'%H%x00%cI%x00%ct%x00%aE%x00%s%x00' > "$log_output"
+    --pretty=format:'%H%x00%ct%x00%aE%x00%s%x00' > "$log_output"
   jq -R -s --arg repo "$full" '
       if . == "" then []
       else split("\u0000")
         | if .[-1] != "" then error("git log output has no terminal NUL") else .[:-1] end
-        | if length % 5 != 0 then error("git log output has an incomplete field group") else . end
+        | if length % 4 != 0 then error("git log output has an incomplete field group") else . end
       end
-      | [range(0; length; 5) as $offset
-          | { hash: (.[ $offset ] | ltrimstr("\n")), time: .[$offset + 1],
-              _epoch: (.[$offset + 2] | tonumber), author_email: .[$offset + 3],
-              message: .[$offset + 4], repo_full: $repo }]
+      | [range(0; length; 4) as $offset
+          | { hash: (.[ $offset ] | ltrimstr("\n")), _epoch: (.[$offset + 1] | tonumber),
+              author_email: .[$offset + 2], message: .[$offset + 3], repo_full: $repo }]
       | .[]' < "$log_output" >> "$records"
 # A commit can be present in several clones. Give it one semantic identity per repository and
 # collapse repeated clones before fkf verifies that every URI fragment names exactly one record.
@@ -191,6 +190,9 @@ jq -s --argjson since "$since_epoch" --argjson until "$until_epoch" '
   def fkf_identity: @uri | gsub("%3A"; ":") | gsub("%2F"; "/")
     | gsub("%40"; "@") | gsub("%2B"; "+") | gsub("~"; "%7E");
   map(select(._epoch >= $since and ._epoch < $until)
+    # Git versions spell a UTC %cI value as either Z or +00:00. Derive one canonical
+    # representation from the epoch that also drives window filtering.
+    | .time = (._epoch | todateiso8601)
     | del(._epoch)
     | . + {
         uid: (if .repo_full == "" then .hash else (.repo_full + "@" + .hash) end),

@@ -39,6 +39,8 @@ func TestRunCLIInheritsProviderConfigurationFromTheLaunchingProcess(t *testing.T
 }
 
 func TestRunCLIRemovesRuntimeStartupLoaders(t *testing.T) {
+	const decoy = "ENV=retained LD_PRELOAD=retained"
+	t.Setenv("FKF_STARTUP_LOADER_DECOY", decoy)
 	for _, key := range []string{
 		"BASH_ENV", "ENV", "ZDOTDIR", "fish_function_path",
 		"PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONINSPECT",
@@ -53,12 +55,21 @@ func TestRunCLIRemovesRuntimeStartupLoaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	childValues := map[string]string{}
+	for line := range strings.SplitSeq(output, "\n") {
+		if key, value, found := strings.Cut(line, "="); found {
+			childValues[key] = value
+		}
+	}
+	if childValues["FKF_STARTUP_LOADER_DECOY"] != decoy {
+		t.Fatalf("unrelated child environment value = %q, want %q", childValues["FKF_STARTUP_LOADER_DECOY"], decoy)
+	}
 	for _, key := range []string{
 		"BASH_ENV", "ENV", "ZDOTDIR", "fish_function_path",
 		"PYTHONPATH", "NODE_OPTIONS", "PERL5OPT", "RUBYOPT", "JAVA_TOOL_OPTIONS",
 		"LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "GCONV_PATH", "LUA_INIT", "R_PROFILE_USER",
 	} {
-		if strings.Contains(output, key+"=") {
+		if _, found := childValues[key]; found {
 			t.Errorf("child environment retains runtime startup loader %s", key)
 		}
 	}
