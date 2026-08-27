@@ -2,6 +2,12 @@
 
 All notable changes to `fkf` are documented here. This project follows [Semantic Versioning](https://semver.org/) from its first public release.
 
+## [v1.1.2](https://github.com/fmind/fkf/releases/tag/v1.1.2) - 2026-08-27
+
+### Highlights
+
+- Flatten the documentation sidebar on desktop and mobile so Overview and every guide are peers, while preserving all published routes and enforcing the rendered navigation contract in tests.
+
 ## [v1.1.1](https://github.com/fmind/fkf/releases/tag/v1.1.1) - 2026-08-27
 
 ### Highlights
