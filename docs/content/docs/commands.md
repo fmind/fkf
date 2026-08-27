@@ -199,8 +199,16 @@ fkf mcp serve --base ~/brain
 
 The stdio server is read-only and requires an explicit base. It exposes bounded `context`, `find`, `list`, `read`, and `graph` operations but no body execution. Pageable tools return strict opaque cursors bound to their arguments and exact result snapshot. See [MCP server](../mcp/).
 
+### `upgrade`
+
+```bash
+fkf upgrade
+```
+
+Upgrade resolves the latest stable GitHub release, downloads the archive and `checksums.txt` for the current Linux or macOS architecture through `curl`, verifies the SHA-256 checksum, executes the staged binary to confirm its version, and atomically replaces the executable that launched the command. It reads no base and runs no source declaration. Use the installation method instead when that executable is managed elsewhere or not user-writable.
+
 ## Aliases and time bounds
 
-One-letter aliases are the first letter, assigned to the command typed most often when two collide. Root `init`, `trust`, `status`, and `config` therefore have no alias. Subcommand aliases follow the same fixed vocabulary shown in `fkf --help`.
+One-letter aliases are the first letter, assigned to the command typed most often when two collide. Root `init`, `trust`, `status`, and `config` therefore have no alias; `upgrade` is `u`. Subcommand aliases follow the same fixed vocabulary shown in `fkf --help`.
 
 `--since` and `--until` accept `YYYY-MM-DD`, `today`, `yesterday`, or a positive relative window such as `7d`, `6w`, `3m`, or `1y`. Day keywords name one absolute day; use the same keyword on both bounds to select exactly that day.

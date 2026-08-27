@@ -148,7 +148,7 @@ Any of these fails the whole collection unit and writes nothing:
 - a cardinality or relation-value violation;
 - an incomplete preset pagination boundary.
 
-Writes are atomic. A reader sees the previous complete document or the new complete document, never a partial day. Today is never collected. Existing event documents are skipped unless `--force` is supplied.
+Writes are atomic. A reader sees the previous complete document or the new complete document, never a partial day. Today is never collected. Existing event documents are skipped unless `--force` is supplied. Normal sync is therefore safe to repeat: completed event units and fresh indexes are skipped, due indexes refresh, missing units resume, and a failed derived rebuild is retried from the complete stored inputs.
 
 `format: json` expects one array, or one wrapper selected by `records:`; empty output is failure because a real empty JSON result is `[]`. `format: ndjson` expects one value per line and accepts empty output as an empty result.
 

@@ -11,6 +11,8 @@ There are two useful integrations:
 
 Start with MCP. Add a hook only when every session should receive context before the agent chooses a tool. Both surfaces are read-only and offline; the source commands in `fkf.yaml` never run.
 
+MCP does not train the model or copy the whole base into its prompt. It gives the connected agent five bounded retrieval tools and concise server instructions; the agent decides when to call them. Ask the coding agent to consult FKF for prior decisions, project state, or supporting evidence when you want retrieval to be explicit. Add the hook only when one compact repository-and-branch-aware context pack should arrive automatically at session start.
+
 ## Proof boundary
 
 The repository hermetically tests every `bin/fkf-hook` output envelope, empty response, first-call gate, repository-name parser, closed `PATH`, and unknown-harness failure. Those tests prove FKF's adapter bytes. They do not prove that a particular installed or hosted harness still consumes the bytes, so the setup recipes below link to the vendor contract they depend on.

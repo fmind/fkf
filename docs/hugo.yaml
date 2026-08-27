@@ -41,7 +41,7 @@ markup:
 
 menu:
   main:
-    - name: Documentation
+    - name: Overview
       pageRef: /docs
       weight: 1
     - name: Search

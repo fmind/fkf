@@ -4,7 +4,7 @@ Coding agents know your repository, but not the work around it: the meeting that
 
 `fkf` keeps that context in a git repository you own. It collects metadata from commands you already trust, stores plain JSON and Markdown, links records and pages through explicit URIs, and gives an agent a small, reproducible context pack with a receipt.
 
-It is one binary with no account, daemon, database, telemetry, or credential store. Stored reads are offline. Network access belongs to the provider CLIs you choose during collection or an explicit body fetch.
+It is one binary with no account, daemon, database, telemetry, or credential store. Stored reads are offline. Network access belongs to the provider CLIs you choose during collection or an explicit body fetch, plus the fixed GitHub release downloads made by `fkf upgrade` when you invoke it.
 
 ## Try it on your GitHub pull requests
 
@@ -66,6 +66,14 @@ curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/fmind/fk
 
 Set `FKF_INSTALL_DIR` to an absolute directory to change the destination, or `FKF_VERSION=v1.0.0` to pin a release. You can also download an archive and `checksums.txt` directly from the [latest release](https://github.com/fmind/fkf/releases/latest). Each archive is one installation unit containing the binary, license, README, and linked-dependency notices.
 
+Once FKF is installed, upgrade the executable that launched it:
+
+```bash
+fkf upgrade
+```
+
+The command uses `curl` only against fixed `github.com` release endpoints, selects the archive for the current Linux or macOS architecture, verifies its published SHA-256 checksum, runs the downloaded binary to confirm its version, and atomically replaces the current executable. It never opens or changes a base. If the executable is not user-writable, upgrade through the mechanism that installed it. To require GitHub's release attestation as well as its checksum, rerun the installer with `FKF_VERIFY_ATTESTATION=1`.
+
 From a clone:
 
 ```bash
@@ -102,7 +110,7 @@ Set `FKF_BASE=~/brain` or run commands from inside the base to omit `--base`. `f
 
 After enabling a preset source, `fkf config helpers --refresh` installs any newly required official helper without touching custom scripts. `fkf init` refreshes FKF-owned skills and managed blocks when rerun. It preserves your configuration, `AGENTS.md`, custom skills, and existing Claude bridges.
 
-The copied `fkf-use` skill teaches agents how to retrieve and collect safely. `fkf-learn` turns verified task-trace findings into a dated log or, with your approval, durable wiki and project pages.
+The copied `fkf-use` skill teaches agents how to retrieve and collect safely. `fkf-learn` turns verified task-trace findings into a dated log or, with your approval, durable wiki and project pages. An MCP connection does not train the model or preload the whole base: it gives the agent bounded `context`, `find`, `list`, `read`, and `graph` tools plus instructions for using them. Ask the agent to consult FKF when a task needs prior work context, or add the session-start hook when every session should receive one compact repository-aware pack automatically.
 
 ## Define a source
 
@@ -186,6 +194,8 @@ fkf mcp serve --base ~/brain
 
 It exposes `context`, `find`, `list`, `read`, and `graph`; it cannot write, run a shell, or fetch record bodies. `fkf init` also installs `bin/fkf-hook`, which can load repository-specific context at session start. Client setup is in the [harness guide](https://fmind.github.io/fkf/docs/harnesses/).
 
+Running `fkf sync` repeatedly is safe. Existing event documents and still-fresh index snapshots are skipped; due index snapshots and the derived graph are refreshed. Only `--force` deliberately re-collects and atomically replaces an existing document. A failed unit writes nothing, and rerunning the same command resumes missing collection or retries a failed derived rebuild.
+
 Run `fkf --help` for the authoritative command surface.
 
 ## Trust and privacy
@@ -218,14 +228,14 @@ mise run benchmark # optional 100k-record and 500k-edge observation
 
 The v1.0.0 benchmark run on 2026-08-26 produced this single Linux amd64 observation with Go 1.27 and `-benchtime=1x`:
 
-| Operation        | Corpus          | Wall time | Observed peak RSS |
-| ---------------- | --------------- | --------- | ----------------- |
-| Counted find     | 100,000 records | 1.66 s    | 722 MiB           |
-| Budgeted context | 100,000 records | 2.29 s    | 722 MiB           |
-| Full graph build | 500,000 edges   | 10.94 s   | 722 MiB           |
-| Graph navigation | 500,000 edges   | 10.04 s   | 722 MiB           |
+| Operation        | Corpus          | Wall time | Maximum RAM |
+| ---------------- | --------------- | --------- | ----------- |
+| Counted find     | 100,000 records | 1.66 s    | 722 MiB     |
+| Budgeted context | 100,000 records | 2.29 s    | 722 MiB     |
+| Full graph build | 500,000 edges   | 10.94 s   | 722 MiB     |
+| Graph navigation | 500,000 edges   | 10.04 s   | 722 MiB     |
 
-The full test suite is hermetic and race-enabled. The benchmark is a reproducible observation, not a pass/fail threshold, cross-machine guarantee, or reason to add a database.
+Maximum RAM is the process's measured peak resident set size (RSS): the largest amount of physical memory it occupied during that run. The full test suite is hermetic and race-enabled. The benchmark is a reproducible observation, not a pass/fail threshold, cross-machine guarantee, or reason to add a database.
 
 ## License
 

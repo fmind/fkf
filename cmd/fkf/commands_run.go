@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/urfave/cli/v3"
@@ -14,6 +15,23 @@ import (
 )
 
 func errUsage(format string, args ...any) error { return fmt.Errorf(format, args...) }
+
+func newUpgradeCommand() *cli.Command {
+	return &cli.Command{
+		Name: "upgrade", Aliases: []string{"u"}, Category: groupRun,
+		Usage: "Install the latest verified release over this executable.  [replaces the fkf binary]",
+		Description: "Uses curl only for fixed GitHub release endpoints, verifies the selected archive " +
+			"against checksums.txt, runs its fkf --version, and atomically replaces this executable. " +
+			"It reads no base and runs no source command.",
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			executable, err := os.Executable()
+			if err != nil {
+				return fmt.Errorf("locate current FKF executable: %w", err)
+			}
+			return render(cmd)(services.Upgrade(ctx, executable))
+		},
+	}
+}
 
 func newInitCommand() *cli.Command {
 	return &cli.Command{

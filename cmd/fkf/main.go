@@ -82,6 +82,7 @@ func newApp(stdout, stderr io.Writer) *cli.Command {
 			"  fkf validate                      check Markdown pages and links\n" +
 			"  fkf build                         rebuild derived caches (graph and wiki index)\n" +
 			"  fkf new task my-task              scaffold a new task trace\n" +
+			"  fkf upgrade                       install the latest verified release\n" +
 			"\n" +
 			"find and context are the two halves of retrieval: find is exhaustive, context fits a\n" +
 			"budget. read opens one thing, graph says what it connects to.\n" +
@@ -134,7 +135,7 @@ func newApp(stdout, stderr io.Writer) *cli.Command {
 		newListCommand(), newValidateCommand(), newTagsCommand(),
 		// Run and set up.
 		newInitCommand(), newTrustCommand(), newSyncCommand(), newStatusCommand(),
-		newBuildCommand(), newNewCommand(), newConfigCommand(), newMCPCommand(),
+		newBuildCommand(), newNewCommand(), newConfigCommand(), newMCPCommand(), newUpgradeCommand(),
 	}
 	// urfave/cli consults the failing command's own hook rather than walking up to the root, so
 	// a mistyped flag on a subcommand would otherwise exit 1 — "partial failure" — telling a

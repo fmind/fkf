@@ -115,10 +115,21 @@ func renderOperations(w *textWriter, result any) bool {
 		writeWikiIndexText(w, typed)
 	case *services.GraphBuild:
 		writeGraphBuildText(w, typed)
+	case *services.UpgradeReport:
+		writeUpgradeText(w, typed)
 	default:
 		return false
 	}
 	return true
+}
+
+func writeUpgradeText(w *textWriter, report *services.UpgradeReport) {
+	if report.Updated {
+		w.printf("updated: %s -> %s\n", report.Previous, report.Current)
+	} else {
+		w.printf("up to date: %s\n", report.Current)
+	}
+	w.printf("path: %s\n", report.Path)
 }
 
 // writeFindText prints the two halves in the order they are worth reading: the durable pages,

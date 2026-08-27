@@ -368,7 +368,7 @@ func TestCommandTableIsTheDocumentedSurface(t *testing.T) {
 	}
 	want := []string{
 		"context", "find", "read", "graph", "list", "validate", "tags",
-		"init", "trust", "sync", "status", "build", "new", "config", "mcp",
+		"init", "trust", "sync", "status", "build", "new", "config", "mcp", "upgrade",
 	}
 	slices.Sort(names)
 	slices.Sort(want)

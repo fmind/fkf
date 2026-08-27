@@ -1,0 +1,15 @@
+{{/* GitHub Pages cannot issue an HTTP redirect, so the root is a no-content client redirect. */}}
+<!doctype html>
+<html lang="{{ .Site.Language.Lang }}">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <meta http-equiv="refresh" content="0; url={{ "docs/" | relURL }}" />
+    <link rel="canonical" href="{{ "docs/" | absURL }}" />
+    <title>Overview – {{ .Site.Title }}</title>
+  </head>
+  <body>
+    <p>Continue to <a href="{{ "docs/" | relURL }}">Overview</a>.</p>
+  </body>
+</html>

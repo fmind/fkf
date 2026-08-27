@@ -18,7 +18,7 @@ A base is one git repository of plain JSON and Markdown. Its committed `fkf.yaml
 
 Root `graph.tsv` and `graph.meta.json` are one rebuildable cache generation. The source of truth is the relation schema stored with collected documents plus authored links, tags, and explicit Markdown `relations:`. `fkf build graph` atomically replaces each file; because two renames cannot be one filesystem operation, readers validate the sidecar digest and fail closed during the brief publication window rather than mix generations.
 
-FKF keeps this plain-file design until measurements justify another storage layer. `mise run benchmark` builds a reproducible synthetic corpus of exactly 100,000 records and 500,000 edges, then reports wall time and peak RSS for find, context, graph build, and navigation. It is an optional observation with no pass/fail threshold and no database claim.
+FKF keeps this plain-file design until measurements justify another storage layer. `mise run benchmark` builds a reproducible synthetic corpus of exactly 100,000 records and 500,000 edges, then reports wall time and maximum RAM for find, context, graph build, and navigation. Maximum RAM is the measured peak resident set size (RSS): the largest amount of physical memory occupied during that run. It is an optional observation with no pass/fail threshold and no database claim.
 
 Every layer is explicitly enabled:
 

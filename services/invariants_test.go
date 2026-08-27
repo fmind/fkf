@@ -67,7 +67,7 @@ First release only.
 }
 
 // TestNoPackageImportsNetHTTP is the strongest form of "no network at read time": there is no
-// HTTP client anywhere in the module, so no code path can grow one by accident.
+// in-process HTTP client anywhere in the module, so a stored read cannot grow one by accident.
 func TestNoPackageImportsNetHTTP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
@@ -98,7 +98,7 @@ func TestNoPackageImportsNetHTTP(t *testing.T) {
 		}
 		for _, imported := range entry.Imports {
 			if imported == "net/http" || strings.HasPrefix(imported, "net/http/") {
-				t.Fatalf("%s imports %s; fkf makes no HTTP request, ever", entry.ImportPath, imported)
+				t.Fatalf("%s imports %s; FKF keeps HTTP clients outside the module", entry.ImportPath, imported)
 			}
 		}
 	}
@@ -232,6 +232,7 @@ func TestDocumentationDistributionContracts(t *testing.T) {
 		}
 	}
 	assertBuiltSiteIdentity(t, site)
+	assertBuiltSiteNavigation(t, site)
 }
 
 func assertBuiltSiteIdentity(t *testing.T, site string) {
@@ -270,6 +271,45 @@ func assertBuiltSiteIdentity(t *testing.T, site string) {
 			t.Errorf("inspect inherited site file %s: %v", inherited, err)
 		}
 	}
+}
+
+func assertBuiltSiteNavigation(t *testing.T, site string) {
+	t.Helper()
+	root := readBuiltHTML(t, site, "index.html")
+	redirect := regexp.MustCompile(`<meta http-equiv="refresh" content="0; url=[^"]*/docs/" ?/?>`)
+	if !redirect.MatchString(root) {
+		t.Error("built site root must redirect to the canonical Overview page at /docs/")
+	}
+	canonical := regexp.MustCompile(`<link rel="canonical" href="[^"]*/docs/" ?/?>`)
+	if !canonical.MatchString(root) {
+		t.Error("built site root must identify /docs/ as its canonical page")
+	}
+	if strings.Contains(root, "Read the docs") {
+		t.Error("built site root still contains the retired documentation splash")
+	}
+
+	overview := readBuiltHTML(t, site, "docs/index.html")
+	navStart := strings.Index(overview, "<nav ")
+	if navStart < 0 {
+		t.Fatal("built Overview page has no navigation element")
+	}
+	navEnd := strings.Index(overview[navStart:], "</nav>")
+	if navEnd < 0 {
+		t.Fatal("built Overview page has an unclosed navigation element")
+	}
+	navigation := overview[navStart : navStart+navEnd]
+	if !strings.Contains(navigation, `href="/docs"`) || !strings.Contains(navigation, `>Overview</span>`) {
+		t.Error("built site navigation must expose Overview as the /docs entry")
+	}
+}
+
+func readBuiltHTML(t *testing.T, site, relative string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(site, filepath.FromSlash(relative)))
+	if err != nil {
+		t.Fatalf("read built page %s: %v", relative, err)
+	}
+	return string(data)
 }
 
 // TestNoLegacyOrMigrationPaths is the "no migration, ever" invariant, checked over IDENTIFIERS

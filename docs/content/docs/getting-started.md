@@ -28,6 +28,14 @@ curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/fmind/fk
 
 Set `FKF_INSTALL_DIR` to an absolute directory to change the destination, or `FKF_VERSION=v1.0.0` to pin a release. You can also download an archive and `checksums.txt` directly from the [latest release](https://github.com/fmind/fkf/releases/latest). Each archive contains the binary, project license, README, and checked-in notices for the linked Go runtime and dependencies.
 
+Once FKF is installed, upgrade the executable that launched it:
+
+```bash
+fkf upgrade
+```
+
+The command uses `curl` only against fixed `github.com` release endpoints, selects the archive for the current Linux or macOS architecture, verifies its published SHA-256 checksum, runs the downloaded binary to confirm its version, and atomically replaces the current executable. It never opens or changes a base. If the executable is not user-writable, upgrade through the mechanism that installed it. To require GitHub's release attestation as well as its checksum, rerun the installer with `FKF_VERIFY_ATTESTATION=1`.
+
 From a clone, the project gate builds the canonical repository artifact at `bin/fkf`:
 
 ```bash
@@ -145,6 +153,8 @@ fkf sync --days 7
 `trust` prints the executable plan before recording its canonical digest. Command, policy, body-bound path, executable path, and `bin/` changes re-arm trust. Comments, YAML order, descriptions, examples, `requires:`, retrieval-only mappings, and the inherited process environment do not.
 
 `--preview` performs one real trusted execution and every decode, projection, cardinality, relation, and completeness check for exactly one source, shows at most three projected records, and writes nothing. Normal sync never collects today. A completed day is complete or absent: failed commands, invalid or oversized output, missing identities or times, cardinality errors, and invalid relation URIs write nothing. Existing documents are skipped unless `--force` is used; a `window: true` source runs once per contiguous missing span instead of crossing an existing day. The graph cache is rebuilt unless `--no-graph` is supplied.
+
+This makes normal sync safe to run repeatedly: existing event documents and still-fresh index snapshots are skipped, due index snapshots are refreshed, and a failed unit remains absent. Rerunning the same command resumes missing collection and retries a failed derived rebuild. Only `--force` deliberately re-collects and atomically replaces existing documents.
 
 After collection:
 

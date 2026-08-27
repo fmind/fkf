@@ -126,6 +126,7 @@ func TestInstallationDocsExposeLatestAndAttestedPaths(t *testing.T) {
 		for _, want := range []string{
 			"github.com/fmind/fkf/cmd/fkf@latest",
 			"FKF_VERIFY_ATTESTATION=1 sh",
+			"fkf upgrade",
 		} {
 			if !strings.Contains(string(content), want) {
 				t.Errorf("%s lacks documented latest install contract %q", path, want)
