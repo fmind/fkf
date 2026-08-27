@@ -40,12 +40,16 @@ func (fetcher *fakeReleaseFetcher) Download(_ context.Context, url, destination 
 
 func TestUpgradeVerifiesAndAtomicallyReplacesTheCurrentExecutable(t *testing.T) {
 	executable, fetcher := upgradeFixture(t, "v1.2.3", false)
+	resolvedExecutable, err := filepath.EvalSymlinks(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	report, err := upgradeWith(t.Context(), executable, "v1.2.2", "linux", "amd64", fetcher)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !report.Updated || report.Previous != "v1.2.2" || report.Current != "v1.2.3" || report.Path != executable {
+	if !report.Updated || report.Previous != "v1.2.2" || report.Current != "v1.2.3" || report.Path != resolvedExecutable {
 		t.Fatalf("report = %+v", report)
 	}
 	wantDownloads := []string{
