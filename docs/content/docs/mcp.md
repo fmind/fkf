@@ -1,6 +1,6 @@
 ---
 title: MCP server
-weight: 7
+weight: 8
 description: "Serve one fkf base to coding agents through a read-only stdio MCP server with a fixed, inspectable boundary."
 ---
 

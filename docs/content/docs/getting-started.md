@@ -20,6 +20,8 @@ Go writes to `GOBIN` when set, otherwise to `$(go env GOPATH)/bin`. Without Go, 
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/fmind/fkf/main/install.sh | sh
 ```
 
+The installer selects the published Linux or macOS archive for the current architecture, verifies its checksum, validates the binary, and atomically replaces the destination. An existing installation remains intact if staging fails.
+
 For cryptographic release-provenance verification, authenticate the GitHub CLI and require the published attestation before installation:
 
 ```bash
@@ -185,6 +187,7 @@ Keep the base's `AGENTS.md` minimal and specific to that base. FKF instructions 
 ## Next
 
 - [The base and fkf.yaml](../base/) — configuration, schema, discovery, and trust inputs.
+- [Configuration schema](../schema/) — semantic field declarations, provider mappings, and editor validation.
 - [Sources are commands](../sources/) — command composition, requirements, cardinality, storage, and bodies.
 - [URIs and the graph](../uris-graph/) — open entity schemes and transcription-only edges.
 - [Command reference](../commands/) — the compact CLI surface.

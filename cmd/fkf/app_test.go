@@ -659,6 +659,14 @@ func TestVersionAndHelp(t *testing.T) {
 			t.Fatalf("--help omits the %q group; the grouping is what makes the surface readable", group)
 		}
 	}
+	for _, guidance := range []string{
+		"fkf init ~/brain --demo 30", "fkf status", "fkf sync --days 7",
+		"fkf context", "fkf read", "fkf <command> --help",
+	} {
+		if !strings.Contains(got.stdout, guidance) {
+			t.Fatalf("--help omits first-use guidance %q", guidance)
+		}
+	}
 	// Grouping by purpose only works if the commands that write or execute still say so.
 	for _, mark := range []string{markWrite, markRun} {
 		if !strings.Contains(got.stdout, strings.TrimSpace(mark)) {
@@ -670,25 +678,6 @@ func TestVersionAndHelp(t *testing.T) {
 		if !strings.Contains(initHelp.stdout, contract) {
 			t.Fatalf("init help omits %q from its refresh/trust contract: %s", contract, initHelp.stdout)
 		}
-	}
-}
-
-func TestHelpNamesTheCurrentSubcommandVocabulary(t *testing.T) {
-	isolate(t)
-	got := invoke(t, "--help")
-	if got.code != ExitSuccess {
-		t.Fatalf("--help exited %d: %s", got.code, got.stderr)
-	}
-	for _, entry := range []string{
-		"e events", "i index", "t tasks", "p projects", "w wiki", "n nodes",
-		"l learned", "g graph", "s serve", "i instructions", "s schema", "h helpers", "t task", "p project",
-	} {
-		if !strings.Contains(got.stdout, entry) {
-			t.Fatalf("--help omits current subcommand vocabulary entry %q", entry)
-		}
-	}
-	if strings.Contains(got.stdout, "r read, s search") {
-		t.Fatalf("--help still advertises the retired subcommand vocabulary: %s", got.stdout)
 	}
 }
 

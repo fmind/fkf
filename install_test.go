@@ -14,6 +14,36 @@ import (
 
 const releaseArchive = "fkf_v1.0.0_linux_amd64.tar.gz"
 
+func TestInstallerSelectsEveryPublishedPlatformArchive(t *testing.T) {
+	tests := []struct {
+		name, system, machine, releaseOS, releaseArch string
+	}{
+		{name: "Linux amd64", system: "Linux", machine: "x86_64", releaseOS: "linux", releaseArch: "amd64"},
+		{name: "Linux arm64", system: "Linux", machine: "aarch64", releaseOS: "linux", releaseArch: "arm64"},
+		{name: "macOS amd64", system: "Darwin", machine: "x86_64", releaseOS: "darwin", releaseArch: "amd64"},
+		{name: "macOS arm64", system: "Darwin", machine: "arm64", releaseOS: "darwin", releaseArch: "arm64"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newInstallerFixtureForPlatform(
+				t, false, test.system, test.machine, test.releaseOS, test.releaseArch,
+			)
+			output, err := fixture.run()
+			if err != nil {
+				t.Fatalf("install.sh failed: %v\n%s", err, output)
+			}
+			log, err := os.ReadFile(fixture.curlLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "https://github.com/fmind/fkf/releases/download/v1.0.0/" + fixture.archiveName
+			if !strings.Contains(string(log), want) {
+				t.Fatalf("curl log = %q, want %q", log, want)
+			}
+		})
+	}
+}
+
 func TestInstallerDownloadsLatestVerifiesAndInstalls(t *testing.T) {
 	fixture := newInstallerFixture(t, false)
 	output, err := fixture.run()
@@ -77,6 +107,31 @@ func TestInstallerRefusesAnArchiveWithTheWrongVersion(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(fixture.installDir, "fkf")); !os.IsNotExist(statErr) {
 		t.Fatalf("version mismatch installed a binary: %v", statErr)
+	}
+}
+
+func TestInstallerPreservesAnExistingBinaryWhenStagingFails(t *testing.T) {
+	fixture := newInstallerFixture(t, false)
+	if err := os.MkdirAll(fixture.installDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	installed := filepath.Join(fixture.installDir, "fkf")
+	const previous = "#!/bin/sh\nprintf 'fkf version v0.9.0\\n'\n"
+	if err := os.WriteFile(installed, []byte(previous), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture.env = append(fixture.env, "FKF_TEST_INSTALL_FAIL=1")
+
+	output, err := fixture.run()
+	if err == nil {
+		t.Fatalf("install.sh accepted a failed staging copy:\n%s", output)
+	}
+	current, readErr := os.ReadFile(installed)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(current) != previous {
+		t.Fatalf("failed install replaced the existing binary with %q", current)
 	}
 }
 
@@ -147,23 +202,31 @@ func TestInstallerArchiveNameMatchesGoReleaser(t *testing.T) {
 }
 
 type installerFixture struct {
-	root       string
-	installDir string
-	curlLog    string
-	ghLog      string
-	archive    string
-	checksums  string
-	env        []string
+	root        string
+	installDir  string
+	curlLog     string
+	ghLog       string
+	archive     string
+	archiveName string
+	checksums   string
+	env         []string
 }
 
 func newInstallerFixture(t *testing.T, corruptChecksum bool) installerFixture {
+	return newInstallerFixtureForPlatform(t, corruptChecksum, "Linux", "x86_64", "linux", "amd64")
+}
+
+func newInstallerFixtureForPlatform(
+	t *testing.T, corruptChecksum bool, system, machine, releaseOS, releaseArch string,
+) installerFixture {
 	t.Helper()
 	root, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
 	temporary := t.TempDir()
-	archive := filepath.Join(temporary, releaseArchive)
+	archiveName := fmt.Sprintf("fkf_v1.0.0_%s_%s.tar.gz", releaseOS, releaseArch)
+	archive := filepath.Join(temporary, archiveName)
 	writeReleaseArchive(t, archive, "v1.0.0")
 	data, err := os.ReadFile(archive)
 	if err != nil {
@@ -174,7 +237,7 @@ func newInstallerFixture(t *testing.T, corruptChecksum bool) installerFixture {
 		digest = strings.Repeat("0", sha256.Size*2)
 	}
 	checksums := filepath.Join(temporary, "checksums.txt")
-	if err := os.WriteFile(checksums, []byte(digest+"  "+releaseArchive+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(checksums, []byte(digest+"  "+archiveName+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -184,8 +247,8 @@ func newInstallerFixture(t *testing.T, corruptChecksum bool) installerFixture {
 	}
 	writeExecutable(t, filepath.Join(fakeBin, "uname"), `#!/bin/sh
 case "${1:-}" in
-  -s) printf '%s\n' Linux ;;
-  -m) printf '%s\n' x86_64 ;;
+  -s) printf '%s\n' "$FKF_TEST_UNAME_SYSTEM" ;;
+  -m) printf '%s\n' "$FKF_TEST_UNAME_MACHINE" ;;
   *) exit 2 ;;
 esac
 `)
@@ -206,7 +269,7 @@ case "$url" in
   https://github.com/fmind/fkf/releases/latest)
     printf '%s' https://github.com/fmind/fkf/releases/tag/v1.0.0
     ;;
-  */fkf_v1.0.0_linux_amd64.tar.gz)
+  */fkf_v1.0.0_*.tar.gz)
     cp "$FKF_TEST_ARCHIVE" "$out"
     ;;
   */checksums.txt)
@@ -214,6 +277,20 @@ case "$url" in
     ;;
   *) exit 22 ;;
 esac
+`)
+	realInstall, err := exec.LookPath("install")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeExecutable(t, filepath.Join(fakeBin, "install"), `#!/bin/sh
+set -eu
+if [ "${FKF_TEST_INSTALL_FAIL:-0}" = 1 ]; then
+  destination=
+  for argument do destination=$argument; done
+  printf '%s\n' damaged > "$destination"
+  exit 1
+fi
+exec "$FKF_TEST_REAL_INSTALL" "$@"
 `)
 	writeExecutable(t, filepath.Join(fakeBin, "gh"), `#!/bin/sh
 set -eu
@@ -232,10 +309,13 @@ printf '%s\n' "$*" >> "$FKF_TEST_GH_LOG"
 		"FKF_TEST_CHECKSUMS="+checksums,
 		"FKF_TEST_CURL_LOG="+curlLog,
 		"FKF_TEST_GH_LOG="+ghLog,
+		"FKF_TEST_UNAME_SYSTEM="+system,
+		"FKF_TEST_UNAME_MACHINE="+machine,
+		"FKF_TEST_REAL_INSTALL="+realInstall,
 	)
 	return installerFixture{
 		root: root, installDir: installDir, curlLog: curlLog, ghLog: ghLog,
-		archive: archive, checksums: checksums, env: env,
+		archive: archive, archiveName: archiveName, checksums: checksums, env: env,
 	}
 }
 
@@ -246,7 +326,7 @@ func (fixture installerFixture) writeChecksum(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := fmt.Sprintf("%x", sha256.Sum256(data))
-	if err := os.WriteFile(fixture.checksums, []byte(digest+"  "+releaseArchive+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(fixture.checksums, []byte(digest+"  "+fixture.archiveName+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

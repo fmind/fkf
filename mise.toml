@@ -120,8 +120,9 @@ run = "golangci-lint run ./..."
 [tasks."check:outdated"]
 description = "Report drift in the pinned toolchain (needs the network, never fails)"
 # The pinned tools belong to no Dependabot ecosystem, so this is the only thing that looks at
-# them. Non-blocking on purpose: a stale pin is a decision to make, not a static check failure.
-run = "mise outdated || true"
+# them. --local excludes unrelated user-level pins. Non-blocking on purpose: a stale pin is a
+# decision to make, not a static check failure.
+run = "mise outdated --local || true"
 
 [tasks."check:scan"]
 description = "Scan the repository for vulnerabilities, secrets, licenses, and misconfigurations"

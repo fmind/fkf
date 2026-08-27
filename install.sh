@@ -34,7 +34,7 @@ validate_version() {
 	done
 }
 
-for command in curl tar awk install mkdir mktemp rm uname; do
+for command in curl tar awk install mkdir mktemp mv rm uname; do
 	need "$command"
 done
 case "$verify_attestation" in
@@ -76,7 +76,11 @@ case "$temporary" in
 "$temporary_root"/fkf-install.*) ;;
 *) fail "mktemp returned an unexpected path" ;;
 esac
+staged_install=
 cleanup() {
+	if [ -n "$staged_install" ]; then
+		rm -f "$staged_install"
+	fi
 	rm -rf "$temporary"
 }
 trap cleanup EXIT HUP INT TERM
@@ -114,7 +118,14 @@ tar -xzf "$temporary/$archive" -C "$temporary" fkf
 observed_version=$("$temporary/fkf" --version)
 [ "$observed_version" = "fkf version $version" ] || fail "downloaded binary does not report version $version"
 mkdir -p "$install_dir"
-install -m 0755 "$temporary/fkf" "$install_dir/fkf"
+staged_install=$(mktemp "$install_dir/.fkf-install.XXXXXX")
+case "$staged_install" in
+"$install_dir"/.fkf-install.*) ;;
+*) fail "mktemp returned an unexpected install path" ;;
+esac
+install -m 0755 "$temporary/fkf" "$staged_install"
+mv -f "$staged_install" "$install_dir/fkf"
+staged_install=
 
 printf 'Installed %s to %s/fkf\n' "$version" "$install_dir"
 case ":${PATH:-}:" in

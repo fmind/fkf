@@ -218,6 +218,49 @@ func TestSyncTextReportsPerUnit(t *testing.T) {
 	}
 }
 
+func TestSyncFailureNamesTheSubstitutedCommandWithoutProviderStderr(t *testing.T) {
+	isolate(t)
+	const privateStderr = "synthetic-private-provider-response"
+	t.Setenv("FKF_TEST_PROVIDER_STDERR", privateStderr)
+	root := filepath.Join(t.TempDir(), "brain")
+	if got := invoke(t, "init", root, "--preset", "minimal"); got.code != ExitSuccess {
+		t.Fatalf("init exited %d: %s%s", got.code, got.stdout, got.stderr)
+	}
+	config := filepath.Join(root, "fkf.yaml")
+	data, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := `sources:
+  synthetic:
+    enabled: true
+    layer: events
+    run: [sh, -c, "printf '%s' \"$FKF_TEST_PROVIDER_STDERR\" >&2; exit 3"]
+    fields:
+      id: .id
+      time: .time
+`
+	if err := os.WriteFile(config, []byte(strings.Replace(string(data), "sources: {}", source, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := invoke(t, "--base", root, "trust"); got.code != ExitSuccess {
+		t.Fatalf("trust exited %d: %s%s", got.code, got.stdout, got.stderr)
+	}
+
+	got := invoke(t, "--format", "text", "--base", root, "sync", "--days", "1")
+	if got.code != ExitPartial {
+		t.Fatalf("sync exit = %d, want %d: %s%s", got.code, ExitPartial, got.stdout, got.stderr)
+	}
+	if strings.Contains(got.stdout+got.stderr, privateStderr) {
+		t.Fatalf("sync diagnostic leaked provider stderr: %s%s", got.stdout, got.stderr)
+	}
+	for _, want := range []string{"synthetic", "command: sh -c", "FKF_TEST_PROVIDER_STDERR", "exit 3"} {
+		if !strings.Contains(got.stderr, want) {
+			t.Fatalf("sync stderr = %q, want the command diagnostic %q", got.stderr, want)
+		}
+	}
+}
+
 // TestStatusJSONLStreamsFindings is the jsonl half of the status command: --format
 // jsonl streams the collection a result is really about, findings here, one compact object per
 // line rather than the whole report.

@@ -1,6 +1,6 @@
 ---
 title: Agent harnesses
-weight: 8
+weight: 9
 description: "Connect one FKF base to an agent with read-only MCP or a small, tested context hook."
 ---
 
@@ -31,7 +31,7 @@ The adapter table is the complete supported hook vocabulary:
 | `cline`       | `contextModification` JSON | Cline `TaskStart`                             |
 | `devin`       | `hookSpecificOutput` JSON  | Provisional Devin Local compatibility adapter |
 
-`devin` has no stable public hook contract and is intentionally not presented as a setup recipe. Treat it as experimental and retest it against the installed product before use.
+`devin` has no stable public hook contract. Its peer section below is intentionally a warning rather than a setup recipe; retest it against the installed product before use.
 
 ## Read-only MCP
 
@@ -77,14 +77,14 @@ The following recipes are backed by current public vendor documentation and FKF'
 
 ### Claude Code
 
-Claude Code documents `SessionStart`, its `startup|resume|clear|compact` matcher, and plain stdout as added context in the [hooks reference](https://code.claude.com/docs/en/hooks).
+Claude Code documents `SessionStart`, its `startup|resume|clear|compact|fork` sources, and plain stdout as added context in the [hooks reference](https://code.claude.com/docs/en/hooks).
 
 ```json
 {
   "hooks": {
     "SessionStart": [
       {
-        "matcher": "startup|resume|clear|compact",
+        "matcher": "startup|resume|clear|compact|fork",
         "hooks": [
           {
             "type": "command",
@@ -118,18 +118,35 @@ statusMessage = "Loading FKF context"
 
 Add it to `~/.codex/config.toml` or a trusted project's `.codex/config.toml`, then review the exact hook through `/hooks`. Codex reads `AGENTS.md` and `.agents/skills/` natively.
 
-### Other documented adapters
+### Gemini CLI
 
-| Harness     | Vendor configuration location or route | FKF command                                        | Contract                                                                        |
-| ----------- | -------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------- |
-| Gemini CLI  | user or project `settings.json` hooks  | `/absolute/path/to/brain/bin/fkf-hook gemini`      | [Hooks reference](https://geminicli.com/docs/hooks/reference/)                  |
-| Copilot CLI | `~/.copilot/hooks/*.json`              | `/absolute/path/to/brain/bin/fkf-hook copilot`     | [Hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference) |
-| Kiro        | `.kiro/hooks/*.json`                   | `/absolute/path/to/brain/bin/fkf-hook kiro`        | [Hooks](https://kiro.dev/docs/hooks/)                                           |
-| Cursor      | user or project `hooks.json`           | `/absolute/path/to/brain/bin/fkf-hook cursor`      | [Hooks](https://prod.cursor.com/docs/hooks)                                     |
-| Antigravity | user or project hooks JSON             | `/absolute/path/to/brain/bin/fkf-hook antigravity` | [Hooks](https://www.antigravity.google/docs/hooks/)                             |
-| Cline       | `TaskStart` executable hook            | `exec /absolute/path/to/brain/bin/fkf-hook cline`  | [Hooks](https://docs.cline.bot/customization/hooks)                             |
+Add `/absolute/path/to/brain/bin/fkf-hook gemini` as a `SessionStart` command in the user or project `settings.json`. FKF returns Gemini's `hookSpecificOutput.additionalContext` JSON. The exact hook object and millisecond timeout are defined in the [Gemini CLI hooks reference](https://geminicli.com/docs/hooks/reference/).
 
-Only the adapter bytes are repository-tested. Follow the linked vendor page for the surrounding JSON shape, trust prompt, timeout unit, and supported scope.
+### Copilot CLI
+
+Add `/absolute/path/to/brain/bin/fkf-hook copilot` to a `sessionStart` command entry under `~/.copilot/hooks/*.json`, or another scope documented by GitHub. FKF returns `additionalContext` JSON. See the [Copilot hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference) for the versioned file shape and scope order.
+
+### Kiro
+
+Create a version `v1` hook under `.kiro/hooks/*.json` with trigger `SessionStart` and command `/absolute/path/to/brain/bin/fkf-hook kiro`. Kiro adds successful command stdout to agent context. See [Kiro hooks](https://kiro.dev/docs/hooks/) for the current standalone file schema.
+
+### Cursor
+
+Register `/absolute/path/to/brain/bin/fkf-hook cursor` for `sessionStart` in the user or project `hooks.json`. FKF returns `additional_context` JSON. Cursor treats this event as fire-and-forget, so test the installed client after changing the hook. See the [Cursor hooks reference](https://prod.cursor.com/docs/hooks).
+
+### Antigravity
+
+Register `/absolute/path/to/brain/bin/fkf-hook antigravity` as a `PreInvocation` command in the workspace `.agents/hooks.json` or global `~/.gemini/config/hooks.json`. FKF returns one `injectSteps` ephemeral message only for invocation zero, so later model calls do not repeatedly spend the session-start budget. See the [Antigravity hooks reference](https://www.antigravity.google/docs/hooks/).
+
+### Cline
+
+Create the executable `TaskStart` hook at `.clinerules/hooks/TaskStart` or the user-level location and have it execute `/absolute/path/to/brain/bin/fkf-hook cline`. FKF returns `cancel: false` with `contextModification`. See the [Cline hooks reference](https://docs.cline.bot/customization/hooks) for enablement and platform-specific executable rules.
+
+### Devin Local (experimental)
+
+The `devin` adapter emits provisional `hookSpecificOutput` JSON, but Devin has no stable public hook contract that FKF can cite or turn into a reliable setup recipe. Do not deploy it from this page; inspect the installed product and retest the exact bytes first.
+
+Only the adapter bytes are repository-tested. Follow each linked vendor page for the surrounding configuration, trust prompt, timeout unit, and supported scope.
 
 ## Collected local metadata
 

@@ -8,7 +8,8 @@ Only the latest published v1 minor release receives security fixes.
 
 | Version          | Supported |
 | ---------------- | --------- |
-| 1.0.x            | Yes       |
+| 1.1.x            | Yes       |
+| 1.0.x            | No        |
 | Earlier versions | No        |
 
 ## Report a vulnerability

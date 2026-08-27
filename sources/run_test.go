@@ -1,6 +1,8 @@
 package sources_test
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,48 @@ import (
 	"github.com/fmind/fkf/core"
 	"github.com/fmind/fkf/sources"
 )
+
+func TestExecRunnerLogsDeclaredCommandContextWithoutProviderStderr(t *testing.T) {
+	const privateStderr = "synthetic-provider-private-stderr"
+	t.Setenv("FKF_SYNTHETIC_PRIVATE_STDERR", privateStderr)
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skipf("sh is not installed: %v", err)
+	}
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	window := sources.Window{
+		Date: "2026-08-01", Start: "2026-07-31T22:00:00Z", End: "2026-08-01T22:00:00Z",
+	}
+	source := &core.Source{
+		Name: "github-events", Layer: core.LayerEvents,
+		Run: []string{"sh", "-c", `printf '%s' "$FKF_SYNTHETIC_PRIVATE_STDERR" >&2; exit 3`},
+	}
+	command := sources.BuildRunCommand(source, sources.Environment{
+		Root: t.TempDir(), Env: map[string]string{"PATH": filepath.Dir(shell)},
+	}, window, time.Second)
+	if _, err := sources.ExecRunner().Run(t.Context(), command); err == nil {
+		t.Fatal("ExecRunner.Run() succeeded, want the declared command to fail")
+	}
+
+	diagnostic := logs.String()
+	if strings.Contains(diagnostic, privateStderr) {
+		t.Fatalf("command log leaked provider stderr: %q", diagnostic)
+	}
+	for _, want := range []string{
+		`source=github-events`, `date=2026-08-01`,
+		`window_start=2026-07-31T22:00:00Z`, `window_end=2026-08-01T22:00:00Z`,
+		`command=`, `sh -c`, `cwd=/`, `timeout=1s`,
+		`status=exit`, `diagnostic="command exited with status 3"`,
+	} {
+		if !strings.Contains(diagnostic, want) {
+			t.Fatalf("command log = %q, want the safe field %q", diagnostic, want)
+		}
+	}
+}
 
 func TestNewEnvironmentExcludesInheritedPathsInsideTheBase(t *testing.T) {
 	shell, err := exec.LookPath("sh")

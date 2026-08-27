@@ -301,6 +301,23 @@ func assertBuiltSiteNavigation(t *testing.T, site string) {
 	if !strings.Contains(navigation, `href="/docs"`) || !strings.Contains(navigation, `>Overview</span>`) {
 		t.Error("built site navigation must expose Overview as the /docs entry")
 	}
+
+	gettingStarted := readBuiltHTML(t, site, "docs/getting-started/index.html")
+	desktopMarker := `<ul class="hx:flex hx:flex-col hx:gap-1 hx:max-md:hidden">`
+	desktopStart := strings.Index(gettingStarted, desktopMarker)
+	if desktopStart < 0 {
+		t.Fatal("built Getting started page has no desktop sidebar list")
+	}
+	desktopEnd := strings.Index(gettingStarted[desktopStart:], "</aside>")
+	if desktopEnd < 0 {
+		t.Fatal("built Getting started page has an unclosed desktop sidebar")
+	}
+	desktop := gettingStarted[desktopStart : desktopStart+desktopEnd]
+	overviewPosition := strings.Index(desktop, `>Overview</span>`)
+	gettingStartedPosition := strings.Index(desktop, `>Getting started</span>`)
+	if overviewPosition < 0 || gettingStartedPosition < 0 || overviewPosition >= gettingStartedPosition {
+		t.Error("desktop sidebar must expose Overview above Getting started")
+	}
 }
 
 func readBuiltHTML(t *testing.T, site, relative string) string {

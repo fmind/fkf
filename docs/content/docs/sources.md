@@ -1,6 +1,6 @@
 ---
 title: Sources are commands
-weight: 3
+weight: 4
 description: "Compose credential-free collectors from commands, shared semantic fields, and complete self-describing documents."
 ---
 
@@ -187,6 +187,8 @@ This executes the record source's current trusted `body:` argv, prints the resul
 ## Retry, pacing, and trust
 
 `retry.attempts` includes the first call and is bounded. More than one attempt requires `retry.on`, whose entries are `exit:<n>` or stderr substrings. Cancellation and timeout are never retried. Backoff grows linearly. `min_interval` spaces every invocation independently of retry.
+
+When a declared `run:` exits unsuccessfully, the diagnostic names the source, date or window, safely rendered argv, neutral working directory, timeout, and process status. The substituted command is also repeated in the failed unit summary. Provider stderr remains private: it may contain response bodies, account identifiers, or credentials, so FKF uses it only as an in-memory retry oracle. A `body:` argv is never logged because it may contain a value copied from collected evidence.
 
 `fkf trust` prints the commands and their execution policy. Its canonical digest changes only when execution changes: command, body-bound path, enabled state, timeout, retry, pacing, extra path, or `bin/` content and mode. Editing `requires:`, a description, example, YAML comment, retrieval-only mapping, or the inherited process environment does not demand approval for an unchanged executable plan.
 

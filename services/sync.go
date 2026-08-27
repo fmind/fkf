@@ -645,7 +645,11 @@ func (r *SyncReport) FailureSummary() string {
 		if unit.Date != "" {
 			label += " " + unit.Date
 		}
-		lines = append(lines, "  "+label+": "+unit.Error)
+		line := "  " + label + ": " + unit.Error
+		if unit.Command != "" {
+			line += "\n    command: " + unit.Command
+		}
+		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
 }

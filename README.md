@@ -58,6 +58,8 @@ Go writes the binary to `GOBIN` when set, otherwise to `$(go env GOPATH)/bin`. W
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/fmind/fkf/main/install.sh | sh
 ```
 
+The installer selects the published Linux or macOS archive for the current architecture, verifies its checksum, validates the binary, and atomically replaces the destination. An existing installation remains intact if staging fails.
+
 For cryptographic release-provenance verification, authenticate the GitHub CLI and require the published attestation before installation:
 
 ```bash
@@ -150,6 +152,8 @@ sources:
       repository: .repository_uri
     body: [gh, pr, view, "{{id}}", --repo, "{{repo}}", --json, "body,comments"]
 ```
+
+See the [configuration schema](https://fmind.github.io/fkf/docs/schema/) for cardinality, relation fields, source mappings, and editor integration.
 
 Field names describe roles such as `participant`, `reviewer`, or `repository`; URI values describe identity namespaces such as `person:email/...`, `actor:github.com/...`, or `repo:github.com/...`. A relation field must already project canonical URIs. FKF validates and stores those values but does not infer identities or relationships.
 

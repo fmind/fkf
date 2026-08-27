@@ -52,25 +52,9 @@ fkf: 1
 name: brain
 
 schema:
-  id:
-    description: Stable record identity.
-    cardinality: one
-  time:
-    description: Record timestamp when the provider exposes one.
-    cardinality: optional
-  title:
-    description: Human-readable record label.
-    cardinality: optional
-  repository:
-    description: Repository associated with the record.
-    cardinality: optional
-    relation: true
-    examples: [repo:github.com/fmind/fkf]
-  participant:
-    description: Person or account involved in the record.
-    cardinality: many
-    relation: true
-    examples: [person:email/user@example.test, actor:github.com/login]
+  id: { description: Stable record identity., cardinality: one }
+  time: { description: Event timestamp., cardinality: one }
+  repository: { description: Related repository., cardinality: optional, relation: true }
 
 layers:
   events: true
@@ -86,12 +70,7 @@ sources:
     requires: [git-log-json, git]
     window: true
     run: [git-log-json, "{{start}}", "{{end}}", "{{home}}"]
-    fields:
-      id: .uid
-      time: .time
-      title: .message
-      repository: .repository_uri
-      participant: [".participant_uris[]"]
+    fields: { id: .uid, time: .time, repository: .repository_uri }
 
 sync:
   days: 30
@@ -100,19 +79,7 @@ sync:
   concurrency: 4
 ```
 
-The root `schema:` is a compact semantic dictionary shared by every source and authored page. Each declaration requires a description and cardinality:
-
-| Cardinality | Accepted values per record |
-| ----------- | -------------------------- |
-| `one`       | exactly one scalar         |
-| `optional`  | zero or one scalar         |
-| `many`      | zero or more scalars       |
-
-`relation: true` means each value is an FKF URI and becomes an edge. `examples` document intent but do not validate or normalize provider values. The field name describes a role such as `participant`, `author`, or `reviewer`; the URI value describes the identity namespace, such as `person:email/...` or `actor:github.com/...`. FKF does not merge them.
-
-`id` is required and must be `one`. Event sources also map `time`; `time`, `title`, and `url` are scalar presentation fields and therefore use `one` or `optional`. All other names are base-defined.
-
-The JSON Schema published at `fkf config schema` and [`fkf.schema.json`](https://fmind.github.io/fkf/fkf.schema.json) is generated from the loader. Unknown keys, unknown field references, missing descriptions, invalid cardinality, malformed placeholders, multiple YAML documents, and enabled sources targeting disabled layers fail configuration loading.
+Root `schema:` is the semantic dictionary shared by every source. The dedicated [Configuration schema](../schema/) guide defines cardinality and relation fields, explains source mappings, and shows how to bind an editor to the generated [`fkf.schema.json`](https://fmind.github.io/fkf/fkf.schema.json). `fkf config schema` prints the same artifact without requiring a base.
 
 ## Machine-local overlay
 

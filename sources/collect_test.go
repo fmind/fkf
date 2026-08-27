@@ -555,6 +555,9 @@ func TestFetchBodySubstitutesIntoArgvAndNeverAShell(t *testing.T) {
 		t.Fatalf("body command boundary = dir %q, root %q; want neutral cwd and protected base %q",
 			command.Dir, command.ForbiddenRoot, environment.Root)
 	}
+	if command.Source != "" {
+		t.Fatalf("body command source = %q; collected argv values must stay out of run diagnostics", command.Source)
+	}
 }
 
 func TestFetchBodyKeepsStaticPlaceholdersAheadOfSameNamedFields(t *testing.T) {

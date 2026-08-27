@@ -40,9 +40,32 @@ type boundedBuffer struct {
 
 type commandEnvironmentKey struct{}
 
+type declaredCommandDiagnosticKey struct{}
+
+// DeclaredCommandDiagnostic is the safe context attached only to a source's run: command.
+// Body commands are deliberately excluded because their argv may contain a value copied from
+// collected provider data. Values maps are also excluded because provider selectors and
+// credentials belong in the environment, never in a diagnostic.
+type DeclaredCommandDiagnostic struct {
+	Source      string
+	Date        string
+	WindowStart string
+	WindowEnd   string
+	Command     string
+}
+
 type commandEnvironment struct {
 	values        map[string]string
 	forbiddenRoot string
+}
+
+// WithDeclaredCommandDiagnostic binds the base-authored command context that RunCLIBounded may
+// safely log on failure. The display is diagnostic-only; execution still receives the original
+// argv and never reparses it.
+func WithDeclaredCommandDiagnostic(
+	ctx context.Context, diagnostic DeclaredCommandDiagnostic,
+) context.Context {
+	return context.WithValue(ctx, declaredCommandDiagnosticKey{}, diagnostic)
 }
 
 // WithCommandEnvironment binds explicit immutable subprocess configuration to one call
@@ -248,7 +271,22 @@ func RunCLIBounded(ctx context.Context, cmd []string, cwd, stdin string, timeout
 			return "", fmt.Errorf("command timed out: %w", contextErr)
 		}
 		failure := newCommandFailure(err, stderrBuf.String())
-		slog.Error("CLI command failed", "status", failure.StatusClass(), "diagnostic", failure.Diagnostic())
+		attributes := make([]any, 0, 16)
+		if diagnostic, found := ctx.Value(declaredCommandDiagnosticKey{}).(DeclaredCommandDiagnostic); found {
+			attributes = append(attributes, "source", diagnostic.Source)
+			if diagnostic.Date != "" {
+				attributes = append(attributes, "date", diagnostic.Date)
+			}
+			if diagnostic.WindowStart != "" {
+				attributes = append(attributes,
+					"window_start", diagnostic.WindowStart, "window_end", diagnostic.WindowEnd)
+			}
+			attributes = append(attributes,
+				"command", diagnostic.Command, "cwd", cwd, "timeout", timeout)
+		}
+		attributes = append(attributes,
+			"status", failure.StatusClass(), "diagnostic", failure.Diagnostic())
+		slog.ErrorContext(ctx, "CLI command failed", attributes...)
 		return "", failure
 	}
 

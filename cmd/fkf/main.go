@@ -71,27 +71,16 @@ func newApp(stdout, stderr io.Writer) *cli.Command {
 		Usage: "Fmind Knowledge Framework — a local, offline record of your work, for your agent.",
 		Description: "A base is one git repository of plain JSON and Markdown, addressed by relative URIs.\n" +
 			"\n" +
-			"  fkf init ~/brain --demo 30        a base you can explore before connecting anything\n" +
-			"  fkf sync --days 7                 collect the completed days that are missing\n" +
-			"  fkf status                        base overview, collector status, and repository health\n" +
-			"  fkf find retrieval                every match, in every layer\n" +
-			"  fkf context \"FK-412 retrieval\"    the best few under a token budget, with a receipt\n" +
-			"  fkf read wiki/retrieval.md        open exactly one URI\n" +
-			"  fkf graph topic:retrieval --in    what points at one entity\n" +
-			"  fkf list wiki                     list pages in a layer\n" +
-			"  fkf validate                      check Markdown pages and links\n" +
-			"  fkf build                         rebuild derived caches (graph and wiki index)\n" +
-			"  fkf new task my-task              scaffold a new task trace\n" +
-			"  fkf upgrade                       install the latest verified release\n" +
+			"  fkf init ~/brain --demo 30       create a base you can explore safely\n" +
+			"  fkf status                       inspect an existing base and its collectors\n" +
+			"  fkf sync --days 7                collect completed days that are missing\n" +
+			"  fkf context \"FK-412 retrieval\"   select the best evidence under a budget\n" +
+			"  fkf read wiki/retrieval.md       open exactly one URI\n" +
 			"\n" +
 			"find and context are the two halves of retrieval: find is exhaustive, context fits a\n" +
 			"budget. read opens one thing, graph says what it connects to.\n" +
 			"\n" +
-			"One-letter aliases are the command's own first letter; where two commands want the\n" +
-			"same one it goes to the one you type daily, so init, trust, status, and config\n" +
-			"are typed in full. Subcommands share one vocabulary: e events, i index, t tasks,\n" +
-			"p projects, w wiki, n nodes, l learned, g graph, s serve, i instructions,\n" +
-			"s schema, h helpers, t task, p project.\n" +
+			"Run `fkf <command> --help` for that command's arguments, examples, and safety boundary.\n" +
 			"\n" +
 			"Exit codes are stable: 0 success, 1 partial or operational failure, 2 invalid\n" +
 			"configuration or usage, 3 an untrusted base, 130 cancellation.",

@@ -285,6 +285,9 @@ func TestSyncNeverSerializesProviderStderr(t *testing.T) {
 			t.Fatalf("%s = %q, want the safe failure class", name, diagnostic)
 		}
 	}
+	if summary := report.FailureSummary(); !strings.Contains(summary, "command: cli --since") {
+		t.Fatalf("summary = %q, want the failed command and its substituted parameters", summary)
+	}
 }
 
 func TestSyncRebuildsTheDerivedFiles(t *testing.T) {

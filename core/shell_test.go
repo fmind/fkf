@@ -216,8 +216,8 @@ func TestRunCLIStdinFeedsTheDocument(t *testing.T) {
 
 // TestRunCLIFailureKeepsProviderStderrPrivate pins the provider boundary: stderr is useful for
 // a declared retry decision, but it is provider data and must never become a terminal message,
-// structured log, or serialized error. The exit class is enough for an operator; the source
-// wrapper above this layer says which collector failed.
+// structured log, or serialized error. This core boundary exposes only the exit class; the
+// source runner may attach the separately reviewed run: context without exposing stderr.
 func TestRunCLIFailureKeepsProviderStderrPrivate(t *testing.T) {
 	const privateStderr = "synthetic-provider-private-stderr"
 	t.Setenv("FKF_SYNTHETIC_PRIVATE_STDERR", privateStderr)

@@ -17,6 +17,7 @@ It is four things and nothing else:
 
 - [Getting started](getting-started/) — install FKF, generate a demo base, then collect your first real day.
 - [The base and fkf.yaml](base/) — understand the five layers, discovery, overrides, defaults, and trust inputs.
+- [Configuration schema](schema/) — define shared field meanings and bind an editor to the generated JSON Schema.
 - [Sources are commands](sources/) — compose direct argv and helpers, validate previews, and control body fetching.
 - [URIs and the graph](uris-graph/) — use one address grammar and follow only declared relationships.
 - [Context and receipts](context/) — see the closed ranking arithmetic, token budget, and reproducibility receipt.

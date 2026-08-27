@@ -37,6 +37,8 @@ type Command struct {
 	Stdin         string            `json:"-"`
 	Env           map[string]string `json:"env,omitempty"`
 	Timeout       time.Duration     `json:"timeout"`
+	Source        string            `json:"-"`
+	Window        Window            `json:"-"`
 }
 
 // Display renders argv as a copyable diagnostic. Execution never reparses this string.
@@ -63,6 +65,15 @@ func (f RunnerFunc) Run(ctx context.Context, cmd Command) (string, error) { retu
 // ExecRunner is the real runner: bounded output, honoured cancellation, and a per-command timeout.
 func ExecRunner() Runner {
 	return RunnerFunc(func(ctx context.Context, cmd Command) (string, error) {
+		// Only BuildRunCommand sets Source. A body command may contain collected values in argv,
+		// so its zero Source keeps the generic failure log free of command parameters.
+		if cmd.Source != "" {
+			ctx = core.WithDeclaredCommandDiagnostic(ctx, core.DeclaredCommandDiagnostic{
+				Source: cmd.Source, Date: cmd.Window.Date,
+				WindowStart: cmd.Window.Start, WindowEnd: cmd.Window.End,
+				Command: cmd.Display(),
+			})
+		}
 		if len(cmd.Env) > 0 || cmd.ForbiddenRoot != "" {
 			var (
 				withEnv context.Context
@@ -216,7 +227,7 @@ func BuildRunCommand(source *core.Source, env Environment, window Window, timeou
 	return Command{
 		Argv: argv,
 		Dir:  core.DeclaredCommandDirectory, ForbiddenRoot: env.Root,
-		Env: maps.Clone(env.Env), Timeout: timeout,
+		Env: maps.Clone(env.Env), Timeout: timeout, Source: source.Name, Window: window,
 	}
 }
 
