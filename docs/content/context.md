@@ -1,6 +1,6 @@
 ---
 title: Context packs
-weight: 6
+weight: 7
 description: "Deterministic lexical retrieval over open semantic fields, with an exact token bound and reproducible receipt."
 ---
 

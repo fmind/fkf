@@ -1,6 +1,6 @@
 ---
 title: The wiki format (OKF v0.2)
-weight: 11
+weight: 12
 description: "Author and validate flat, tagged Markdown knowledge, project pages, and task traces in an fkf base."
 ---
 

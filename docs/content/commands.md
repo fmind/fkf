@@ -1,6 +1,6 @@
 ---
 title: Command reference
-weight: 7
+weight: 8
 description: "The compact FKF CLI: retrieve, browse, collect, validate, and serve one base."
 ---
 

@@ -173,7 +173,7 @@ func TestInstallerRefusesARequiredAttestationFailure(t *testing.T) {
 }
 
 func TestInstallationDocsExposeLatestAndAttestedPaths(t *testing.T) {
-	for _, path := range []string{"README.md", "docs/content/docs/getting-started.md"} {
+	for _, path := range []string{"README.md", "docs/content/getting-started.md"} {
 		content, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)

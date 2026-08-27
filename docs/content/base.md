@@ -1,6 +1,6 @@
 ---
 title: The base and fkf.yaml
-weight: 2
+weight: 3
 description: "The five-layer base, open semantic schema, configuration discovery, local overrides, and generated contract."
 ---
 

@@ -289,34 +289,44 @@ func assertBuiltSiteNavigation(t *testing.T, site string) {
 	}
 
 	overview := readBuiltHTML(t, site, "docs/index.html")
-	navStart := strings.Index(overview, "<nav ")
-	if navStart < 0 {
-		t.Fatal("built Overview page has no navigation element")
-	}
-	navEnd := strings.Index(overview[navStart:], "</nav>")
-	if navEnd < 0 {
-		t.Fatal("built Overview page has an unclosed navigation element")
-	}
-	navigation := overview[navStart : navStart+navEnd]
-	if !strings.Contains(navigation, `href="/docs"`) || !strings.Contains(navigation, `>Overview</span>`) {
-		t.Error("built site navigation must expose Overview as the /docs entry")
+	if !strings.Contains(overview, `>Overview</h1>`) {
+		t.Error("built /docs page must render the Overview")
 	}
 
 	gettingStarted := readBuiltHTML(t, site, "docs/getting-started/index.html")
+	mobileMarker := `<ul class="hx:flex hx:flex-col hx:gap-1 hx:md:hidden">`
 	desktopMarker := `<ul class="hx:flex hx:flex-col hx:gap-1 hx:max-md:hidden">`
+	mobileStart := strings.Index(gettingStarted, mobileMarker)
 	desktopStart := strings.Index(gettingStarted, desktopMarker)
+	if mobileStart < 0 {
+		t.Fatal("built Getting started page has no mobile sidebar list")
+	}
 	if desktopStart < 0 {
 		t.Fatal("built Getting started page has no desktop sidebar list")
+	}
+	if mobileStart >= desktopStart {
+		t.Fatal("built Getting started page places the mobile sidebar after the desktop sidebar")
 	}
 	desktopEnd := strings.Index(gettingStarted[desktopStart:], "</aside>")
 	if desktopEnd < 0 {
 		t.Fatal("built Getting started page has an unclosed desktop sidebar")
 	}
+	mobile := gettingStarted[mobileStart:desktopStart]
 	desktop := gettingStarted[desktopStart : desktopStart+desktopEnd]
-	overviewPosition := strings.Index(desktop, `>Overview</span>`)
-	gettingStartedPosition := strings.Index(desktop, `>Getting started</span>`)
+	assertFlatDocumentationSidebar(t, "mobile", mobile)
+	assertFlatDocumentationSidebar(t, "desktop", desktop)
+}
+
+func assertFlatDocumentationSidebar(t *testing.T, viewport, sidebar string) {
+	t.Helper()
+	overviewPosition := strings.Index(sidebar, `>Overview</span>`)
+	gettingStartedPosition := strings.Index(sidebar, `>Getting started</span>`)
 	if overviewPosition < 0 || gettingStartedPosition < 0 || overviewPosition >= gettingStartedPosition {
-		t.Error("desktop sidebar must expose Overview above Getting started")
+		t.Errorf("%s sidebar must expose Overview above Getting started", viewport)
+	}
+	if strings.Contains(sidebar, "hextra-sidebar-children") ||
+		strings.Contains(sidebar, "hextra-sidebar-collapsible-button") {
+		t.Errorf("%s sidebar must be one flat list without nested or collapsible sections", viewport)
 	}
 }
 

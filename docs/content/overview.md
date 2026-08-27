@@ -1,6 +1,7 @@
 ---
 title: Overview
 weight: 1
+url: /docs/
 description: "Understand fkf's local-first knowledge base, command runner, URI graph, deterministic retrieval, and agent integrations."
 ---
 

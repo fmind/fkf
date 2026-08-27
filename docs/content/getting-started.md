@@ -1,6 +1,6 @@
 ---
 title: Getting started
-weight: 1
+weight: 2
 description: "Install FKF, explore a synthetic base, collect local activity, and connect a coding agent."
 ---
 

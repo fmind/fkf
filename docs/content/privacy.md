@@ -1,6 +1,6 @@
 ---
 title: Privacy and security
-weight: 10
+weight: 11
 description: "Understand fkf's credential, execution, path, permission, untrusted-data, and local-storage security boundaries."
 ---
 

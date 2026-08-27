@@ -1,6 +1,6 @@
 ---
 title: Agent harnesses
-weight: 9
+weight: 10
 description: "Connect one FKF base to an agent with read-only MCP or a small, tested context hook."
 ---
 

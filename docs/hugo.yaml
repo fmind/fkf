@@ -8,6 +8,14 @@ refLinksErrorLevel: ERROR
 
 enableGitInfo: true # last-modified dates from git (Hextra shows them in the footer)
 
+# Documentation pages live as root peers so Hextra renders one flat sidebar. Their public URLs
+# remain under /docs/, while the explicit Overview URL owns the section landing route.
+permalinks:
+  - pattern: /docs/:contentbasename/
+    target:
+      kind: page
+      path: /**
+
 module:
   hugoVersion:
     extended: true
@@ -41,15 +49,12 @@ markup:
 
 menu:
   main:
-    - name: Overview
-      pageRef: /docs
-      weight: 1
     - name: Search
-      weight: 2
+      weight: 1
       params:
         type: search
     - name: GitHub
-      weight: 3
+      weight: 2
       url: https://github.com/fmind/fkf
       params:
         icon: github

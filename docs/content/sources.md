@@ -1,6 +1,6 @@
 ---
 title: Sources are commands
-weight: 4
+weight: 5
 description: "Compose credential-free collectors from commands, shared semantic fields, and complete self-describing documents."
 ---
 

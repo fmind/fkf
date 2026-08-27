@@ -1,5 +1,7 @@
 ---
 title: Third-party notices
+weight: 100
+url: /third-party-notices/
 description: Licenses for the third-party code distributed by the fkf documentation site.
 toc: false
 ---

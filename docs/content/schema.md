@@ -1,6 +1,6 @@
 ---
 title: Configuration schema
-weight: 3
+weight: 4
 description: "Define shared semantic fields, map provider records, and use FKF's generated JSON Schema in an editor or validator."
 ---
 

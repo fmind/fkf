@@ -1,6 +1,6 @@
 ---
 title: URIs and the graph
-weight: 5
+weight: 6
 description: "Address every record, page, heading, entity, and explicit relationship with one open URI grammar."
 ---
 

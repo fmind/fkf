@@ -998,7 +998,7 @@ func TestContextRecencyNeverOutweighsAStrongIdentifierMatch(t *testing.T) {
 // --- Hermetic gates for a future ranking change --------------------------------------------
 
 // contextReasonVocabulary is every Reason.Reason string BuildContext can produce, documented in
-// the table at docs/content/docs/context.md. Nothing enforces that table stays in sync with the
+// the table at docs/content/context.md. Nothing enforces that table stays in sync with the
 // code on its own, so this list is the other half of the promise: a new scoring signal has to
 // touch this test — and, by the same PR, the docs table — before it can ship.
 var contextReasonVocabulary = []string{
@@ -1027,7 +1027,7 @@ func TestContextNeverProducesAnUndocumentedReasonKind(t *testing.T) {
 			}
 			if !found {
 				t.Fatalf("reason %q on %s is not in the documented vocabulary %v; "+
-					"update both this list and the table in docs/content/docs/context.md",
+					"update both this list and the table in docs/content/context.md",
 					reason.Reason, item.URI, contextReasonVocabulary)
 			}
 		}
