@@ -2,6 +2,19 @@
 
 All notable changes to `fkf` are documented here. This project follows [Semantic Versioning](https://semver.org/) from its first public release.
 
+## [v2.0.0](https://github.com/fmind/fkf/releases/tag/v2.0.0) - 2026-08-29
+
+### Highlights
+
+- Add optional, trust-covered source `test:` argv and `fkf test`, with enabled-source defaults, explicit disabled-source selection, bounded timeouts, stable reports, and provider-stderr privacy.
+- Publish `graph.meta.json` schema version 2 with separate SHA-256 inputs for events, index, projects, tasks, wiki, and edge-relevant schema semantics, plus a framed aggregate and exact `graph.tsv` output digest.
+- Give every bundled shell helper an explicit `.sh` extension and require `.sh` or `.py` when scaffolding a helper, including the interpreter in the generated readiness contract when needed.
+
+### Breaking changes
+
+- Existing derived graph metadata must be rebuilt with `fkf build graph`; collected evidence remains readable and requires no re-collection.
+- Base configurations and harness integrations using bundled extensionless helper names must move to the corresponding `.sh` names before refreshing helpers.
+
 ## [v1.1.2](https://github.com/fmind/fkf/releases/tag/v1.1.2) - 2026-08-27
 
 ### Highlights
