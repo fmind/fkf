@@ -2,6 +2,12 @@
 
 All notable changes to `fkf` are documented here. This project follows [Semantic Versioning](https://semver.org/) from its first public release.
 
+## [v2.0.1](https://github.com/fmind/fkf/releases/tag/v2.0.1) - 2026-08-29
+
+### Fixed
+
+- Make verified release archives the documented v2 installation path and explain that Go's major-version import rules keep the unchanged module path's `go install ...@latest` resolution on v1.
+
 ## [v2.0.0](https://github.com/fmind/fkf/releases/tag/v2.0.0) - 2026-08-29
 
 ### Highlights
