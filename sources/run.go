@@ -5,9 +5,9 @@
 // choice is what removes credentials from this program entirely — the CLI a source names
 // already holds the login — and it is why adding a source is a YAML pull request.
 //
-// Both `run:` and `body:` are direct argv. A base helper's shebang chooses its interpreter;
-// fkf never reparses arguments as shell syntax. `run:` receives only values fkf computes,
-// while `body:` may receive charset-checked values from one stored record.
+// `run:`, `test:`, and `body:` are direct argv. A base helper's shebang chooses its interpreter;
+// fkf never reparses arguments as shell syntax. `run:` and `test:` receive only values fkf
+// computes, while `body:` may receive charset-checked values from one stored record.
 package sources
 
 import (
@@ -228,6 +228,24 @@ func BuildRunCommand(source *core.Source, env Environment, window Window, timeou
 		Argv: argv,
 		Dir:  core.DeclaredCommandDirectory, ForbiddenRoot: env.Root,
 		Env: maps.Clone(env.Env), Timeout: timeout, Source: source.Name, Window: window,
+	}
+}
+
+// BuildTestCommand substitutes only stable base and home paths into a source's verification
+// hook. Test hooks receive no collection window or stored value and execute as direct argv.
+func BuildTestCommand(source *core.Source, env Environment, timeout time.Duration) Command {
+	values := map[string]string{"base": env.Root, "home": homeDirectory()}
+	argv := make([]string, 0, len(source.Test))
+	for _, argument := range source.Test {
+		argv = append(argv, substitute(argument, values))
+	}
+	if source.Timeout > 0 {
+		timeout = source.Timeout
+	}
+	return Command{
+		Argv: argv,
+		Dir:  core.DeclaredCommandDirectory, ForbiddenRoot: env.Root,
+		Env: maps.Clone(env.Env), Timeout: timeout, Source: source.Name,
 	}
 }
 

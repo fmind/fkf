@@ -3,11 +3,11 @@ sources:
   git-commits: # your commits/rebases across every clone under one root, by committer time
     enabled: true
     layer: events # events = one document per day under events/; index = one document under index/
-    requires: [git-log-json, git, jq]
+    requires: [git-log-json.sh, git, jq]
     # window: true because the scan is the whole cost — reading N days one at a time repeats
     # the same directory walk N times for the same handful of commits. One call, bucketed by
     # each commit's own committer time, gives an identical result for a fraction of the wall
-    # clock; `git-log-json` already accepts an arbitrary range, so nothing about it changes.
+    # clock; `git-log-json.sh` already accepts an arbitrary range, so nothing about it changes.
     window: true
     # The script is written into <base>/bin by init and is yours after that. The third argument
     # is where your clones live. It defaults to your home directory because that is the one
@@ -18,13 +18,13 @@ sources:
     # before the first sync; use a colon-separated list when there are several. fkf passes each
     # path placeholder as one argument, so spaces or shell syntax in a home directory stay
     # path data rather than changing this command.
-    #   run: [git-log-json, "{{start}}", "{{end}}", "{{home}}/src:{{home}}/work"]
+    #   run: [git-log-json.sh, "{{start}}", "{{end}}", "{{home}}/src:{{home}}/work"]
     # Append every identity you commit under — a work address, GitHub's noreply one. Without
     # the list only `git config user.email` is selected, so a commit made under a
     # repository-local identity is silently never collected:
-    #   run: [git-log-json, "{{start}}", "{{end}}", "{{home}}", me@work.test, 123+me@users.noreply.github.com]
-    run: [git-log-json, "{{start}}", "{{end}}", "{{home}}"]
-    # git-log-json emits and de-duplicates <repo>@<hash>: a hash alone repeats when the same
+    #   run: [git-log-json.sh, "{{start}}", "{{end}}", "{{home}}", me@work.test, 123+me@users.noreply.github.com]
+    run: [git-log-json.sh, "{{start}}", "{{end}}", "{{home}}"]
+    # git-log-json.sh emits and de-duplicates <repo>@<hash>: a hash alone repeats when the same
     # commit is present in two clones, while a record URI must name exactly one record.
     fields:
       id: .uid # field paths are a jq subset: .a.b[0]; anything richer goes in the command
@@ -41,12 +41,12 @@ sources:
     # ran, its exit status, and its duration.
     enabled: false
     layer: events
-    requires: [atuin-history-json, sqlite3, jq]
+    requires: [atuin-history-json.sh, sqlite3, jq]
     # window: true — one sqlite3 process for a year of history costs about what one costs for a
     # day; {{start}}/{{end}} are timestamps sqlite3's own strftime already accepts.
     window: true
     # The helper disables ~/.sqliterc and makes SQLite and jq separate fail-fast stages.
-    run: [atuin-history-json, "{{start}}", "{{end}}", "{{home}}/.local/share/atuin/history.db"]
+    run: [atuin-history-json.sh, "{{start}}", "{{end}}", "{{home}}/.local/share/atuin/history.db"]
     fields:
       id: .id
       time: .time
@@ -58,13 +58,13 @@ sources:
     # contributes nothing, and what an agent did in a repository is the half of your work no
     # provider can see. Metadata only — id, time, harness, cwd, branch, the clone's repository,
     # the harness's own title line — never a prompt or a response; subagent threads are skipped.
-    # Add a block to bin/agent-sessions for another harness.
+    # Add a block to bin/agent-sessions.sh for another harness.
     enabled: true
     layer: events
-    requires: [agent-sessions, find, jq, sqlite3, touch]
+    requires: [agent-sessions.sh, find, jq, sqlite3, touch]
     # Deliberately not windowed: one exact-day run proves a timestamped turn/message belongs to
     # that day. A multi-day session envelope cannot honestly be bucketed into its idle days.
-    run: [agent-sessions, "{{start}}", "{{end}}"] # script written into bin/ by init; POSIX find, touch, and jq
+    run: [agent-sessions.sh, "{{start}}", "{{end}}"] # script written into bin/ by init; POSIX find, touch, and jq
     fields:
       id: .id
       time: .time
@@ -81,9 +81,9 @@ sources:
     # the fkf-learn skill can read them as candidates and promote the durable ones into wiki/.
     enabled: true
     layer: events
-    requires: [agent-memory-files, find, jq, stat]
+    requires: [agent-memory-files.sh, find, jq, stat]
     window: true # one find across every harness root instead of one per requested day
-    run: [agent-memory-files, "{{start}}", "{{end}}"] # script written into bin/ by init; POSIX find, stat, and jq
+    run: [agent-memory-files.sh, "{{start}}", "{{end}}"] # script written into bin/ by init; POSIX find, stat, and jq
     fields:
       id: .id
       time: .time
@@ -93,11 +93,11 @@ sources:
   chromium-pages: # local browser-history metadata; disabled until the owner opts in
     enabled: false
     layer: events
-    requires: [chromium-pages, sqlite3, jq]
+    requires: [chromium-pages.sh, sqlite3, jq]
     # One SQLite backup covers the requested span and includes live WAL state. The helper
     # strips URL credentials, query strings, and fragments before any JSON reaches fkf.
     window: true
-    run: [chromium-pages, "{{start}}", "{{end}}"]
+    run: [chromium-pages.sh, "{{start}}", "{{end}}"]
     fields:
       id: .uid
       time: .time
@@ -110,13 +110,13 @@ sources:
   github-pull-requests:
     enabled: false
     layer: events
-    requires: [github-search-json, gh, jq]
+    requires: [github-search-json.sh, gh, jq]
     # One helper call covers the requested range. GitHub Search exposes at most 1,000 results
-    # per query, so github-search-json recursively splits a saturated half-open time window,
+    # per query, so github-search-json.sh recursively splits a saturated half-open time window,
     # uses an inclusive end one second before each boundary, de-duplicates canonical URLs, and
     # fails if even a one-second slice saturates. A complete day can never look truncated.
     window: true
-    run: [github-search-json, prs, author, "{{start}}", "{{end}}"]
+    run: [github-search-json.sh, prs, author, "{{start}}", "{{end}}"]
     # Issue and pull-request numbers are repository-scoped; the canonical URL is globally unique.
     # gh pr view accepts that URL directly, so {{id}} still fetches the body without parsing it.
     fields:
@@ -139,9 +139,9 @@ sources:
   github-issues:
     enabled: false
     layer: events
-    requires: [github-search-json, gh, jq]
+    requires: [github-search-json.sh, gh, jq]
     window: true # see github-pull-requests: the helper proves every range is complete
-    run: [github-search-json, issues, author, "{{start}}", "{{end}}"]
+    run: [github-search-json.sh, issues, author, "{{start}}", "{{end}}"]
     # Issue numbers are repository-scoped; gh issue view accepts the globally unique URL.
     fields:
       id: .url
@@ -161,11 +161,11 @@ sources:
   github-reviews:
     enabled: false
     layer: events
-    requires: [github-reviews-json, gh, jq]
+    requires: [github-reviews-json.sh, gh, jq]
     # Contributions are review events, not pull requests that merely match reviewed-by. The
     # helper follows at most 100 GraphQL pages, checks totalCount, and enforces the half-open window.
     window: true
-    run: [github-reviews-json, "{{start}}", "{{end}}"]
+    run: [github-reviews-json.sh, "{{start}}", "{{end}}"]
     # The id is a stable REST API locator, so the review body remains available only on demand.
     fields:
       id: .id
@@ -185,11 +185,11 @@ sources:
   github-notifications:
     enabled: false
     layer: events
-    requires: [github-list-json, gh, jq]
+    requires: [github-list-json.sh, gh, jq]
     format: ndjson
     # The helper follows Link rel=next within a finite ceiling, reapplies the exact half-open
     # updated_at window, and emits only reviewed notification and repository metadata.
-    run: [github-list-json, notifications, "{{start}}", "{{end}}"]
+    run: [github-list-json.sh, notifications, "{{start}}", "{{end}}"]
     fields:
       id: .id
       time: .updated_at
@@ -202,11 +202,11 @@ sources:
   github-repositories:
     enabled: false
     layer: index # a point-in-time snapshot, refreshed on age rather than per day
-    requires: [github-list-json, gh, jq]
+    requires: [github-list-json.sh, gh, jq]
     # The authenticated-user endpoint covers repositories you own, collaborate on, or can read
     # through an organization. The helper follows Link headers within a reviewed finite budget.
     format: ndjson
-    run: [github-list-json, user-repositories]
+    run: [github-list-json.sh, user-repositories]
     fields:
       id: .nameWithOwner
       url: .url
@@ -219,12 +219,12 @@ sources:
   google-calendar-events:
     enabled: false
     layer: events
-    requires: [gws-calendar-json, gws, jq]
+    requires: [gws-calendar-json.sh, gws, jq]
     window: true
     # Calendar timeMin filters event END rather than start. The helper removes spanning events,
     # handles date-only all-day starts, and projects an allowlist with no description, location,
     # conference credential, or attachment metadata.
-    run: [gws-calendar-json, "{{start}}", "{{end}}", "{{date}}", "{{next_date}}"]
+    run: [gws-calendar-json.sh, "{{start}}", "{{end}}", "{{date}}", "{{next_date}}"]
     fields:
       id: .id
       time: .at
@@ -236,12 +236,12 @@ sources:
   google-gmail-emails: # metadata only by default; the body is lazy, and jq reshapes before fkf sees it
     enabled: false
     layer: events
-    requires: [gmail-json, gws, jq]
+    requires: [gmail-json.sh, gws, jq]
     format: ndjson
     # The helper converts exact RFC3339 bounds to epoch seconds, widens Gmail's exclusive
     # after: operator by one second, then filters internalDate to the exact half-open window.
     # Fallible stages are separate, so no provider/conversion failure disappears in a pipeline.
-    run: [gmail-json, "{{start}}", "{{end}}"] # script written into bin/ by init
+    run: [gmail-json.sh, "{{start}}", "{{end}}"] # script written into bin/ by init
     # from_entries, not `.headers[]|select(...)`: constructing an object from an EMPTY stream
     # yields no object at all, so every message with no Subject — bounces, most automated
     # notifications, many invites — silently vanished with no error and no count to notice.
@@ -258,10 +258,22 @@ sources:
   google-chat-spaces:
     enabled: false
     layer: index # spaces list has no time window, so this is one current snapshot
-    requires: [gws-page-json, gws, jq]
+    requires: [gws-page-json.sh, gws, jq]
     format: ndjson
     records: .spaces
-    run: [gws-page-json, spaces, gws, chat, spaces, list, --params, '{"pageSize":100}', --page-all, --page-limit, "100"]
+    run: [
+      gws-page-json.sh,
+      spaces,
+      gws,
+      chat,
+      spaces,
+      list,
+      --params,
+      '{"pageSize":100}',
+      --page-all,
+      --page-limit,
+      "100",
+    ]
     fields:
       id: .name
       time: .lastActiveTime
@@ -272,11 +284,11 @@ sources:
   google-tasks-items:
     enabled: false
     layer: events
-    requires: [gws-tasks, gws-page-json, gws, jq]
+    requires: [gws-tasks.sh, gws-page-json.sh, gws, jq]
     # One helper walks every task list, proves each finite token chain, and applies the missing
     # upper time bound before emitting a globally unique list-and-task identity.
     window: true
-    run: [gws-tasks, "{{start}}", "{{end}}"]
+    run: [gws-tasks.sh, "{{start}}", "{{end}}"]
     fields:
       id: .uid
       time: .updated
@@ -291,11 +303,11 @@ sources:
     # is greppable by `fkf find --where`.
     enabled: false
     layer: index
-    requires: [gws-page-json, gws, jq]
+    requires: [gws-page-json.sh, gws, jq]
     format: ndjson
     records: .files
     run: [
-      gws-page-json,
+      gws-page-json.sh,
       files,
       gws,
       drive,
@@ -319,11 +331,11 @@ sources:
   google-contacts-people:
     enabled: false
     layer: index
-    requires: [gws-page-json, gws, jq]
+    requires: [gws-page-json.sh, gws, jq]
     format: ndjson
     records: .connections
     run: [
-      gws-page-json,
+      gws-page-json.sh,
       connections,
       gws,
       people,
@@ -347,10 +359,10 @@ sources:
   gcloud-audit-logs:
     enabled: false
     layer: events
-    requires: [gcloud-audit-json, gcloud, jq]
+    requires: [gcloud-audit-json.sh, gcloud, jq]
     # Scope is the active project only. One overflow record distinguishes a complete bounded
     # day from silent provider truncation; request and response bodies never enter the output.
-    run: [gcloud-audit-json, "{{start}}", "{{end}}"]
+    run: [gcloud-audit-json.sh, "{{start}}", "{{end}}"]
     fields:
       id: .uid
       time: .timestamp
@@ -361,10 +373,10 @@ sources:
   gcloud-projects:
     enabled: false
     layer: index
-    requires: [gcloud-projects-json, gcloud, jq]
+    requires: [gcloud-projects-json.sh, gcloud, jq]
     # Limit-plus-one makes an account beyond the reviewed 10,000-project envelope fail rather
     # than publish a complete-looking truncated snapshot.
-    run: [gcloud-projects-json]
+    run: [gcloud-projects-json.sh]
     fields:
       id: .projectId
       title: .name

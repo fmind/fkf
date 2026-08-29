@@ -60,9 +60,10 @@ sources:
   git-commits:
     enabled: true
     layer: events
-    requires: [git-log-json, git]
+    requires: [git-log-json.sh, git-log-check.sh, git]
     window: true
-    run: [git-log-json, "{{start}}", "{{end}}", "{{home}}"]
+    run: [git-log-json.sh, "{{start}}", "{{end}}", "{{home}}"]
+    test: [git-log-check.sh, "{{home}}"]
     fields:
       id: .uid
       time: .time
@@ -71,7 +72,7 @@ sources:
       participant: [".participant_uris[]"]
 ```
 
-FKF stores the exact schema subset and field map used by each collected document. That evidence lets current readers validate older records even after the base adds new optional fields.
+FKF stores the exact schema subset and field map used by each collected document. That evidence lets current readers validate older records even after the base adds new optional fields. Optional `test:` hooks are one direct argv array, accept only `{{base}}` and `{{home}}`, and are execution-trusted alongside `run:` and `body:`.
 
 ## Generated JSON Schema
 

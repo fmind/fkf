@@ -123,16 +123,48 @@ layers: {events: true}
 sources:
   pull-requests:
     enabled: true
-    run: [github-search-json, prs, author, "{{start}}", "{{end}}", "{{base}}/with spaces"]
+    run: [github-search-json.sh, prs, author, "{{start}}", "{{end}}", "{{base}}/with spaces"]
     fields: {id: .id, time: .time}
 `
 	loaded, err := LoadConfig(writeBase(t, config, nil))
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v, want direct argv accepted", err)
 	}
-	want := []string{"github-search-json", "prs", "author", "{{start}}", "{{end}}", "{{base}}/with spaces"}
+	want := []string{"github-search-json.sh", "prs", "author", "{{start}}", "{{end}}", "{{base}}/with spaces"}
 	if got := loaded.Sources["pull-requests"].Run; !slices.Equal(got, want) {
 		t.Fatalf("run = %#v, want %#v", got, want)
+	}
+}
+
+func TestLoadConfigAcceptsTestAsOneDirectArgvSpelling(t *testing.T) {
+	config := `fkf: 1
+name: brain
+schema:
+  id: {description: Stable identity., cardinality: one}
+layers: {index: true}
+sources:
+  repositories:
+    enabled: true
+    layer: index
+    run: [collect-repositories.sh]
+    test: [collect-repositories.sh, --test]
+    fields: {id: .id}
+`
+	loaded, err := LoadConfig(writeBase(t, config, nil))
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v, want a direct test argv", err)
+	}
+	want := []string{"collect-repositories.sh", "--test"}
+	if got := loaded.Sources["repositories"].Test; !slices.Equal(got, want) {
+		t.Fatalf("test = %#v, want %#v", got, want)
+	}
+	scalar := strings.Replace(config, "test: [collect-repositories.sh, --test]", "test: collect-repositories.sh --test", 1)
+	if _, err := LoadConfig(writeBase(t, scalar, nil)); err == nil {
+		t.Fatalf("scalar test error = %v, want the second spelling rejected", err)
+	}
+	empty := strings.Replace(config, "test: [collect-repositories.sh, --test]", "test: []", 1)
+	if _, err := LoadConfig(writeBase(t, empty, nil)); err == nil {
+		t.Fatalf("empty test error = %v, want a declared hook to name an executable", err)
 	}
 }
 

@@ -151,6 +151,15 @@ func sourceSchema() map[string]any {
 				}},
 				"description": "Direct argv producing JSON; no shell parses it. A helper shebang selects its interpreter. Argument placeholders: " + placeholderList(RunPlaceholders) + ". No collected data is ever substituted.",
 			},
+			"test": map[string]any{
+				"type": "array", "minItems": 1, "items": map[string]any{"type": "string"},
+				"prefixItems": []any{map[string]any{
+					"type": "string", "minLength": 1,
+					"not":         map[string]any{"pattern": `\{\{`},
+					"description": "Literal executable: a bare name resolved on PATH or an absolute machine-local path outside the base.",
+				}},
+				"description": "Optional direct argv run by `fkf test` to verify this source. It receives no record or collection window. Argument placeholders: " + placeholderList(TestPlaceholders) + ".",
+			},
 			"format": map[string]any{
 				"type": "string", "enum": []string{string(FormatJSON), string(FormatNDJSON)}, "default": string(FormatJSON),
 				"description": "json expects one document; ndjson expects one JSON value per line.",

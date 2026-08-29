@@ -38,10 +38,10 @@ func TestProviderPaginationRoutesThroughBoundedCollectors(t *testing.T) {
 
 	want := map[string]map[string][]string{
 		services.PresetPersonal: {
-			"github-repositories": {"github-list-json", "user-repositories"},
+			"github-repositories": {"github-list-json.sh", "user-repositories"},
 		},
 		services.PresetTeam: {
-			"github-repositories": {"github-list-json", "org-repositories", "REPLACE_WITH_ORG"},
+			"github-repositories": {"github-list-json.sh", "org-repositories", "REPLACE_WITH_ORG"},
 		},
 	}
 	for preset, sources := range want {
@@ -54,11 +54,11 @@ func TestProviderPaginationRoutesThroughBoundedCollectors(t *testing.T) {
 
 	for _, name := range []string{"google-drive-files"} {
 		run := configs[services.PresetPersonal].Sources[name].Run
-		if !slices.Contains(run, "--page-limit") || !slices.Contains(run, "100") || run[0] != "gws-page-json" {
+		if !slices.Contains(run, "--page-limit") || !slices.Contains(run, "100") || run[0] != "gws-page-json.sh" {
 			t.Errorf("personal/%s has no bounded, token-validated pagination: %s", name, run)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(roots[services.PresetPersonal], core.BaseBinDir, "gws-page-json")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(roots[services.PresetPersonal], core.BaseBinDir, "gws-page-json.sh")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("disabled GWS examples materialized their page validator: %v", err)
 	}
 }
@@ -81,7 +81,7 @@ case "$*" in
 esac
 `)
 	command := exec.CommandContext(t.Context(),
-		filepath.Join(repositoryRoot(t), "presets", "bin", "github-list-json"),
+		filepath.Join(repositoryRoot(t), "presets", "bin", "github-list-json.sh"),
 		"user-repositories")
 	command.Env = append(os.Environ(),
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -89,7 +89,7 @@ esac
 	)
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("github-list-json error = %v\n%s", err, output)
+		t.Fatalf("github-list-json.sh error = %v\n%s", err, output)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(output))
 	var names []string
@@ -127,7 +127,7 @@ func TestGitHubListJSONFailsClosedAtAdvancingPageLimit(t *testing.T) {
 printf '%s\n' 'HTTP/2.0 200 OK' 'Link: <https://api.github.test/notifications?page=next>; rel="next"' '' '[]'
 `)
 	command := exec.CommandContext(t.Context(),
-		filepath.Join(repositoryRoot(t), "presets", "bin", "github-list-json"),
+		filepath.Join(repositoryRoot(t), "presets", "bin", "github-list-json.sh"),
 		"notifications", "2026-08-01T00:00:00Z", "2026-08-02T00:00:00Z")
 	command.Env = append(os.Environ(),
 		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -137,7 +137,7 @@ printf '%s\n' 'HTTP/2.0 200 OK' 'Link: <https://api.github.test/notifications?pa
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err == nil {
-		t.Fatal("github-list-json accepted an advancing Link cursor past its page limit")
+		t.Fatal("github-list-json.sh accepted an advancing Link cursor past its page limit")
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("page-limit failure emitted a partial snapshot: %s", stdout.Bytes())
@@ -162,12 +162,12 @@ func TestGitHubListJSONProjectsNotificationMetadata(t *testing.T) {
 printf '%s\n' '[{"id":"n-1","unread":true,"reason":"mention","updated_at":"2026-08-01T12:00:00Z","last_read_at":null,"subject":{"title":"Review","url":"https://api.github.test/repos/acme/repo/issues/1","latest_comment_url":"https://api.github.test/comments/1","type":"Issue","private_body":"forbidden-notification-sentinel"},"repository":{"full_name":"acme/repo","html_url":"https://github.test/acme/repo","owner":{"email":"forbidden-notification-sentinel"}},"private_body":"forbidden-notification-sentinel"}]'
 `)
 	command := exec.CommandContext(t.Context(),
-		filepath.Join(repositoryRoot(t), "presets", "bin", "github-list-json"),
+		filepath.Join(repositoryRoot(t), "presets", "bin", "github-list-json.sh"),
 		"notifications", "2026-08-01T00:00:00Z", "2026-08-02T00:00:00Z")
 	command.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("github-list-json error = %v\n%s", err, output)
+		t.Fatalf("github-list-json.sh error = %v\n%s", err, output)
 	}
 	if strings.Contains(string(output), "forbidden-notification-sentinel") {
 		t.Fatalf("notification projection retained an undeclared provider field: %s", output)
@@ -186,12 +186,12 @@ func TestGitHubListJSONFiltersNotificationsToTheExactUpdatedWindow(t *testing.T)
 printf '%s\n' '[{"id":"before","updated_at":"2026-07-31T23:59:59Z"},{"id":"start","updated_at":"2026-08-01T00:00:00Z"},{"id":"inside","updated_at":"2026-08-01T12:00:00Z"},{"id":"end","updated_at":"2026-08-02T00:00:00Z"},{"id":"after","updated_at":"2026-08-03T00:00:00Z"}]'
 `)
 	command := exec.CommandContext(t.Context(),
-		filepath.Join(repositoryRoot(t), "presets", "bin", "github-list-json"),
+		filepath.Join(repositoryRoot(t), "presets", "bin", "github-list-json.sh"),
 		"notifications", "2026-08-01T00:00:00Z", "2026-08-02T00:00:00Z")
 	command.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("github-list-json error = %v\n%s", err, output)
+		t.Fatalf("github-list-json.sh error = %v\n%s", err, output)
 	}
 	var ids []string
 	decoder := json.NewDecoder(bytes.NewReader(output))
@@ -219,14 +219,14 @@ func TestGitHubListJSONRejectsMalformedNotificationTimesWithoutOutput(t *testing
 printf '%s\n' '[{"id":"valid","updated_at":"2026-08-01T12:00:00Z"},{"id":"malformed","updated_at":"not-a-time"}]'
 `)
 	command := exec.CommandContext(t.Context(),
-		filepath.Join(repositoryRoot(t), "presets", "bin", "github-list-json"),
+		filepath.Join(repositoryRoot(t), "presets", "bin", "github-list-json.sh"),
 		"notifications", "2026-08-01T00:00:00Z", "2026-08-02T00:00:00Z")
 	command.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err == nil {
-		t.Fatal("github-list-json accepted a notification with malformed updated_at")
+		t.Fatal("github-list-json.sh accepted a notification with malformed updated_at")
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("malformed notification time emitted partial output: %s", stdout.Bytes())
@@ -243,11 +243,11 @@ func TestGWSPageJSONPreservesACompleteTokenChain(t *testing.T) {
 		`{"items":[{"id":"complete"}]}`,
 	}, "\n") + "\n"
 	command := exec.CommandContext(t.Context(),
-		filepath.Join(repositoryRoot(t), "presets", "bin", "gws-page-json"), "items")
+		filepath.Join(repositoryRoot(t), "presets", "bin", "gws-page-json.sh"), "items")
 	command.Stdin = strings.NewReader(input)
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("gws-page-json error = %v\n%s", err, output)
+		t.Fatalf("gws-page-json.sh error = %v\n%s", err, output)
 	}
 	if strings.Count(strings.TrimSpace(string(output)), "\n")+1 != 2 ||
 		!strings.Contains(string(output), `"id":"complete"`) {
@@ -262,13 +262,13 @@ func TestGWSPageJSONRejectsAdvancingEmptyCursorsAtPageLimit(t *testing.T) {
 		fmt.Fprintf(&input, "{\"items\":[],\"nextPageToken\":\"cursor-%d\"}\n", page)
 	}
 	command := exec.CommandContext(t.Context(),
-		filepath.Join(repositoryRoot(t), "presets", "bin", "gws-page-json"), "items")
+		filepath.Join(repositoryRoot(t), "presets", "bin", "gws-page-json.sh"), "items")
 	command.Stdin = strings.NewReader(input.String())
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err == nil {
-		t.Fatal("gws-page-json accepted a token after the configured page limit")
+		t.Fatal("gws-page-json.sh accepted a token after the configured page limit")
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("GWS page-limit failure emitted partial pages: %s", stdout.Bytes())
@@ -283,11 +283,11 @@ func TestGWSPageJSONProjectsChatSpaceMetadata(t *testing.T) {
 	isolate(t)
 	input := `{"spaces":[{"name":"spaces/one","displayName":"Project","spaceType":"SPACE","spaceThreadingState":"THREADED_MESSAGES","lastActiveTime":"2026-08-01T12:00:00Z","membershipCount":7,"spaceUri":"https://chat.google.test/room/one","spaceDetails":{"description":"forbidden-space-sentinel"},"private_body":"forbidden-space-sentinel"}]}` + "\n"
 	command := exec.CommandContext(t.Context(),
-		filepath.Join(repositoryRoot(t), "presets", "bin", "gws-page-json"), "spaces")
+		filepath.Join(repositoryRoot(t), "presets", "bin", "gws-page-json.sh"), "spaces")
 	command.Stdin = strings.NewReader(input)
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("gws-page-json error = %v\n%s", err, output)
+		t.Fatalf("gws-page-json.sh error = %v\n%s", err, output)
 	}
 	if strings.Contains(string(output), "forbidden-space-sentinel") {
 		t.Fatalf("Chat space projection retained an undeclared provider field: %s", output)
@@ -303,11 +303,11 @@ func TestGWSPageJSONProjectsDriveFileMetadata(t *testing.T) {
 	isolate(t)
 	input := `{"files":[{"id":"file-1","name":"Plan","mimeType":"application/vnd.google-apps.document","webViewLink":"https://drive.google.test/file-1","modifiedTime":"2026-08-02T12:00:00Z","createdTime":"2026-08-01T12:00:00Z","size":"42","shared":true,"trashed":false,"parents":["folder-1"],"owners":[{"displayName":"Owner","emailAddress":"owner@example.test","photoLink":"forbidden-drive-sentinel"}],"description":"forbidden-drive-sentinel"}],"private_body":"forbidden-drive-sentinel"}` + "\n"
 	command := exec.CommandContext(t.Context(),
-		filepath.Join(repositoryRoot(t), "presets", "bin", "gws-page-json"), "files")
+		filepath.Join(repositoryRoot(t), "presets", "bin", "gws-page-json.sh"), "files")
 	command.Stdin = strings.NewReader(input)
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("gws-page-json error = %v\n%s", err, output)
+		t.Fatalf("gws-page-json.sh error = %v\n%s", err, output)
 	}
 	if strings.Contains(string(output), "forbidden-drive-sentinel") {
 		t.Fatalf("Drive file projection retained an undeclared provider field: %s", output)
@@ -323,11 +323,11 @@ func TestGWSPageJSONProjectsContactMetadata(t *testing.T) {
 	isolate(t)
 	input := `{"connections":[{"resourceName":"people/one","etag":"forbidden-contact-sentinel","names":[{"displayName":"Ada Lovelace","displayNameLastFirst":"Lovelace, Ada","unstructuredName":"Ada Lovelace","familyName":"Lovelace","givenName":"Ada","middleName":"Byron","honorificPrefix":"Countess","honorificSuffix":"I","metadata":{"primary":true,"private":"forbidden-contact-sentinel"}}],"emailAddresses":[{"value":"ada@example.test","type":"work","formattedType":"Work","displayName":"Ada","metadata":{"primary":true,"private":"forbidden-contact-sentinel"},"private":"forbidden-contact-sentinel"}],"private_body":"forbidden-contact-sentinel"}]}` + "\n"
 	command := exec.CommandContext(t.Context(),
-		filepath.Join(repositoryRoot(t), "presets", "bin", "gws-page-json"), "connections")
+		filepath.Join(repositoryRoot(t), "presets", "bin", "gws-page-json.sh"), "connections")
 	command.Stdin = strings.NewReader(input)
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("gws-page-json error = %v\n%s", err, output)
+		t.Fatalf("gws-page-json.sh error = %v\n%s", err, output)
 	}
 	if strings.Contains(string(output), "forbidden-contact-sentinel") {
 		t.Fatalf("Contact projection retained an undeclared provider field: %s", output)
@@ -345,14 +345,14 @@ func TestGCloudAuditRejectsLimitPlusOneWithoutPartialOutput(t *testing.T) {
 	writePresetFake(t, fakeBin, "gcloud", `jq -cn '[range(0; 10001) | {}]'
 `)
 	command := exec.CommandContext(t.Context(),
-		filepath.Join(repositoryRoot(t), "presets", "bin", "gcloud-audit-json"),
+		filepath.Join(repositoryRoot(t), "presets", "bin", "gcloud-audit-json.sh"),
 		"2026-08-01T00:00:00Z", "2026-08-02T00:00:00Z")
 	command.Env = append(os.Environ(), "PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err == nil {
-		t.Fatal("gcloud-audit-json accepted the limit-plus-one overflow record")
+		t.Fatal("gcloud-audit-json.sh accepted the limit-plus-one overflow record")
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("gcloud audit overflow emitted a partial day: %s", stdout.Bytes())

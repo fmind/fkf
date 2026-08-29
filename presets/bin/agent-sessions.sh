@@ -1,5 +1,5 @@
 #!/bin/sh
-# agent-sessions <start> <end> — written into <base>/bin by `fkf init --preset personal`.
+# agent-sessions.sh <start> <end> — written into <base>/bin by `fkf init --preset personal`.
 #
 # Prints one JSON array with one record per coding-agent session that has recorded activity in
 # the exact half-open UTC window, read from the state each harness keeps — one block per harness:
@@ -18,9 +18,9 @@
 # it, it is yours: add a block for another harness, or delete the ones you do not use.
 set -eu
 
-start=${1:?usage: agent-sessions <start> <end>}
-end=${2:?usage: agent-sessions <start> <end>}
-command -v jq >/dev/null 2>&1 || { echo "agent-sessions: jq is required" >&2; exit 1; }
+start=${1:?usage: agent-sessions.sh <start> <end>}
+end=${2:?usage: agent-sessions.sh <start> <end>}
+command -v jq >/dev/null 2>&1 || { echo "agent-sessions.sh: jq is required" >&2; exit 1; }
 
 # Provider timestamps use RFC3339 with optional fractional seconds. Comparing those strings to
 # fkf's whole-second bounds is incorrect (`...00.001Z` sorts before `...00Z`), so every JSON
@@ -71,7 +71,7 @@ modified_since() {
 # sql <db> <query> reads one metadata query from a harness database and never a content
 # column. -init /dev/null keeps a personal ~/.sqliterc from changing the output format.
 sql() {
-  command -v sqlite3 >/dev/null 2>&1 || { echo "agent-sessions: sqlite3 is required to read $1" >&2; exit 1; }
+  command -v sqlite3 >/dev/null 2>&1 || { echo "agent-sessions.sh: sqlite3 is required to read $1" >&2; exit 1; }
   sqlite3 -init /dev/null -batch -readonly -json "$1" "$2"
 }
 

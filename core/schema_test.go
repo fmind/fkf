@@ -66,11 +66,8 @@ func TestConfigSchemaDescribesWhatTheLoaderEnforces(t *testing.T) {
 	if strings.Join(required, ",") != "run,fields" {
 		t.Fatalf("the source shape requires %v; the loader requires run and fields", required)
 	}
-	for _, placeholder := range RunPlaceholders {
-		if !strings.Contains(description(t, source, "run"), "{{"+placeholder+"}}") {
-			t.Fatalf("the run description omits {{%s}}", placeholder)
-		}
-	}
+	assertSchemaDescriptionHasPlaceholders(t, source, "run", RunPlaceholders)
+	assertSchemaDescriptionHasPlaceholders(t, source, "test", TestPlaceholders)
 	if !strings.Contains(description(t, source, "body"), "{{id}}") {
 		t.Fatal("the body description must say it has to name {{id}}")
 	}
@@ -105,6 +102,15 @@ func TestConfigSchemaDescribesWhatTheLoaderEnforces(t *testing.T) {
 		t.Fatal("the schema must reject duplicate executable requirements")
 	}
 	assertExecutionAndDurationSchema(t, properties, sourceProperties)
+}
+
+func assertSchemaDescriptionHasPlaceholders(t *testing.T, source map[string]any, key string, placeholders []string) {
+	t.Helper()
+	for _, placeholder := range placeholders {
+		if !strings.Contains(description(t, source, key), "{{"+placeholder+"}}") {
+			t.Fatalf("the %s description omits {{%s}}", key, placeholder)
+		}
+	}
 }
 
 func assertExecutionAndDurationSchema(t *testing.T, properties, sourceProperties map[string]any) {

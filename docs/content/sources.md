@@ -40,9 +40,9 @@ sources:
   github-pull-requests:
     enabled: true
     layer: events
-    requires: [github-search-json, gh, jq]
+    requires: [github-search-json.sh, gh, jq]
     window: true
-    run: [github-search-json, prs, author, "{{start}}", "{{end}}"]
+    run: [github-search-json.sh, prs, author, "{{start}}", "{{end}}"]
     fields:
       id: .url
       time: .updatedAt
@@ -69,6 +69,7 @@ FKF neither assigns those names nor infers equivalence. It validates cardinality
 | `layer`        | `events` for completed days, `index` for a current snapshot   |
 | `requires`     | Explicit bare executable names checked by `status`            |
 | `run`          | Direct argv producing JSON; required                          |
+| `test`         | Optional direct argv verifying the source without collection  |
 | `format`       | `json` or `ndjson`; default `json`                            |
 | `records`      | Field path selecting records inside a wrapper                 |
 | `fields`       | Root-schema name to one path or ordered list of paths         |
@@ -79,7 +80,7 @@ FKF neither assigns those names nor infers equivalence. It validates cardinality
 | `retry`        | Bounded attempts, backoff, and named retryable failures       |
 | `min_interval` | Minimum interval between calls to this source                 |
 
-`requires:` is the readiness contract. Each item is a unique bare executable name such as `gh`, `jq`, `github-search-json`, or `fish`; paths and inferred names are rejected. `status` checks all requirements for enabled sources without running them. FKF deliberately does not infer dependencies from argv or helper contents.
+`requires:` is the readiness contract. Each item is a unique bare executable name such as `gh`, `jq`, `github-search-json.sh`, or `fish`; paths and inferred names are rejected. `status` checks all requirements for enabled sources without running them. FKF deliberately does not infer dependencies from argv or helper contents.
 
 Mapped event times accept a date, a Unix epoch, or a timestamp with an explicit `Z` or numeric UTC offset. A timezone-less date-time is rejected because the same provider value would otherwise move between civil days when a base runs on another machine.
 
@@ -97,10 +98,11 @@ This is the middle ground: FKF remains one static core and a set of helpers, whi
 
 Declared commands run with `/` as their working directory, never the base root. Use `{{base}}` when a command needs an explicit data path. Executable or interpreted support belongs under trust-digested `bin/` and is invoked by its bare PATH name; a relative argument such as `wiki/helper.py` therefore cannot turn mutable authored content into code.
 
-`fkf new helper` creates an owner-only, fail-closed `/bin/sh` template and prints its `run:` and `requires:` entries:
+Shell helpers use `.sh`; Python helpers use `.py`. The extension makes the interpreter contract visible without executing the file. `fkf new helper` requires one of those extensions, creates an owner-only fail-closed template, and prints its `run:` and `requires:` entries:
 
 ```bash
-fkf new helper collect-prs
+fkf new helper collect-prs.sh
+fkf new helper collect-prs.py
 ```
 
 The generated scaffold is deliberately portable and does not select a runtime with environment-dependent startup loaders. You can still author any reviewed executable under `bin/`; its shebang selects the interpreter, and every non-standard interpreter belongs in `requires:`.
@@ -114,6 +116,8 @@ The generated scaffold is deliberately portable and does not select a runtime wi
 - `{{base}}` and `{{home}}` as opaque path values.
 
 The exact lowercase spelling is mandatory. Whitespace inside braces, unknown names, uppercase names, malformed braces, placeholders in the executable position, and date placeholders on an index source fail configuration loading. Each YAML item remains exactly one argument after substitution; FKF never invokes a shell or performs expansion.
+
+`test:` is also one direct argv array. It may use only `{{base}}` and `{{home}}`, because a verification hook is independent of collection windows and stored values. With no names, `fkf test` selects enabled sources that declare a hook; explicit names also select disabled sources, and `--all` selects every declared hook. Hooks use the source timeout, run sequentially, discard stdout, expose no provider stderr, and never write evidence.
 
 Collected data never enters `run:`. `body:` is an argv array because its field placeholders come from a record. Every record-derived substituted value is valid Unicode, contains no invisible control or format character, cannot begin with an option marker, and stays one opaque argument even when it contains spaces or punctuation; FKF supplies trusted base and home paths separately. A body fetch runs the current trusted `body:` argv but evaluates its field placeholders through the map stored with that historical document. A newly added placeholder absent from the document is refused until the record is re-collected.
 

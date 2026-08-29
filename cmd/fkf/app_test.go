@@ -112,6 +112,88 @@ func TestCLIErrorOutputNeverRendersProviderStderr(t *testing.T) {
 	}
 }
 
+func TestSourceTestCommandSelectsHooksTimesOutAndKeepsStderrPrivate(t *testing.T) {
+	isolate(t)
+	root := t.TempDir()
+	bin := filepath.Join(root, core.BaseBinDir)
+	if err := os.MkdirAll(bin, core.BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	for name, script := range map[string]string{
+		"active-check.sh":  "#!/bin/sh\nset -eu\ntest \"$1\" = \"" + root + "\"\n",
+		"dormant-check.sh": "#!/bin/sh\nset -eu\necho private-provider-response >&2\nexit 7\n",
+		"slow-check.sh":    "#!/bin/sh\nset -eu\nsleep 2\n",
+	} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := cliTestContract + `name: source-test-cli
+layers: {events: true, index: true, tasks: true, projects: true, wiki: true}
+sync: {timeout: 1s}
+sources:
+  active:
+    enabled: true
+    layer: index
+    run: [printf, "[]"]
+    test: [active-check.sh, "{{base}}"]
+    fields: {id: .id}
+  dormant:
+    enabled: false
+    layer: index
+    run: [printf, "[]"]
+    test: [dormant-check.sh]
+    fields: {id: .id}
+  slow:
+    enabled: false
+    layer: index
+    run: [printf, "[]"]
+    test: [slow-check.sh]
+    fields: {id: .id}
+`
+	if err := os.WriteFile(filepath.Join(root, core.ConfigFileName), []byte(config), core.BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if got := invoke(t, "--base", root, "trust"); got.code != ExitSuccess {
+		t.Fatalf("trust exited %d: %s%s", got.code, got.stdout, got.stderr)
+	}
+
+	defaultRun := invoke(t, "--format", "json", "--base", root, "test")
+	if defaultRun.code != ExitSuccess {
+		t.Fatalf("default test exited %d: %s%s", defaultRun.code, defaultRun.stdout, defaultRun.stderr)
+	}
+	var report services.SourceTestReport
+	if err := json.Unmarshal([]byte(defaultRun.stdout), &report); err != nil {
+		t.Fatalf("decode test report: %v\n%s", err, defaultRun.stdout)
+	}
+	if report.Passed != 1 || report.Failed != 0 || len(report.Sources) != 1 || report.Sources[0].Source != "active" {
+		t.Fatalf("default report = %+v, want only the enabled hook", report)
+	}
+	jsonl := invoke(t, "--format", "jsonl", "--base", root, "test")
+	if jsonl.code != ExitSuccess || strings.Count(strings.TrimSpace(jsonl.stdout), "\n") != 0 ||
+		!strings.Contains(jsonl.stdout, `"source":"active"`) {
+		t.Fatalf("JSONL source tests = exit %d stdout %q stderr %q, want one result line", jsonl.code, jsonl.stdout, jsonl.stderr)
+	}
+
+	all := invoke(t, "--format", "json", "--base", root, "test", "--all")
+	if all.code != ExitPartial {
+		t.Fatalf("test --all exited %d, want %d: %s%s", all.code, ExitPartial, all.stdout, all.stderr)
+	}
+	if strings.Contains(all.stdout+all.stderr, "private-provider-response") {
+		t.Fatalf("source test leaked provider stderr: %s%s", all.stdout, all.stderr)
+	}
+	for _, want := range []string{"dormant-check.sh", "command exited with status 7", "slow-check.sh", "command timed out"} {
+		if !strings.Contains(all.stdout+all.stderr, want) {
+			t.Fatalf("test --all output omits %q: %s%s", want, all.stdout, all.stderr)
+		}
+	}
+
+	invalid := invoke(t, "--base", root, "test", "--all", "active")
+	if invalid.code != ExitInvalidUsage {
+		t.Fatalf("test --all active exited %d, want %d: %s%s", invalid.code, ExitInvalidUsage, invalid.stdout, invalid.stderr)
+	}
+}
+
 // demoBase builds a small deterministic base through the CLI itself, which is also the check
 // that `init --demo` works end to end.
 func demoBase(t *testing.T) string {
@@ -368,7 +450,7 @@ func TestCommandTableIsTheDocumentedSurface(t *testing.T) {
 	}
 	want := []string{
 		"context", "find", "read", "graph", "list", "validate", "tags",
-		"init", "trust", "sync", "status", "build", "new", "config", "mcp", "upgrade",
+		"init", "trust", "test", "sync", "status", "build", "new", "config", "mcp", "upgrade",
 	}
 	slices.Sort(names)
 	slices.Sort(want)
@@ -413,10 +495,10 @@ func TestEveryWindowFlagAdvertisesTheSharedGrammar(t *testing.T) {
 }
 
 // The alias convention is stated in the root help, so it has to hold: one letter, the command's
-// own first letter, and the four that lost a collision are typed in full.
+// own first letter, and the five that lost a collision are typed in full.
 func TestAliasesAreTheFirstLetterOrNothing(t *testing.T) {
 	app := newApp(&bytes.Buffer{}, &bytes.Buffer{})
-	spelled := []string{"init", "trust", "status", "config"}
+	spelled := []string{"init", "trust", "test", "status", "config"}
 	for _, command := range app.Commands {
 		if slices.Contains(spelled, command.Name) {
 			if len(command.Aliases) != 0 {
@@ -691,7 +773,7 @@ func TestExecutionBoundaryHelpIsComplete(t *testing.T) {
 	}
 
 	trustCommand := app.Command("trust")
-	for _, term := range []string{"run:", "body:", "policy", "bin:", "helper"} {
+	for _, term := range []string{"run:", "test:", "body:", "policy", "bin:", "helper"} {
 		if !strings.Contains(trustCommand.Usage, term) {
 			t.Fatalf("trust usage = %q, want complete disclosure term %q", trustCommand.Usage, term)
 		}
@@ -1140,11 +1222,11 @@ func TestBuildAndNewCommands(t *testing.T) {
 	if got := invoke(t, "--base", root, "new", "wiki", "concept-z", "--type", "decision", "--title", "Concept Z", "--tag", "arch"); got.code != ExitSuccess {
 		t.Fatalf("new wiki exited %d: %s%s", got.code, got.stdout, got.stderr)
 	}
-	got := invoke(t, "--format", "text", "--base", root, "new", "helper", "collect-prs")
+	got := invoke(t, "--format", "text", "--base", root, "new", "helper", "collect-prs.sh")
 	if got.code != ExitSuccess {
 		t.Fatalf("new helper exited %d: %s%s", got.code, got.stdout, got.stderr)
 	}
-	helper := filepath.Join(root, core.BaseBinDir, "collect-prs")
+	helper := filepath.Join(root, core.BaseBinDir, "collect-prs.sh")
 	data, err := os.ReadFile(helper)
 	if err != nil {
 		t.Fatal(err)
@@ -1156,8 +1238,8 @@ func TestBuildAndNewCommands(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o700 {
 		t.Fatalf("helper mode = %v, %v; want %04o", info.Mode().Perm(), err, 0o700)
 	}
-	if !strings.Contains(got.stdout, `run: ["collect-prs", "{{start}}", "{{end}}"]`) ||
-		!strings.Contains(got.stdout, `requires: ["collect-prs"]`) {
+	if !strings.Contains(got.stdout, `run: ["collect-prs.sh", "{{start}}", "{{end}}"]`) ||
+		!strings.Contains(got.stdout, `requires: ["collect-prs.sh"]`) {
 		t.Fatalf("new helper output lacks the config snippet:\n%s", got.stdout)
 	}
 	if strings.Contains(got.stdout, "()") {

@@ -1,5 +1,5 @@
 #!/bin/sh
-# github-search-json <prs|issues> author <start> <end> — written into
+# github-search-json.sh <prs|issues> author <start> <end> — written into
 # <base>/bin by `fkf init --preset personal|team`.
 #
 # GitHub Search exposes at most 1,000 results for one query, and a timed-out search can return a
@@ -10,7 +10,7 @@
 set -eu
 
 [ "$#" -eq 4 ] || {
-  echo "usage: github-search-json <prs|issues> author <start> <end>" >&2
+  echo "usage: github-search-json.sh <prs|issues> author <start> <end>" >&2
   exit 2
 }
 
@@ -23,7 +23,7 @@ case "$kind:$mode" in
   prs:author) type_qualifier=is:pr ;;
   issues:author) type_qualifier=is:issue ;;
   *)
-    echo "github-search-json: expected prs author or issues author" >&2
+    echo "github-search-json.sh: expected prs author or issues author" >&2
     exit 2
     ;;
 esac
@@ -53,15 +53,15 @@ epoch_to_rfc3339() {
 }
 
 if ! start_epoch=$(rfc3339_to_epoch "$start" 2>/dev/null); then
-  echo "github-search-json: start is not an RFC3339 timestamp: $start" >&2
+  echo "github-search-json.sh: start is not an RFC3339 timestamp: $start" >&2
   exit 2
 fi
 if ! end_epoch=$(rfc3339_to_epoch "$end" 2>/dev/null); then
-  echo "github-search-json: end is not an RFC3339 timestamp: $end" >&2
+  echo "github-search-json.sh: end is not an RFC3339 timestamp: $end" >&2
   exit 2
 fi
 if [ "$start_epoch" -ge "$end_epoch" ]; then
-  echo "github-search-json: start must be before end" >&2
+  echo "github-search-json.sh: start must be before end" >&2
   exit 2
 fi
 
@@ -92,7 +92,7 @@ collect_range() {
       -H 'X-GitHub-Api-Version: 2026-03-10' \
       -f "q=$query" -f sort=updated -f order=asc -F per_page=100 -F page="$page_number" \
       --jq "$projection" > "$response"; then
-      echo "github-search-json: GitHub REST search page $page_number failed for [$range_start, $range_end]" >&2
+      echo "github-search-json.sh: GitHub REST search page $page_number failed for [$range_start, $range_end]" >&2
       return 1
     fi
     if ! jq -e '
@@ -100,11 +100,11 @@ collect_range() {
       and (.total_count | type == "number" and . >= 0 and floor == .)
       and (.incomplete_results | type == "boolean")
       and (.items | type == "array")' "$response" >/dev/null; then
-      echo "github-search-json: GitHub REST search returned an invalid page for [$range_start, $range_end]" >&2
+      echo "github-search-json.sh: GitHub REST search returned an invalid page for [$range_start, $range_end]" >&2
       return 1
     fi
     if jq -e '.incomplete_results' "$response" >/dev/null; then
-      echo "github-search-json: GitHub REST search returned incomplete_results=true for [$range_start, $range_end]; cannot prove completeness" >&2
+      echo "github-search-json.sh: GitHub REST search returned incomplete_results=true for [$range_start, $range_end]; cannot prove completeness" >&2
       return 1
     fi
     cat "$response" >> "$raw_page"
@@ -120,7 +120,7 @@ collect_range() {
     page_number=$((page_number + 1))
   done
   if ! jq -s '.' "$raw_page" > "$page"; then
-    echo "github-search-json: GitHub REST search did not return JSON envelopes for [$range_start, $range_end]" >&2
+    echo "github-search-json.sh: GitHub REST search did not return JSON envelopes for [$range_start, $range_end]" >&2
     return 1
   fi
 
@@ -131,11 +131,11 @@ collect_range() {
       and (.total_count | type == "number" and . >= 0 and floor == .)
       and (.incomplete_results | type == "boolean")
       and (.items | type == "array"))' "$page" >/dev/null; then
-    echo "github-search-json: GitHub REST search returned an invalid paginated envelope for [$range_start, $range_end]" >&2
+    echo "github-search-json.sh: GitHub REST search returned an invalid paginated envelope for [$range_start, $range_end]" >&2
     return 1
   fi
   if jq -e 'any(.[]; .incomplete_results)' "$page" >/dev/null; then
-    echo "github-search-json: GitHub REST search returned incomplete_results=true for [$range_start, $range_end]; cannot prove completeness" >&2
+    echo "github-search-json.sh: GitHub REST search returned incomplete_results=true for [$range_start, $range_end]; cannot prove completeness" >&2
     return 1
   fi
   if ! total=$(jq -er '
@@ -143,13 +143,13 @@ collect_range() {
     | if ($totals | length) == 1 then $totals[0]
       else error("total_count changed between pages")
       end' "$page"); then
-    echo "github-search-json: GitHub REST search changed total_count between pages for [$range_start, $range_end]; cannot prove completeness" >&2
+    echo "github-search-json.sh: GitHub REST search changed total_count between pages for [$range_start, $range_end]; cannot prove completeness" >&2
     return 1
   fi
 
   if [ "$total" -ge 1000 ]; then
     if [ "$(( $2 - $1 ))" -le 1 ]; then
-      echo "github-search-json: one-second slice [$range_start, $range_end] reported $total results; cannot prove completeness" >&2
+      echo "github-search-json.sh: one-second slice [$range_start, $range_end] reported $total results; cannot prove completeness" >&2
       return 1
     fi
 
@@ -170,17 +170,17 @@ collect_range() {
       and (.state | type == "string")
       and (.user == null or (.user.login | type == "string" and length > 0)))' \
     "$page" >/dev/null; then
-    echo "github-search-json: GitHub REST search returned an invalid issue item for [$range_start, $range_end]" >&2
+    echo "github-search-json.sh: GitHub REST search returned an invalid issue item for [$range_start, $range_end]" >&2
     return 1
   fi
   retrieved=$(jq -r '[.[].items[]] | length' "$page")
   unique_urls=$(jq -r '[.[].items[].html_url] | unique | length' "$page")
   if [ "$retrieved" -ne "$total" ]; then
-    echo "github-search-json: retrieved $retrieved of $total results for [$range_start, $range_end]; cannot prove completeness" >&2
+    echo "github-search-json.sh: retrieved $retrieved of $total results for [$range_start, $range_end]; cannot prove completeness" >&2
     return 1
   fi
   if [ "$unique_urls" -ne "$total" ]; then
-    echo "github-search-json: retrieved $retrieved results but only $unique_urls unique URLs for [$range_start, $range_end]; cannot prove completeness" >&2
+    echo "github-search-json.sh: retrieved $retrieved results but only $unique_urls unique URLs for [$range_start, $range_end]; cannot prove completeness" >&2
     return 1
   fi
 

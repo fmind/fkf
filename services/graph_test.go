@@ -12,9 +12,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fmind/fkf/core"
 	"github.com/fmind/fkf/services"
+	"github.com/fmind/fkf/sources"
 )
 
 const dayOne = `[
@@ -106,6 +108,187 @@ func TestBuildGraphTranscribesDeclaredPathsAndAuthoredLinks(t *testing.T) {
 		if strings.Contains(edge.Dst, "nowhere.md") {
 			t.Fatalf("a link inside a code fence became an edge: %+v", edge)
 		}
+	}
+}
+
+func TestBuildGraphWritesGranularSHA256Manifest(t *testing.T) {
+	base := graphBase(t)
+	if _, err := services.BuildGraph(t.Context(), base); err != nil {
+		t.Fatal(err)
+	}
+	metaPath, err := base.Store.Resolve(core.GraphMetaFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal(encoded, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta["schema_version"] != float64(2) || meta["extractor_version"] != float64(1) {
+		t.Fatalf("metadata versions = schema %v, extractor %v; want 2 and 1", meta["schema_version"], meta["extractor_version"])
+	}
+	for _, retired := range []string{"documents_sha256", "inputs_sha256"} {
+		if _, found := meta[retired]; found {
+			t.Fatalf("metadata still exposes retired top-level field %q: %s", retired, encoded)
+		}
+	}
+	manifest, ok := meta["sha256"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata sha256 = %T, want an object", meta["sha256"])
+	}
+	inputs, ok := manifest["inputs"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata sha256.inputs = %T, want an object", manifest["inputs"])
+	}
+	wantInputs := []string{"AGGREGATE", "events", "index", "projects", "tasks", "wiki", "schema"}
+	if len(inputs) != len(wantInputs) {
+		t.Fatalf("metadata input manifest = %v, want exactly %v", inputs, wantInputs)
+	}
+	for _, name := range wantInputs {
+		value, found := inputs[name].(string)
+		if !found || len(value) != sha256.Size*2 {
+			t.Fatalf("metadata input %s = %v, want a lowercase SHA-256 digest", name, inputs[name])
+		}
+	}
+	outputs, ok := manifest["outputs"].(map[string]any)
+	if !ok || len(outputs) != 1 {
+		t.Fatalf("metadata sha256.outputs = %v, want only graph.tsv", manifest["outputs"])
+	}
+	if value, found := outputs[core.GraphFile].(string); !found || len(value) != sha256.Size*2 {
+		t.Fatalf("metadata output graph.tsv = %v, want a lowercase SHA-256 digest", outputs[core.GraphFile])
+	}
+}
+
+func TestBuildGraphManifestCoversEmptyDisabledLayers(t *testing.T) {
+	base := newBase(t, `fkf: 1
+name: empty-graph
+schema:
+  id: {description: Stable identity., cardinality: one}
+layers: {events: false, index: false, tasks: false, projects: false, wiki: false}
+sources: {}
+`, nil)
+	report, err := services.BuildGraph(t.Context(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := report.Meta.SHA256.Inputs
+	for name, value := range map[string]string{
+		"AGGREGATE": inputs.Aggregate, "events": inputs.Events, "index": inputs.Index,
+		"projects": inputs.Projects, "tasks": inputs.Tasks, "wiki": inputs.Wiki, "schema": inputs.Schema,
+	} {
+		if len(value) != sha256.Size*2 {
+			t.Fatalf("empty/disabled %s input digest = %q, want a SHA-256 digest", name, value)
+		}
+	}
+	if report.Meta.SHA256.Outputs.GraphTSV == "" {
+		t.Fatal("empty graph output has no integrity digest")
+	}
+}
+
+func TestGraphNamesEveryChangedInputComponent(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, *services.Base) *services.Base
+	}{
+		{name: "events", mutate: func(t *testing.T, base *services.Base) *services.Base {
+			path := mustResolve(t, base, "events/2026-05-04/synthetic.json")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed := bytes.Replace(data, []byte("Unrelated chore"), []byte("Changed chore"), 1)
+			if bytes.Equal(changed, data) {
+				t.Fatal("event fixture did not change")
+			}
+			if err := os.WriteFile(path, changed, core.BaseFileMode); err != nil {
+				t.Fatal(err)
+			}
+			return base
+		}},
+		{name: "index", mutate: func(t *testing.T, base *services.Base) *services.Base {
+			document, err := base.ReadDocument("index/snapshot.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			document.Records[0]["title"] = "Changed snapshot"
+			if err := base.WriteDocument(document); err != nil {
+				t.Fatal(err)
+			}
+			return base
+		}},
+		{name: "projects", mutate: appendGraphInput("projects/fkf-rebuild.md")},
+		{name: "tasks", mutate: appendGraphInput("tasks/2026-05-04/graph/TASKS.md")},
+		{name: "wiki", mutate: appendGraphInput("wiki/retrieval-boundary.md")},
+		{name: "schema", mutate: func(t *testing.T, base *services.Base) *services.Base {
+			path := mustResolve(t, base, core.ConfigFileName)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed := bytes.Replace(data,
+				[]byte("topic: {description: Searchable subject vocabulary., cardinality: optional}"),
+				[]byte("topic: {description: Searchable subject vocabulary., cardinality: many}"), 1)
+			if bytes.Equal(changed, data) {
+				t.Fatal("schema fixture did not change")
+			}
+			if err := os.WriteFile(path, changed, core.BaseFileMode); err != nil {
+				t.Fatal(err)
+			}
+			return openBase(t, base.Root(), nil)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base := graphManifestBase(t)
+			if _, err := services.BuildGraph(t.Context(), base); err != nil {
+				t.Fatal(err)
+			}
+			base = test.mutate(t, base)
+			_, err := services.SummarizeGraph(t.Context(), base)
+			if err == nil || !strings.Contains(err.Error(), test.name+" input changed") {
+				t.Fatalf("SummarizeGraph() error = %v, want the changed %s component", err, test.name)
+			}
+		})
+	}
+}
+
+func graphManifestBase(t *testing.T) *services.Base {
+	t.Helper()
+	base := graphBase(t)
+	write(t, base, "tasks/2026-05-04/graph/TASKS.md", "# Graph\n\n## 1. Build\n\n- **Request**: Build graph.\n\n## Learned\n")
+	document := completeTestDocument(base, &sources.Document{
+		FKF: sources.SchemaVersion, Source: "snapshot", Layer: core.LayerIndex,
+		CollectedAt: testClock.Format(time.RFC3339),
+		Fields: sources.Fields{
+			core.FieldID:    {mustFieldPath(t, ".id")},
+			core.FieldTitle: {mustFieldPath(t, ".title")},
+		},
+		Count: 1, Records: []sources.Record{{"id": "snapshot", "title": "Snapshot"}},
+	})
+	if err := base.WriteDocument(document); err != nil {
+		t.Fatal(err)
+	}
+	return base
+}
+
+func appendGraphInput(relative string) func(*testing.T, *services.Base) *services.Base {
+	return func(t *testing.T, base *services.Base) *services.Base {
+		path := mustResolve(t, base, relative)
+		file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.WriteString("\nChanged after graph build.\n"); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return base
 	}
 }
 
@@ -574,7 +757,7 @@ func TestGraphCacheRejectsAChangedAuthoredPage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := services.SummarizeGraph(t.Context(), base); err == nil || !strings.Contains(err.Error(), "current graph inputs") {
+	if _, err := services.SummarizeGraph(t.Context(), base); err == nil || !strings.Contains(err.Error(), "wiki input changed") {
 		t.Fatalf("SummarizeGraph() error = %v, want stale authored-page input refused", err)
 	}
 }
@@ -600,7 +783,7 @@ func TestGraphCacheRejectsAChangedAuthoredRelationSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := services.SummarizeGraph(t.Context(), changed); err == nil || !strings.Contains(err.Error(), "current graph inputs") {
+	if _, err := services.SummarizeGraph(t.Context(), changed); err == nil || !strings.Contains(err.Error(), "schema input changed") {
 		t.Fatalf("SummarizeGraph() error = %v, want changed relation semantics to stale the graph", err)
 	}
 }
@@ -1015,7 +1198,7 @@ func writeMatchingGraphCache(
 	meta.Edges = strings.Count(content, "\n")
 	meta.Extractors = extractors
 	meta.Bytes = len(content)
-	meta.SHA256 = hex.EncodeToString(digest[:])
+	meta.SHA256.Outputs.GraphTSV = hex.EncodeToString(digest[:])
 	encodedMeta, err = json.Marshal(meta)
 	if err != nil {
 		t.Fatal(err)

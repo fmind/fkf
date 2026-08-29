@@ -29,6 +29,18 @@ func sampleEdges() []services.Edge {
 	}
 }
 
+func sampleGraphInputs(t *testing.T) services.GraphInputSHA256 {
+	t.Helper()
+	inputs, err := services.NewGraphInputSHA256(
+		strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64),
+		strings.Repeat("d", 64), strings.Repeat("e", 64), strings.Repeat("f", 64),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inputs
+}
+
 func TestEncodeEdgesIsCanonicalAndDeterministic(t *testing.T) {
 	t.Parallel()
 
@@ -225,7 +237,7 @@ func TestWriteAndAppendEdgeList(t *testing.T) {
 	generated := time.Date(2026, 8, 21, 6, 0, 0, 0, time.UTC)
 
 	edges := sampleEdges()
-	meta, err := services.NewEdgeListMeta(edges, generated, strings.Repeat("a", 64), strings.Repeat("b", 64))
+	meta, err := services.NewEdgeListMeta(edges, generated, sampleGraphInputs(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +263,7 @@ func TestWriteAndAppendEdgeList(t *testing.T) {
 		Src: "a", Dst: "b", Kind: "mentions", Via: "test", Indexed: generated.Format(time.RFC3339),
 	}
 	edges = append(edges, appended)
-	meta, err = services.NewEdgeListMeta(edges, generated, strings.Repeat("a", 64), strings.Repeat("b", 64))
+	meta, err = services.NewEdgeListMeta(edges, generated, sampleGraphInputs(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +300,7 @@ func TestMetadataWriteFailureLeavesAnOldSidecarThatCannotValidateNewRows(t *test
 	generated := time.Date(2026, 8, 21, 6, 0, 0, 0, time.UTC)
 	indexed := generated.Format(time.RFC3339)
 	oldEdges := []services.Edge{{Src: "a", Dst: "b", Kind: "mentions", Via: "test", Indexed: indexed}}
-	oldMeta, err := services.NewEdgeListMeta(oldEdges, generated, strings.Repeat("a", 64), strings.Repeat("b", 64))
+	oldMeta, err := services.NewEdgeListMeta(oldEdges, generated, sampleGraphInputs(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +313,7 @@ func TestMetadataWriteFailureLeavesAnOldSidecarThatCannotValidateNewRows(t *test
 	t.Cleanup(func() { _ = os.Chmod(metaDir, 0o700) })
 
 	newEdges := []services.Edge{{Src: "a", Dst: "c", Kind: "mentions", Via: "test", Indexed: indexed}}
-	newMeta, err := services.NewEdgeListMeta(newEdges, generated, strings.Repeat("a", 64), strings.Repeat("b", 64))
+	newMeta, err := services.NewEdgeListMeta(newEdges, generated, sampleGraphInputs(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +336,7 @@ func TestMetadataWriteFailureLeavesAnOldSidecarThatCannotValidateNewRows(t *test
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(encodedRows)
-	if retained.SHA256 == hex.EncodeToString(digest[:]) {
+	if retained.SHA256.Outputs.GraphTSV == hex.EncodeToString(digest[:]) {
 		t.Fatal("the retained old sidecar accidentally validates the newly published rows")
 	}
 }

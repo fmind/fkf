@@ -1,5 +1,5 @@
 #!/bin/sh
-# github-list-json <notifications start end|user-repositories|org-repositories org> — fetch a
+# github-list-json.sh <notifications start end|user-repositories|org-repositories org> — fetch a
 # complete GitHub REST list through explicit pages. `gh api --paginate` has no request ceiling;
 # this helper follows Link rel=next itself and fails before emitting anything if 100 pages do
 # not exhaust the collection.
@@ -11,10 +11,10 @@ case "$mode:$#" in
   user-repositories:1) ;;
   org-repositories:2)
     org=$2
-    case "$org" in "" | *[!A-Za-z0-9_.-]*) echo "github-list-json: invalid organization" >&2; exit 2 ;; esac
+    case "$org" in "" | *[!A-Za-z0-9_.-]*) echo "github-list-json.sh: invalid organization" >&2; exit 2 ;; esac
     ;;
   *)
-    echo "usage: github-list-json <notifications start end|user-repositories|org-repositories org>" >&2
+    echo "usage: github-list-json.sh <notifications start end|user-repositories|org-repositories org>" >&2
     exit 2
     ;;
 esac
@@ -37,7 +37,7 @@ while [ "$page_number" -le "$max_pages" ]; do
       if ! gh api --method GET --include /notifications \
         -F all=true -f since="$start" -f before="$end" \
         -F per_page="$page_size" -F page="$page_number" > "$response"; then
-        echo "github-list-json: GitHub notifications page $page_number failed" >&2
+        echo "github-list-json.sh: GitHub notifications page $page_number failed" >&2
         exit 1
       fi
       ;;
@@ -45,7 +45,7 @@ while [ "$page_number" -le "$max_pages" ]; do
       if ! gh api --method GET --include /user/repos \
         -f sort=updated -f direction=desc \
         -F per_page="$page_size" -F page="$page_number" > "$response"; then
-        echo "github-list-json: GitHub repository page $page_number failed" >&2
+        echo "github-list-json.sh: GitHub repository page $page_number failed" >&2
         exit 1
       fi
       ;;
@@ -53,7 +53,7 @@ while [ "$page_number" -le "$max_pages" ]; do
       if ! gh api --method GET --include "/orgs/$org/repos" \
         -f type=all -f sort=updated -f direction=desc \
         -F per_page="$page_size" -F page="$page_number" > "$response"; then
-        echo "github-list-json: GitHub organization repository page $page_number failed" >&2
+        echo "github-list-json.sh: GitHub organization repository page $page_number failed" >&2
         exit 1
       fi
       ;;
@@ -64,7 +64,7 @@ while [ "$page_number" -le "$max_pages" ]; do
   sed -n '1,/^[[:space:]]*$/p' "$response" > "$headers"
   sed '1,/^[[:space:]]*$/d' "$response" > "$body"
   if ! jq -e 'type == "array"' "$body" >/dev/null; then
-    echo "github-list-json: GitHub page $page_number was not a JSON array" >&2
+    echo "github-list-json.sh: GitHub page $page_number was not a JSON array" >&2
     exit 1
   fi
   case "$mode" in
@@ -74,7 +74,7 @@ while [ "$page_number" -le "$max_pages" ]; do
           (.updated_at | type) == "string" and
           ((try (.updated_at | fromdateiso8601) catch null) | type) == "number")
       ' "$body" >/dev/null; then
-        echo "github-list-json: every notification must carry a valid updated_at timestamp" >&2
+        echo "github-list-json.sh: every notification must carry a valid updated_at timestamp" >&2
         exit 1
       fi
       jq -c --arg start "$start" --arg end "$end" '
@@ -104,7 +104,7 @@ while [ "$page_number" -le "$max_pages" ]; do
 
   if sed -n '/^[Ll][Ii][Nn][Kk]: .*rel="next"/p' "$headers" | sed -n '1p' | read -r _; then
     if [ "$page_number" -eq "$max_pages" ]; then
-      echo "github-list-json: reached the 100-page safety limit with rel=next; cannot prove completeness" >&2
+      echo "github-list-json.sh: reached the 100-page safety limit with rel=next; cannot prove completeness" >&2
       exit 1
     fi
     page_number=$((page_number + 1))
@@ -114,5 +114,5 @@ while [ "$page_number" -le "$max_pages" ]; do
   exit 0
 done
 
-echo "github-list-json: pagination ended without a terminal page; cannot prove completeness" >&2
+echo "github-list-json.sh: pagination ended without a terminal page; cannot prove completeness" >&2
 exit 1

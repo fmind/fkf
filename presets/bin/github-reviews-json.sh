@@ -1,5 +1,5 @@
 #!/bin/sh
-# github-reviews-json <start> <end> — written into <base>/bin by
+# github-reviews-json.sh <start> <end> — written into <base>/bin by
 # `fkf init --preset personal|team`.
 #
 # GitHub's contribution connection returns actual PullRequestReview nodes and exposes a cursor
@@ -9,7 +9,7 @@
 set -eu
 
 [ "$#" -eq 2 ] || {
-  echo "usage: github-reviews-json <start> <end>" >&2
+  echo "usage: github-reviews-json.sh <start> <end>" >&2
   exit 2
 }
 
@@ -35,15 +35,15 @@ rfc3339_to_epoch() {
 }
 
 if ! start_epoch=$(rfc3339_to_epoch "$start" 2>/dev/null); then
-  echo "github-reviews-json: start is not an RFC3339 timestamp: $start" >&2
+  echo "github-reviews-json.sh: start is not an RFC3339 timestamp: $start" >&2
   exit 2
 fi
 if ! end_epoch=$(rfc3339_to_epoch "$end" 2>/dev/null); then
-  echo "github-reviews-json: end is not an RFC3339 timestamp: $end" >&2
+  echo "github-reviews-json.sh: end is not an RFC3339 timestamp: $end" >&2
   exit 2
 fi
 if [ "$start_epoch" -ge "$end_epoch" ]; then
-  echo "github-reviews-json: start must be before end" >&2
+  echo "github-reviews-json.sh: start must be before end" >&2
   exit 2
 fi
 start_utc=$(jq -nr --argjson epoch "$start_epoch" '$epoch | todateiso8601')
@@ -85,17 +85,17 @@ max_records=10000
 while :; do
   page_number=$((page_number + 1))
   if [ "$page_number" -gt "$max_pages" ]; then
-    echo "github-reviews-json: reached the 100-page safety limit; cannot prove completeness" >&2
+    echo "github-reviews-json.sh: reached the 100-page safety limit; cannot prove completeness" >&2
     exit 1
   fi
   if [ -n "$cursor" ]; then
     if ! gh api graphql -f query="$query" -f from="$start_utc" -f to="$end_utc" \
       -f cursor="$cursor" > "$page"; then
-      echo "github-reviews-json: GitHub GraphQL page failed" >&2
+      echo "github-reviews-json.sh: GitHub GraphQL page failed" >&2
       exit 1
     fi
   elif ! gh api graphql -f query="$query" -f from="$start_utc" -f to="$end_utc" > "$page"; then
-    echo "github-reviews-json: GitHub GraphQL page failed" >&2
+    echo "github-reviews-json.sh: GitHub GraphQL page failed" >&2
     exit 1
   fi
 
@@ -122,7 +122,7 @@ while :; do
       and (.user.login | type == "string" and length > 0)
     ))
   ' "$page" >/dev/null; then
-    echo "github-reviews-json: GitHub GraphQL returned an invalid review contribution page" >&2
+    echo "github-reviews-json.sh: GitHub GraphQL returned an invalid review contribution page" >&2
     exit 1
   fi
 
@@ -130,17 +130,17 @@ while :; do
   if [ -z "$expected_total" ]; then
     expected_total=$page_total
     if [ "$expected_total" -gt "$max_records" ]; then
-      echo "github-reviews-json: totalCount $expected_total exceeds the 100-page safety limit; cannot prove completeness" >&2
+      echo "github-reviews-json.sh: totalCount $expected_total exceeds the 100-page safety limit; cannot prove completeness" >&2
       exit 1
     fi
   elif [ "$page_total" -ne "$expected_total" ]; then
-    echo "github-reviews-json: totalCount changed while paginating; cannot prove completeness" >&2
+    echo "github-reviews-json.sh: totalCount changed while paginating; cannot prove completeness" >&2
     exit 1
   fi
   page_count=$(jq -r '.data.viewer.contributionsCollection.pullRequestReviewContributions.nodes | length' "$page")
   seen_count=$((seen_count + page_count))
   if [ "$seen_count" -gt "$expected_total" ]; then
-    echo "github-reviews-json: received more nodes than totalCount; cannot prove completeness" >&2
+    echo "github-reviews-json.sh: received more nodes than totalCount; cannot prove completeness" >&2
     exit 1
   fi
   jq -c '.data.viewer.contributionsCollection.pullRequestReviewContributions.nodes[].pullRequestReview.id' \
@@ -176,30 +176,30 @@ while :; do
     break
   fi
   if [ "$page_count" -eq 0 ]; then
-    echo "github-reviews-json: GraphQL returned an empty page with hasNextPage=true; cannot prove completeness" >&2
+    echo "github-reviews-json.sh: GraphQL returned an empty page with hasNextPage=true; cannot prove completeness" >&2
     exit 1
   fi
   next_cursor=$(jq -er '
     .data.viewer.contributionsCollection.pullRequestReviewContributions.pageInfo.endCursor
     | select(type == "string" and length > 0)
   ' "$page") || {
-    echo "github-reviews-json: next GraphQL page has no cursor; cannot prove completeness" >&2
+    echo "github-reviews-json.sh: next GraphQL page has no cursor; cannot prove completeness" >&2
     exit 1
   }
   if [ "$next_cursor" = "$cursor" ]; then
-    echo "github-reviews-json: GraphQL pagination cursor did not advance; cannot prove completeness" >&2
+    echo "github-reviews-json.sh: GraphQL pagination cursor did not advance; cannot prove completeness" >&2
     exit 1
   fi
   cursor=$next_cursor
 done
 
 if [ "$seen_count" -ne "$expected_total" ]; then
-  echo "github-reviews-json: received $seen_count of totalCount $expected_total review contributions" >&2
+  echo "github-reviews-json.sh: received $seen_count of totalCount $expected_total review contributions" >&2
   exit 1
 fi
 unique_count=$(jq -s 'unique | length' "$review_ids")
 if [ "$unique_count" -ne "$seen_count" ]; then
-  echo "github-reviews-json: GraphQL pages contain duplicate review nodes; cannot prove completeness" >&2
+  echo "github-reviews-json.sh: GraphQL pages contain duplicate review nodes; cannot prove completeness" >&2
   exit 1
 fi
 

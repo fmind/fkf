@@ -6,11 +6,11 @@ sources:
   github-repositories:
     enabled: false
     layer: index
-    requires: [github-list-json, gh, jq]
+    requires: [github-list-json.sh, gh, jq]
     # Replace the sentinel with this base's one organization before enabling. Using /user/repos
     # here would cross the team boundary by also collecting the operator's personal repositories.
     format: ndjson
-    run: [github-list-json, org-repositories, REPLACE_WITH_ORG]
+    run: [github-list-json.sh, org-repositories, REPLACE_WITH_ORG]
     fields:
       id: .nameWithOwner
       url: .url

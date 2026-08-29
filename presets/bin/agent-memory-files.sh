@@ -1,5 +1,5 @@
 #!/bin/sh
-# agent-memory-files <start> <end> — written into <base>/bin by `fkf init --preset personal`.
+# agent-memory-files.sh <start> <end> — written into <base>/bin by `fkf init --preset personal`.
 #
 # Prints one JSON array with one record per coding-agent memory file touched in the half-open
 # UTC window, one root per harness:
@@ -19,9 +19,9 @@
 # use.
 set -eu
 
-start=${1:?usage: agent-memory-files <start> <end>}
-end=${2:?usage: agent-memory-files <start> <end>}
-command -v jq >/dev/null 2>&1 || { echo "agent-memory-files: jq is required" >&2; exit 1; }
+start=${1:?usage: agent-memory-files.sh <start> <end>}
+end=${2:?usage: agent-memory-files.sh <start> <end>}
+command -v jq >/dev/null 2>&1 || { echo "agent-memory-files.sh: jq is required" >&2; exit 1; }
 start_epoch=$(jq -ern --arg time "$start" '$time | fromdateiso8601')
 end_epoch=$(jq -ern --arg time "$end" '$time | fromdateiso8601')
 
@@ -37,7 +37,7 @@ touched() {
     elif mtime=$(stat -f %m "$file" 2>/dev/null); then
       : # BSD/macOS stat.
     else
-      echo "agent-memory-files: stat could not read $file" >&2
+      echo "agent-memory-files.sh: stat could not read $file" >&2
       return 1
     fi
     if awk -v value="$mtime" -v start="$start_epoch" -v end="$end_epoch" \

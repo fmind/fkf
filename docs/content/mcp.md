@@ -145,7 +145,7 @@ That output is from a base created with `--demo`, which is why it has zero enabl
 
 Two further details:
 
-- **The untrusted-evidence notice is a fixed constant**, emitted verbatim for every base rather than rephrased per base, and the same rule is stated in the base's `AGENTS.md`, in the `fkf` skill, and — because this is sent only once, at connection time, and a long session can compact its own history well past it — on every `context` pack's own `notice` field, the one framing a session driven by [`fkf-hook`](../harnesses/) actually reads. An agent can arrive through any of the four, so all four say it.
+- **The untrusted-evidence notice is a fixed constant**, emitted verbatim for every base rather than rephrased per base, and the same rule is stated in the base's `AGENTS.md`, in the `fkf` skill, and — because this is sent only once, at connection time, and a long session can compact its own history well past it — on every `context` pack's own `notice` field, the one framing a session driven by [`fkf-hook.sh`](../harnesses/) actually reads. An agent can arrive through any of the four, so all four say it.
 - **The text is capped at 4096 bytes.** It is prepended on every session, so an unbounded string is a tax paid on every turn.
 
 ## Logging

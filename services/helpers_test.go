@@ -13,13 +13,13 @@ import (
 )
 
 func TestHelpersReportAndExplicitRefreshTouchOnlyShippedHelpers(t *testing.T) {
-	config := strings.Replace(baseConfig, "    run: [cli", "    requires: [git-log-json]\n    run: [cli", 1)
+	config := strings.Replace(baseConfig, "    run: [cli", "    requires: [git-log-json.sh]\n    run: [cli", 1)
 	base := newBase(t, config, nil)
 	bin := filepath.Join(base.Root(), core.BaseBinDir)
 	if err := os.MkdirAll(bin, core.BaseDirMode); err != nil {
 		t.Fatal(err)
 	}
-	drifted := filepath.Join(bin, "fkf-hook")
+	drifted := filepath.Join(bin, "fkf-hook.sh")
 	custom := filepath.Join(bin, "custom-source")
 	if err := os.WriteFile(drifted, []byte("#!/bin/sh\necho locally edited\n"), 0o700); err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestDisabledSourcesDoNotRequireOrMaterializeOfficialHelpers(t *testing.T) {
 	}
 
 	// This helper belongs only to disabled examples in the personal preset.
-	helper := filepath.Join(root, core.BaseBinDir, "github-search-json")
+	helper := filepath.Join(root, core.BaseBinDir, "github-search-json.sh")
 	if _, err := os.Stat(helper); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("disabled provider helper was materialized: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestDisabledSourcesDoNotRequireOrMaterializeOfficialHelpers(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, status := range report.Helpers {
-		if status.Name == "github-search-json" {
+		if status.Name == "github-search-json.sh" {
 			t.Fatalf("disabled provider enlarged the helper audit: %+v", status)
 		}
 	}
@@ -107,7 +107,7 @@ func TestHelperRefreshMaterializesANewlyEnabledOfficialHelper(t *testing.T) {
 	}
 	var missing bool
 	for _, status := range before.Helpers {
-		if status.Name == "github-search-json" && status.Required && status.State == services.HelperMissing {
+		if status.Name == "github-search-json.sh" && status.Required && status.State == services.HelperMissing {
 			missing = true
 		}
 	}
@@ -121,7 +121,7 @@ func TestHelperRefreshMaterializesANewlyEnabledOfficialHelper(t *testing.T) {
 	if after.Refreshed == 0 {
 		t.Fatalf("after = %+v, want the missing required helper refreshed", after)
 	}
-	if info, err := os.Stat(filepath.Join(root, core.BaseBinDir, "github-search-json")); err != nil || info.Mode().Perm() != 0o700 {
+	if info, err := os.Stat(filepath.Join(root, core.BaseBinDir, "github-search-json.sh")); err != nil || info.Mode().Perm() != 0o700 {
 		t.Fatalf("refreshed helper = %v, %v", info, err)
 	}
 }
@@ -146,7 +146,7 @@ func TestDisablingASourceRemovesItsOfficialHelperFromTheHelperAudit(t *testing.T
 	if err := os.WriteFile(configPath, []byte(updated), core.BaseFileMode); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, core.BaseBinDir, "git-log-json")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, core.BaseBinDir, "git-log-json.sh")); err != nil {
 		t.Fatalf("disabling a source must not delete an existing helper: %v", err)
 	}
 	report, err := services.InspectHelpers(t.Context(), openBase(t, root, nil), false)
@@ -154,7 +154,7 @@ func TestDisablingASourceRemovesItsOfficialHelperFromTheHelperAudit(t *testing.T
 		t.Fatal(err)
 	}
 	for _, status := range report.Helpers {
-		if status.Name == "git-log-json" {
+		if status.Name == "git-log-json.sh" {
 			t.Fatalf("disabled source retained an unnecessary helper audit entry: %+v", status)
 		}
 	}
@@ -166,7 +166,7 @@ func TestHelpersRefuseASymlinkBeforeRefresh(t *testing.T) {
 	if err := os.MkdirAll(bin, core.BaseDirMode); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(t.TempDir(), "outside"), filepath.Join(bin, "fkf-hook")); err != nil {
+	if err := os.Symlink(filepath.Join(t.TempDir(), "outside"), filepath.Join(bin, "fkf-hook.sh")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := services.InspectHelpers(t.Context(), base, true); err == nil {
@@ -177,7 +177,7 @@ func TestHelpersRefuseASymlinkBeforeRefresh(t *testing.T) {
 func TestHelpersRefuseASymlinkedBinDirectoryBeforeInspection(t *testing.T) {
 	base := newBase(t, baseConfig, nil)
 	outside := t.TempDir()
-	if err := os.WriteFile(filepath.Join(outside, "fkf-hook"), []byte("outside\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(outside, "fkf-hook.sh"), []byte("outside\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(outside, filepath.Join(base.Root(), core.BaseBinDir)); err != nil {
@@ -194,7 +194,7 @@ func TestHelpersRefreshThroughASymlinkSpelledBaseRoot(t *testing.T) {
 	if err := os.MkdirAll(bin, core.BaseDirMode); err != nil {
 		t.Fatal(err)
 	}
-	drifted := filepath.Join(bin, "fkf-hook")
+	drifted := filepath.Join(bin, "fkf-hook.sh")
 	if err := os.WriteFile(drifted, []byte("#!/bin/sh\necho locally edited\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -225,12 +225,12 @@ func TestHelpersPreflightEveryOfficialTargetBeforeRefreshingAny(t *testing.T) {
 	if err := os.MkdirAll(bin, core.BaseDirMode); err != nil {
 		t.Fatal(err)
 	}
-	drifted := filepath.Join(bin, "agent-memory-files")
+	drifted := filepath.Join(bin, "agent-memory-files.sh")
 	want := []byte("#!/bin/sh\necho locally edited\n")
 	if err := os.WriteFile(drifted, want, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(t.TempDir(), "outside"), filepath.Join(bin, "fkf-hook")); err != nil {
+	if err := os.Symlink(filepath.Join(t.TempDir(), "outside"), filepath.Join(bin, "fkf-hook.sh")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := services.InspectHelpers(t.Context(), base, true); err == nil {

@@ -97,9 +97,12 @@ func CreateNew(base *Base, req NewRequest) (*NewResult, error) {
 
 func createNewHelper(base *Base, name string) (*NewResult, error) {
 	if name == "" {
-		return nil, errors.New("helper name is required (e.g. `fkf new helper collect-prs`)")
+		return nil, errors.New("helper name is required (e.g. `fkf new helper collect-prs.sh`)")
 	}
-	content := helperTemplate(name)
+	content, requirements, err := helperTemplate(name)
+	if err != nil {
+		return nil, err
+	}
 	relPath := filepath.ToSlash(filepath.Join(core.BaseBinDir, name))
 	absPath := filepath.Join(base.Root(), filepath.FromSlash(relPath))
 	if err := core.ValidateWithinRoot(base.Root(), absPath); err != nil {
@@ -117,13 +120,21 @@ func createNewHelper(base *Base, name string) (*NewResult, error) {
 	return &NewResult{
 		Kind: NewKindHelper, Path: absPath, Created: true,
 		Message: "created helper at " + relPath,
-		Run:     []string{name, "{{start}}", "{{end}}"}, Requires: []string{name},
+		Run:     []string{name, "{{start}}", "{{end}}"}, Requires: requirements,
 	}, nil
 }
 
-func helperTemplate(name string) string {
+func helperTemplate(name string) (string, []string, error) {
 	usage := name + " <start> <end>"
-	return fmt.Sprintf("#!/bin/sh\nset -eu\n\n[ \"$#\" -eq 2 ] || { echo \"usage: %s\" >&2; exit 2; }\necho \"%s: not implemented\" >&2\nexit 1\n", usage, name)
+	switch filepath.Ext(name) {
+	case ".sh":
+		return fmt.Sprintf("#!/bin/sh\nset -eu\n\n[ \"$#\" -eq 2 ] || { echo \"usage: %s\" >&2; exit 2; }\necho \"%s: not implemented\" >&2\nexit 1\n", usage, name), []string{name}, nil
+	case ".py":
+		return fmt.Sprintf("#!/usr/bin/env python3\nimport sys\n\nif len(sys.argv) != 3:\n    print(\"usage: %s\", file=sys.stderr)\n    raise SystemExit(2)\nprint(\"%s: not implemented\", file=sys.stderr)\nraise SystemExit(1)\n", usage, name), []string{name, "python3"}, nil
+	default:
+		// The extension makes the interpreter contract visible in every base, review, and editor.
+		return "", nil, fmt.Errorf("helper name %q must end in .sh or .py", name)
+	}
 }
 
 func createNewTask(base *Base, slug, title, today string) (*NewResult, error) {

@@ -53,11 +53,7 @@ func BuildGraph(ctx context.Context, base *Base) (*GraphBuild, error) {
 		return nil, err
 	}
 	started := base.Now()
-	documentsSHA256, err := collectedDocumentsSHA256(ctx, base)
-	if err != nil {
-		return nil, err
-	}
-	inputsSHA256, err := graphInputsSHA256(ctx, base, documentsSHA256)
+	inputsSHA256, err := graphInputSHA256(ctx, base)
 	if err != nil {
 		return nil, err
 	}
@@ -65,21 +61,14 @@ func BuildGraph(ctx context.Context, base *Base) (*GraphBuild, error) {
 	if err != nil {
 		return nil, err
 	}
-	confirmedSHA256, err := collectedDocumentsSHA256(ctx, base)
-	if err != nil {
-		return nil, err
-	}
-	if confirmedSHA256 != documentsSHA256 {
-		return nil, errors.New("collected documents changed while the derived caches were being built; retry")
-	}
-	confirmedInputsSHA256, err := graphInputsSHA256(ctx, base, confirmedSHA256)
+	confirmedInputsSHA256, err := graphInputSHA256(ctx, base)
 	if err != nil {
 		return nil, err
 	}
 	if confirmedInputsSHA256 != inputsSHA256 {
-		return nil, errors.New("authored graph inputs changed while the derived caches were being built; retry")
+		return nil, errors.New("graph inputs changed while the derived caches were being built; retry")
 	}
-	meta, err := writeGraph(base, edges, started, documentsSHA256, inputsSHA256)
+	meta, err := writeGraph(base, edges, started, inputsSHA256)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +81,7 @@ func BuildGraph(ctx context.Context, base *Base) (*GraphBuild, error) {
 }
 
 func writeGraph(
-	base *Base, edges []Edge, at time.Time, documentsSHA256, inputsSHA256 string,
+	base *Base, edges []Edge, at time.Time, inputsSHA256 GraphInputSHA256,
 ) (EdgeListMeta, error) {
 	indexed := at.UTC().Format(time.RFC3339)
 	for index := range edges {
@@ -109,7 +98,7 @@ func writeGraph(
 	if err := os.MkdirAll(path.Dir(rows), core.BaseDirMode); err != nil {
 		return EdgeListMeta{}, fmt.Errorf("create %s: %w", path.Dir(rows), err)
 	}
-	metadata, err := NewEdgeListMeta(edges, at, documentsSHA256, inputsSHA256)
+	metadata, err := NewEdgeListMeta(edges, at, inputsSHA256)
 	if err != nil {
 		return EdgeListMeta{}, err
 	}
@@ -119,15 +108,89 @@ func writeGraph(
 	return metadata, nil
 }
 
-// graphInputsSHA256 binds the edge cache to every source-of-truth input its extractors read.
-// The collected-document digest is already a canonical, ordered reduction, so it becomes one
-// framed input alongside the exact bytes of every addressable Markdown page in URI order and
-// the root schema semantics that validate authored relations. Descriptions and examples do not
-// participate because changing presentation-only metadata cannot change an edge.
-func graphInputsSHA256(ctx context.Context, base *Base, documentsSHA256 string) (string, error) {
+// graphInputSHA256 binds the cache to separately diagnosable logical components. Each component
+// is domain-separated and framed, so empty inputs remain unambiguous and filesystem order never
+// participates. Descriptions and examples stay outside the schema digest because they cannot
+// change an edge.
+func graphInputSHA256(ctx context.Context, base *Base) (GraphInputSHA256, error) {
+	events, err := graphDocumentInputSHA256(ctx, base, core.LayerEvents)
+	if err != nil {
+		return GraphInputSHA256{}, err
+	}
+	index, err := graphDocumentInputSHA256(ctx, base, core.LayerIndex)
+	if err != nil {
+		return GraphInputSHA256{}, err
+	}
+	projects, err := graphAuthoredInputSHA256(ctx, base, core.LayerProjects)
+	if err != nil {
+		return GraphInputSHA256{}, err
+	}
+	tasks, err := graphAuthoredInputSHA256(ctx, base, core.LayerTasks)
+	if err != nil {
+		return GraphInputSHA256{}, err
+	}
+	wiki, err := graphAuthoredInputSHA256(ctx, base, core.LayerWiki)
+	if err != nil {
+		return GraphInputSHA256{}, err
+	}
+	return NewGraphInputSHA256(events, index, projects, tasks, wiki, graphSchemaInputSHA256(base))
+}
+
+func graphDocumentInputSHA256(ctx context.Context, base *Base, layer core.Layer) (string, error) {
 	digest := sha256.New()
-	_, _ = digest.Write([]byte("fkf-graph-inputs-v2\x00"))
-	writeDigestValue(digest, []byte(documentsSHA256))
+	_, _ = digest.Write([]byte("fkf-graph-input-" + string(layer) + "-v1\x00"))
+	if !base.Store.Enabled(layer) {
+		return hex.EncodeToString(digest.Sum(nil)), nil
+	}
+	var uris []string
+	switch layer {
+	case core.LayerEvents:
+		dates, err := base.EventDates()
+		if err != nil {
+			return "", err
+		}
+		for _, date := range dates {
+			names, err := base.DayDocuments(date)
+			if err != nil {
+				return "", err
+			}
+			for _, name := range names {
+				uris = append(uris, sources.EventDocumentURI(date, name))
+			}
+		}
+	case core.LayerIndex:
+		names, err := base.IndexDocuments()
+		if err != nil {
+			return "", err
+		}
+		for _, name := range names {
+			uris = append(uris, sources.IndexDocumentURI(name))
+		}
+	default:
+		return "", fmt.Errorf("%s is not a collected graph input layer", layer)
+	}
+	sort.Strings(uris)
+	for _, uri := range uris {
+		if err := checkContext(ctx); err != nil {
+			return "", err
+		}
+		document, err := base.ReadDocumentContext(ctx, uri)
+		if err != nil {
+			return "", err
+		}
+		encoded, err := sources.EncodeDocument(document)
+		if err != nil {
+			return "", err
+		}
+		writeDigestValue(digest, []byte(uri))
+		writeDigestValue(digest, encoded)
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
+}
+
+func graphSchemaInputSHA256(base *Base) string {
+	digest := sha256.New()
+	_, _ = digest.Write([]byte("fkf-graph-input-schema-v1\x00"))
 	for _, name := range base.Config.Schema.Names() {
 		definition := base.Config.Schema[name]
 		writeDigestValue(digest, []byte(name))
@@ -138,7 +201,13 @@ func graphInputsSHA256(ctx context.Context, base *Base, documentsSHA256 string) 
 			writeDigestValue(digest, []byte("value"))
 		}
 	}
-	pages, err := graphInputPageURIs(ctx, base)
+	return hex.EncodeToString(digest.Sum(nil))
+}
+
+func graphAuthoredInputSHA256(ctx context.Context, base *Base, layer core.Layer) (string, error) {
+	digest := sha256.New()
+	_, _ = digest.Write([]byte("fkf-graph-input-" + string(layer) + "-v1\x00"))
+	pages, err := graphInputPageURIs(ctx, base, layer)
 	if err != nil {
 		return "", err
 	}
@@ -156,12 +225,13 @@ func graphInputsSHA256(ctx context.Context, base *Base, documentsSHA256 string) 
 	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
-func graphInputPageURIs(ctx context.Context, base *Base) ([]string, error) {
+func graphInputPageURIs(ctx context.Context, base *Base, layer core.Layer) ([]string, error) {
+	if !base.Store.Enabled(layer) {
+		return nil, nil
+	}
 	var uris []string
-	for _, layer := range []core.Layer{core.LayerProjects, core.LayerWiki} {
-		if !base.Store.Enabled(layer) {
-			continue
-		}
+	switch layer {
+	case core.LayerProjects, core.LayerWiki:
 		pages, _, err := loadMarkdownLayer(ctx, base, layer)
 		if err != nil {
 			return nil, err
@@ -169,8 +239,7 @@ func graphInputPageURIs(ctx context.Context, base *Base) ([]string, error) {
 		for _, page := range pages {
 			uris = append(uris, page.URI)
 		}
-	}
-	if base.Store.Enabled(core.LayerTasks) {
+	case core.LayerTasks:
 		listing, err := ListTasks(ctx, base, Window{}, 0)
 		if err != nil {
 			return nil, err
@@ -178,6 +247,8 @@ func graphInputPageURIs(ctx context.Context, base *Base) ([]string, error) {
 		for _, trace := range listing.Traces {
 			uris = append(uris, trace.URI)
 		}
+	default:
+		return nil, fmt.Errorf("%s is not an authored graph input layer", layer)
 	}
 	sort.Strings(uris)
 	return uris, nil
@@ -696,7 +767,7 @@ func walkNeighbourhood(
 	}
 	result := &Neighbourhood{
 		URI: start.String(), Direction: query.Direction, Depth: query.Depth,
-		Edges: []NeighbourEdge{}, Nodes: []string{}, SnapshotSHA256: cache.meta.SHA256,
+		Edges: []NeighbourEdge{}, Nodes: []string{}, SnapshotSHA256: cache.meta.SHA256.Outputs.GraphTSV,
 	}
 	walk := &walkState{
 		result:   result,
@@ -865,7 +936,7 @@ func (cache *validatedGraphCache) revalidateBytes(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("revalidate the edge-list snapshot: %w", err)
 	}
-	if bytes != int64(cache.meta.Bytes) || hex.EncodeToString(digest.Sum(nil)) != cache.meta.SHA256 {
+	if bytes != int64(cache.meta.Bytes) || hex.EncodeToString(digest.Sum(nil)) != cache.meta.SHA256.Outputs.GraphTSV {
 		return fmt.Errorf("invalid derived graph cache: %s changed during the read; run `fkf build graph`",
 			core.GraphFile)
 	}
@@ -1138,20 +1209,15 @@ func openValidatedGraphCacheWithVisit(
 }
 
 func currentGraphInputProblems(ctx context.Context, base *Base, meta EdgeListMeta) []string {
-	documentsSHA256, err := collectedDocumentsSHA256(ctx, base)
+	inputsSHA256, err := graphInputSHA256(ctx, base)
 	if err != nil {
-		return []string{fmt.Sprintf("cannot validate current collected documents: %v", err)}
+		return []string{fmt.Sprintf("cannot validate current graph inputs: %v", err)}
 	}
-	problems := make([]string, 0, 2)
-	if meta.DocumentsSHA256 != documentsSHA256 {
-		problems = append(problems, "metadata documents_sha256 does not match current collected documents")
-	}
-	inputsSHA256, err := graphInputsSHA256(ctx, base, documentsSHA256)
-	if err != nil {
-		return append(problems, fmt.Sprintf("cannot validate current graph inputs: %v", err))
-	}
-	if meta.InputsSHA256 != inputsSHA256 {
-		problems = append(problems, "metadata inputs_sha256 does not match current graph inputs")
+	problems := make([]string, 0, len(graphInputNames))
+	for _, name := range graphInputNames {
+		if meta.SHA256.Inputs.named(name) != inputsSHA256.named(name) {
+			problems = append(problems, name+" input changed")
+		}
 	}
 	return problems
 }
@@ -1195,20 +1261,17 @@ func graphMetaProblems(
 		problems = append(problems, fmt.Sprintf("metadata schema_version is %d, want %d",
 			meta.SchemaVersion, EdgeSchemaVersion))
 	}
+	if meta.ExtractorVersion != GraphExtractorVersion {
+		problems = append(problems, fmt.Sprintf("metadata extractor_version is %d, want %d",
+			meta.ExtractorVersion, GraphExtractorVersion))
+	}
 	if !slices.Equal(meta.Columns, EdgeColumns) {
 		problems = append(problems, fmt.Sprintf("metadata columns are %v, want %v", meta.Columns, EdgeColumns))
 	}
 	if meta.Separator != "\\t" {
 		problems = append(problems, fmt.Sprintf("metadata separator is %q, want %q", meta.Separator, "\\t"))
 	}
-	if !isCanonicalSHA256(meta.DocumentsSHA256) {
-		problems = append(problems, fmt.Sprintf("metadata documents_sha256 %q is not a lowercase SHA-256 digest",
-			meta.DocumentsSHA256))
-	}
-	if !isCanonicalSHA256(meta.InputsSHA256) {
-		problems = append(problems, fmt.Sprintf("metadata inputs_sha256 %q is not a lowercase SHA-256 digest",
-			meta.InputsSHA256))
-	}
+	problems = append(problems, graphInputDigestProblems(meta.SHA256.Inputs)...)
 	if meta.Edges != edges {
 		problems = append(problems, fmt.Sprintf("metadata edges is %d, but %s holds %d valid row(s)",
 			meta.Edges, core.GraphFile, edges))
@@ -1217,9 +1280,9 @@ func graphMetaProblems(
 		problems = append(problems, fmt.Sprintf("metadata bytes is %d, but %s holds %d byte(s)",
 			meta.Bytes, core.GraphFile, bytes))
 	}
-	if meta.SHA256 != digest {
-		problems = append(problems, fmt.Sprintf("metadata sha256 %q does not match %s",
-			meta.SHA256, core.GraphFile))
+	if meta.SHA256.Outputs.GraphTSV != digest {
+		problems = append(problems, fmt.Sprintf("metadata sha256.outputs[%q] %q does not match %s",
+			core.GraphFile, meta.SHA256.Outputs.GraphTSV, core.GraphFile))
 	}
 	if observed := slices.Sorted(maps.Keys(vias)); !slices.Equal(meta.Extractors, observed) {
 		problems = append(problems, fmt.Sprintf("metadata extractors are %v, but rows use %v",

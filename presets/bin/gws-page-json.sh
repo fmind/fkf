@@ -1,12 +1,12 @@
 #!/bin/sh
-# gws-page-json <collection-field> [command [argument...]] — run an optional provider command,
+# gws-page-json.sh <collection-field> [command [argument...]] — run an optional provider command,
 # then validate the NDJSON pages emitted by `gws --page-all --page-limit 100`. Capturing the
 # provider first preserves pipeline failure semantics without requiring a particular shell.
 set -eu
 
 collection=${1:-}
 case "$collection" in spaces | files | connections | items | messages | conferenceRecords | otherContacts) ;;
-  *) echo "usage: gws-page-json <spaces|files|connections|items|messages|conferenceRecords|otherContacts> [command [argument...]]" >&2; exit 2 ;;
+  *) echo "usage: gws-page-json.sh <spaces|files|connections|items|messages|conferenceRecords|otherContacts> [command [argument...]]" >&2; exit 2 ;;
 esac
 shift
 
@@ -35,7 +35,7 @@ if ! jq -c -s -e --arg collection "$collection" '
   | select(($tokens | unique | length) == ($tokens | length))
   | .[]
 ' "$pages" > "$validated"; then
-  echo "gws-page-json: invalid token chain or page limit reached; cannot prove completeness" >&2
+  echo "gws-page-json.sh: invalid token chain or page limit reached; cannot prove completeness" >&2
   exit 1
 fi
 case "$collection" in

@@ -1,5 +1,5 @@
 #!/bin/sh
-# git-log-json <since> <until> <root> [author...] — written into <base>/bin by
+# git-log-json.sh <since> <until> <root> [author...] — written into <base>/bin by
 # `fkf init --preset personal`.
 #
 # Prints one JSON array of commits authored by you and committed (or rebased/cherry-picked) in
@@ -27,9 +27,9 @@ case "$0" in
 esac
 script_base=$(CDPATH='' cd -P "$script_dir/.." && pwd -P)
 
-since=${1:?usage: git-log-json <since> <until> <root> [author...]}
-until=${2:?usage: git-log-json <since> <until> <root> [author...]}
-roots=${3:?usage: git-log-json <since> <until> <root>[:<root>...] [author...]}
+since=${1:?usage: git-log-json.sh <since> <until> <root> [author...]}
+until=${2:?usage: git-log-json.sh <since> <until> <root> [author...]}
+roots=${3:?usage: git-log-json.sh <since> <until> <root>[:<root>...] [author...]}
 shift 3
 
 # Several roots, colon-separated, because clones rarely live under one parent: a personal tree,
@@ -49,7 +49,7 @@ for root in $roots; do
   # array, and the day looked complete with zero commits. A wrong path is a configuration
   # error, and the only honest outcome is to fail the day and say where to look.
   [ -d "$root" ] || {
-    echo "git-log-json: $root is not a directory; point the third argument of run: at your clones" >&2
+    echo "git-log-json.sh: $root is not a directory; point the third argument of run: at your clones" >&2
     exit 1
   }
   checked="$checked$root
@@ -74,13 +74,13 @@ since_epoch=${since_epoch#--max-age=}
 until_epoch=${until_epoch#--min-age=}
 case "${since_epoch}:${until_epoch}" in
   *[!0-9:]*)
-    echo "git-log-json: git could not resolve the requested time bounds" >&2
+    echo "git-log-json.sh: git could not resolve the requested time bounds" >&2
     exit 1
     ;;
   *) ;;
 esac
 [ "$since_epoch" -lt "$until_epoch" ] || {
-  echo "git-log-json: since must be before until" >&2
+  echo "git-log-json.sh: since must be before until" >&2
   exit 1
 }
 
@@ -93,7 +93,7 @@ if [ "$#" -eq 0 ]; then
     author=""
   fi
   [ -n "$author" ] || {
-    echo "git-log-json: git config user.email is unset and no author was given; append your identities to run:" >&2
+    echo "git-log-json.sh: git config user.email is unset and no author was given; append your identities to run:" >&2
     exit 1
   }
   set -- "$author"

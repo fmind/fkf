@@ -18,6 +18,8 @@ A base is one git repository of plain JSON and Markdown. Its committed `fkf.yaml
 
 Root `graph.tsv` and `graph.meta.json` are one rebuildable cache generation. The source of truth is the relation schema stored with collected documents plus authored links, tags, and explicit Markdown `relations:`. `fkf build graph` atomically replaces each file; because two renames cannot be one filesystem operation, readers validate the sidecar digest and fail closed during the brief publication window rather than mix generations.
 
+The sidecar carries separate SHA-256 inputs for events, index, projects, tasks, wiki, and the edge-relevant root schema, plus one aggregate and the exact `graph.tsv` output digest. A stale read therefore names which logical component changed instead of reporting one opaque base-wide mismatch.
+
 FKF keeps this plain-file design until measurements justify another storage layer. `mise run benchmark` builds a reproducible synthetic corpus of exactly 100,000 records and 500,000 edges, then reports wall time and maximum RAM for find, context, graph build, and navigation. Maximum RAM is the measured peak resident set size (RSS): the largest amount of physical memory occupied during that run. It is an optional observation with no pass/fail threshold and no database claim.
 
 Every layer is explicitly enabled:
@@ -67,9 +69,9 @@ sources:
   git-commits:
     enabled: true
     layer: events
-    requires: [git-log-json, git]
+    requires: [git-log-json.sh, git]
     window: true
-    run: [git-log-json, "{{start}}", "{{end}}", "{{home}}"]
+    run: [git-log-json.sh, "{{start}}", "{{end}}", "{{home}}"]
     fields: { id: .uid, time: .time, repository: .repository_uri }
 
 sync:
@@ -93,7 +95,7 @@ The child command path is composed from `<base>/bin/`, declared external `bin:` 
 
 ## Trust follows execution
 
-`fkf trust` hashes a canonical execution plan, not YAML bytes. Changes to commands, enabled state, body-bound paths, timeouts, retries, pacing, extra executable directories, or files and executable bits under `bin/` re-arm trust. Comments, YAML key order, schema descriptions and examples, `requires:`, retrieval-only field-path changes, and the inherited process environment do not.
+`fkf trust` hashes a canonical execution plan, not YAML bytes. Changes to `run:`, `test:`, `body:`, enabled state, body-bound paths, timeouts, retries, pacing, extra executable directories, or files and executable bits under `bin/` re-arm trust. Comments, YAML key order, schema descriptions and examples, `requires:`, retrieval-only field-path changes, and the inherited process environment do not.
 
 The disclosure printed before trust remains the authority. Trust is local change detection, never a shell sandbox.
 

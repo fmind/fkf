@@ -123,7 +123,7 @@ func newApp(stdout, stderr io.Writer) *cli.Command {
 		// Inspect and explore.
 		newListCommand(), newValidateCommand(), newTagsCommand(),
 		// Run and set up.
-		newInitCommand(), newTrustCommand(), newSyncCommand(), newStatusCommand(),
+		newInitCommand(), newTrustCommand(), newTestCommand(), newSyncCommand(), newStatusCommand(),
 		newBuildCommand(), newNewCommand(), newConfigCommand(), newMCPCommand(), newUpgradeCommand(),
 	}
 	// urfave/cli consults the failing command's own hook rather than walking up to the root, so

@@ -1,15 +1,15 @@
 #!/bin/sh
-# gws-calendar-json <start> <end> <date> <next-date> — collect event-start metadata over one
+# gws-calendar-json.sh <start> <end> <date> <next-date> — collect event-start metadata over one
 # exact half-open window. Google Calendar's timeMin filters event ends, so overlapping events
 # are returned by the provider and must be removed locally before fkf verifies the window.
 set -eu
 
-page_validator=$(cd "$(dirname "$0")" && pwd)/gws-page-json
+page_validator=$(cd "$(dirname "$0")" && pwd)/gws-page-json.sh
 
-start=${1:?usage: gws-calendar-json <start> <end> <date> <next-date>}
-end=${2:?usage: gws-calendar-json <start> <end> <date> <next-date>}
-date=${3:?usage: gws-calendar-json <start> <end> <date> <next-date>}
-next_date=${4:?usage: gws-calendar-json <start> <end> <date> <next-date>}
+start=${1:?usage: gws-calendar-json.sh <start> <end> <date> <next-date>}
+end=${2:?usage: gws-calendar-json.sh <start> <end> <date> <next-date>}
+date=${3:?usage: gws-calendar-json.sh <start> <end> <date> <next-date>}
+next_date=${4:?usage: gws-calendar-json.sh <start> <end> <date> <next-date>}
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

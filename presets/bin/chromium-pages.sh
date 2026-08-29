@@ -1,9 +1,9 @@
 #!/bin/sh
-# chromium-pages <start> <end> [profile...] — written into <base>/bin by
+# chromium-pages.sh <start> <end> [profile...] — written into <base>/bin by
 # `fkf init --preset personal`.
 #
 # With no profile argument, reads every Chromium-family profile it finds. Name one or more to
-# restrict collection; `chromium-pages --profiles` lists the stable <browser>/<profile> labels.
+# restrict collection; `chromium-pages.sh --profiles` lists the stable <browser>/<profile> labels.
 # A requested profile that is absent fails loudly rather than filing a misleading empty day.
 #
 # Each locked History database is copied through SQLite's online backup before it is read.
@@ -19,8 +19,8 @@ if [ "${1:-}" = --profiles ]; then
   end=1970-01-01T00:00:00Z
   shift
 else
-  start=${1:?usage: chromium-pages <start> <end> [profile...]}
-  end=${2:?usage: chromium-pages <start> <end> [profile...]}
+  start=${1:?usage: chromium-pages.sh <start> <end> [profile...]}
+  end=${2:?usage: chromium-pages.sh <start> <end> [profile...]}
   shift 2
 fi
 
@@ -51,7 +51,7 @@ printf '%s\n' "$roots" | while IFS= read -r root; do
 done | sort -u > "$databases"
 
 if [ ! -s "$databases" ]; then
-  echo "chromium-pages: no Chromium-family profile found" >&2
+  echo "chromium-pages.sh: no Chromium-family profile found" >&2
   exit 1
 fi
 
@@ -91,7 +91,7 @@ if [ "$#" -gt 0 ]; then
       fi
     done < "$databases"
     if [ "$found" = false ]; then
-      echo "chromium-pages: no profile labelled '$wanted'; run 'chromium-pages --profiles'" >&2
+      echo "chromium-pages.sh: no profile labelled '$wanted'; run 'chromium-pages.sh --profiles'" >&2
       rm -f "$selected"
       exit 1
     fi

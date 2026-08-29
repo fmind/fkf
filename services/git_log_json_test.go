@@ -67,14 +67,14 @@ func runGitLogJSONWindowForAuthors(t *testing.T, env []string, since, until, roo
 	output := runGitLogJSONWindowForAuthorsRaw(t, env, since, until, roots, authors...)
 	var records []gitLogRecord
 	if err := json.Unmarshal(output, &records); err != nil {
-		t.Fatalf("decode git-log-json output: %v\n%s", err, output)
+		t.Fatalf("decode git-log-json.sh output: %v\n%s", err, output)
 	}
 	return records
 }
 
 func runGitLogJSONWindowForAuthorsRaw(t *testing.T, env []string, since, until, roots string, authors ...string) []byte {
 	t.Helper()
-	script := filepath.Join(repositoryRoot(t), "presets", "bin", "git-log-json")
+	script := filepath.Join(repositoryRoot(t), "presets", "bin", "git-log-json.sh")
 	arguments := append([]string{since, until, roots}, authors...)
 	command := exec.CommandContext(t.Context(), script, arguments...)
 	command.Dir = string(filepath.Separator)
@@ -83,9 +83,9 @@ func runGitLogJSONWindowForAuthorsRaw(t *testing.T, env []string, since, until, 
 	if err != nil {
 		var exitError *exec.ExitError
 		if errors.As(err, &exitError) {
-			t.Fatalf("git-log-json: %v\n%s", err, exitError.Stderr)
+			t.Fatalf("git-log-json.sh: %v\n%s", err, exitError.Stderr)
 		}
-		t.Fatalf("git-log-json: %v", err)
+		t.Fatalf("git-log-json.sh: %v", err)
 	}
 	return output
 }
@@ -122,20 +122,20 @@ func TestGitLogJSONProjectsOnlySafeTwoSegmentRepositoryNames(t *testing.T) {
 		"2026-08-24T00:00:00Z", "2026-08-25T00:00:00Z", root, "author@example.test")
 	for _, forbidden := range []string{"secret-user", "secret-password", "leaky-user", "leaky-password"} {
 		if strings.Contains(string(output), forbidden) {
-			t.Fatalf("git-log-json leaked remote userinfo %q to stdout: %s", forbidden, output)
+			t.Fatalf("git-log-json.sh leaked remote userinfo %q to stdout: %s", forbidden, output)
 		}
 	}
 	var records []gitLogRecord
 	if err := json.Unmarshal(output, &records); err != nil {
-		t.Fatalf("decode git-log-json output: %v\n%s", err, output)
+		t.Fatalf("decode git-log-json.sh output: %v\n%s", err, output)
 	}
 	if len(records) != len(wantByHash) {
-		t.Fatalf("git-log-json records = %+v, want one per synthetic repository", records)
+		t.Fatalf("git-log-json.sh records = %+v, want one per synthetic repository", records)
 	}
 	for _, record := range records {
 		want, ok := wantByHash[record.Hash]
 		if !ok {
-			t.Fatalf("unexpected git-log-json record %+v", record)
+			t.Fatalf("unexpected git-log-json.sh record %+v", record)
 		}
 		if record.RepoFull != want {
 			t.Fatalf("repo_full for %q = %q, want %q", record.Message, record.RepoFull, want)
@@ -143,7 +143,7 @@ func TestGitLogJSONProjectsOnlySafeTwoSegmentRepositoryNames(t *testing.T) {
 		delete(wantByHash, record.Hash)
 	}
 	if len(wantByHash) != 0 {
-		t.Fatalf("git-log-json omitted repositories: %v", wantByHash)
+		t.Fatalf("git-log-json.sh omitted repositories: %v", wantByHash)
 	}
 }
 

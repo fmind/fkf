@@ -3,6 +3,7 @@ package services_test
 import (
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -266,7 +267,7 @@ func TestCreateNewHelperUsesPortablePrivateScaffold(t *testing.T) {
 	base := newBase(t, baseConfig, nil)
 	result, err := services.CreateNew(base, services.NewRequest{
 		Kind: services.NewKindHelper,
-		Slug: "collect-prs",
+		Slug: "collect-prs.sh",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -295,11 +296,32 @@ func TestCreateNewHelperUsesPortablePrivateScaffold(t *testing.T) {
 	if got := info.Mode().Perm(); got != 0o700 {
 		t.Fatalf("helper mode = %04o, want 0700", got)
 	}
-	if len(result.Requires) != 1 || result.Requires[0] != "collect-prs" {
+	if len(result.Requires) != 1 || result.Requires[0] != "collect-prs.sh" {
 		t.Fatalf("requires = %q, want helper executable only", result.Requires)
 	}
-	if _, err := services.CreateNew(base, services.NewRequest{Kind: services.NewKindHelper, Slug: "collect-prs"}); err == nil {
+	if _, err := services.CreateNew(base, services.NewRequest{Kind: services.NewKindHelper, Slug: "collect-prs.sh"}); err == nil {
 		t.Fatal("CreateNew() succeeded for an existing helper")
+	}
+	if _, err := services.CreateNew(base, services.NewRequest{Kind: services.NewKindHelper, Slug: "collect-prs"}); err == nil {
+		t.Fatal("CreateNew() accepted a helper without an explicit .sh or .py extension")
+	}
+}
+
+func TestCreateNewPythonHelperUsesExplicitInterpreterContract(t *testing.T) {
+	base := newBase(t, baseConfig, nil)
+	result, err := services.CreateNew(base, services.NewRequest{Kind: services.NewKindHelper, Slug: "collect-prs.py"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(result.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), "#!/usr/bin/env python3\n") {
+		t.Fatalf("python helper = %q, want explicit python3 shebang", data)
+	}
+	if !slices.Equal(result.Requires, []string{"collect-prs.py", "python3"}) {
+		t.Fatalf("requires = %q, want helper and its non-standard interpreter", result.Requires)
 	}
 }
 

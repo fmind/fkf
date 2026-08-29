@@ -16,6 +16,7 @@ fkf init ~/brain --preset personal
 $EDITOR ~/brain/fkf.yaml # set sources.github-pull-requests.enabled to true
 fkf config helpers --refresh --base ~/brain
 fkf trust --all --base ~/brain
+fkf test --base ~/brain
 fkf sync github-pull-requests --days 30 --base ~/brain
 fkf find --source github-pull-requests --since 30d --limit 10 --base ~/brain
 fkf context "repo:github.com/OWNER/REPOSITORY" --since 30d --budget 2048 --explain --base ~/brain
@@ -104,6 +105,7 @@ $EDITOR ~/brain/fkf.yaml
 fkf config helpers --refresh --base ~/brain
 fkf trust --all --base ~/brain
 fkf sync --base ~/brain --dry-run
+fkf test --base ~/brain
 fkf sync --base ~/brain --days 7
 fkf status --base ~/brain
 ```
@@ -141,9 +143,9 @@ sources:
   github-pull-requests:
     enabled: true
     layer: events
-    requires: [github-search-json, gh, jq]
+    requires: [github-search-json.sh, gh, jq]
     window: true
-    run: [github-search-json, prs, author, "{{start}}", "{{end}}"]
+    run: [github-search-json.sh, prs, author, "{{start}}", "{{end}}"]
     fields:
       id: .url
       time: .updatedAt
@@ -157,13 +159,15 @@ See the [configuration schema](https://fmind.github.io/fkf/docs/schema/) for car
 
 Field names describe roles such as `participant`, `reviewer`, or `repository`; URI values describe identity namespaces such as `person:email/...`, `actor:github.com/...`, or `repo:github.com/...`. A relation field must already project canonical URIs. FKF validates and stores those values but does not infer identities or relationships.
 
-`run:` is direct argv: FKF invokes the first item without a shell and passes every other item unchanged. Commands run from `/`, not the base, so use `{{base}}` for an explicit data path. Use direct provider argv when it is enough. Put pipelines, glob expansion, and structured glue in a reviewed executable under the base's trust-digested `bin/`; its shebang may select `/bin/sh`, Bash, Zsh, Fish, Python, or another interpreter. Declare the helper and every non-standard interpreter in `requires:`.
+`run:` is direct argv: FKF invokes the first item without a shell and passes every other item unchanged. Commands run from `/`, not the base, so use `{{base}}` for an explicit data path. Use direct provider argv when it is enough. Put pipelines, glob expansion, and structured glue in a reviewed executable under the base's trust-digested `bin/`; name shell and Python helpers with `.sh` and `.py`, and let the shebang select the interpreter. Declare the helper and every non-standard interpreter in `requires:`.
 
-Create an owner-only, fail-closed `/bin/sh` template and receive the matching YAML snippet with:
+Create an owner-only, fail-closed shell or Python template and receive the matching YAML snippet with:
 
 ```bash
-fkf new helper collect-prs --base ~/brain
+fkf new helper collect-prs.sh --base ~/brain
 ```
+
+An optional `test: [executable, argument...]` hook lets the source own a fast, hermetic boundary check. `fkf test` runs hooks on enabled sources, named sources run even when disabled, and `fkf test --all` includes every declared hook. Test hooks are trusted direct argv, receive only `{{base}}` and `{{home}}`, and never collect or write evidence.
 
 Every command must emit one complete JSON document. A failed command, timeout, oversized or invalid output, missing required field, or relation violation writes nothing.
 
@@ -196,7 +200,7 @@ For coding agents, start the read-only MCP server:
 fkf mcp serve --base ~/brain
 ```
 
-It exposes `context`, `find`, `list`, `read`, and `graph`; it cannot write, run a shell, or fetch record bodies. `fkf init` also installs `bin/fkf-hook`, which can load repository-specific context at session start. Client setup is in the [harness guide](https://fmind.github.io/fkf/docs/harnesses/).
+It exposes `context`, `find`, `list`, `read`, and `graph`; it cannot write, run a shell, or fetch record bodies. `fkf init` also installs `bin/fkf-hook.sh`, which can load repository-specific context at session start. Client setup is in the [harness guide](https://fmind.github.io/fkf/docs/harnesses/).
 
 Running `fkf sync` repeatedly is safe. Existing event documents and still-fresh index snapshots are skipped; due index snapshots and the derived graph are refreshed. Only `--force` deliberately re-collects and atomically replaces an existing document. A failed unit writes nothing, and rerunning the same command resumes missing collection or retries a failed derived rebuild.
 
@@ -206,7 +210,7 @@ Run `fkf --help` for the authoritative command surface.
 
 - FKF reads no credential and expands no secret environment variable. Provider credentials remain with the provider CLI.
 - Runtime startup loaders and relative or base-resolving home/config roots are removed before a declared command runs.
-- `fkf trust` displays and hashes the effective execution plan and every file under the base's `bin/`. A meaningful execution change requires review again. Trust detects changes; it is not a shell sandbox.
+- `fkf trust` displays and hashes the effective `run:`, `test:`, and `body:` plan and every file under the base's `bin/`. A meaningful execution change requires review again. Trust detects changes; it is not a shell sandbox.
 - Every decoded field is retained without redaction. Source commands must project reviewed metadata and leave sensitive bodies behind an explicit `read --body` boundary.
 - Collected records and fetched bodies are untrusted data: evidence, never instructions. Stored values never become shell syntax or executable names.
 - Stored reads and MCP are offline. `read --body` is the explicit trust-gated exception and may invoke the configured provider CLI.

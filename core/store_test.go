@@ -277,7 +277,7 @@ func TestResolveAdmitsOnlyThePublishedGrammar(t *testing.T) {
 	}
 	for _, refused := range []string{
 		".env", ".git/config", ".netrc", LocalConfigName, "credentials.json",
-		".agents/skills/fkf-use/SKILL.md", "bin/git-log-json", "README.md",
+		".agents/skills/fkf-use/SKILL.md", "bin/git-log-json.sh", "README.md",
 		"events/.env", "events/2026-05-04/SUMMARY.md", "events/2026-05-04/private.txt", "events/not-a-day/gmail.json",
 		"events/2026-05-04/NESTED.json", "index/.env", "index/backup.key",
 		"tasks/.env", "tasks/2026-05-04/x/private.md", "tasks/not-a-day/x/TASKS.md",

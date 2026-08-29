@@ -17,7 +17,7 @@ import (
 	"github.com/fmind/fkf/services"
 )
 
-const githubReviewsHelper = "github-reviews-json"
+const githubReviewsHelper = "github-reviews-json.sh"
 
 func githubReviewContribution(
 	nodeID string,
@@ -94,11 +94,11 @@ cat "$GH_FIXTURE_DIR/$file"
 		"2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("github-reviews-json error = %v\n%s", err, output)
+		t.Fatalf("github-reviews-json.sh error = %v\n%s", err, output)
 	}
 	var records []map[string]any
 	if err := json.Unmarshal(output, &records); err != nil {
-		t.Fatalf("decode github-reviews-json output: %v\n%s", err, output)
+		t.Fatalf("decode github-reviews-json.sh output: %v\n%s", err, output)
 	}
 	if len(records) != 2 {
 		t.Fatalf("review records = %s, want the lower bound and inside record only", output)
@@ -164,10 +164,10 @@ esac
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err == nil {
-		t.Fatal("github-reviews-json accepted a failed second page")
+		t.Fatal("github-reviews-json.sh accepted a failed second page")
 	}
 	if stdout.Len() != 0 {
-		t.Fatalf("github-reviews-json emitted a partial first page: %s", stdout.Bytes())
+		t.Fatalf("github-reviews-json.sh emitted a partial first page: %s", stdout.Bytes())
 	}
 	if !strings.Contains(stderr.String(), "GraphQL page") {
 		t.Fatalf("pagination failure = %q, want an actionable GraphQL page error", stderr.String())
@@ -187,10 +187,10 @@ func TestGitHubReviewsJSONRejectsAFalseCompleteTotalWithoutOutput(t *testing.T) 
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err == nil {
-		t.Fatal("github-reviews-json accepted fewer nodes than totalCount")
+		t.Fatal("github-reviews-json.sh accepted fewer nodes than totalCount")
 	}
 	if stdout.Len() != 0 {
-		t.Fatalf("github-reviews-json emitted an incomplete result: %s", stdout.Bytes())
+		t.Fatalf("github-reviews-json.sh emitted an incomplete result: %s", stdout.Bytes())
 	}
 	if !strings.Contains(stderr.String(), "totalCount") {
 		t.Fatalf("completeness failure = %q, want totalCount evidence", stderr.String())
@@ -219,10 +219,10 @@ cat "$GH_FIXTURE_DIR/$file"
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err == nil {
-		t.Fatal("github-reviews-json silently de-duplicated overlapping GraphQL pages")
+		t.Fatal("github-reviews-json.sh silently de-duplicated overlapping GraphQL pages")
 	}
 	if stdout.Len() != 0 {
-		t.Fatalf("github-reviews-json emitted a duplicate traversal: %s", stdout.Bytes())
+		t.Fatalf("github-reviews-json.sh emitted a duplicate traversal: %s", stdout.Bytes())
 	}
 	if !strings.Contains(stderr.String(), "duplicate") {
 		t.Fatalf("duplicate-page error = %q", stderr.String())
@@ -251,7 +251,7 @@ cat "$GH_FIXTURE_DIR/$file"
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err == nil {
-		t.Fatal("github-reviews-json accepted an empty page with a continuing cursor")
+		t.Fatal("github-reviews-json.sh accepted an empty page with a continuing cursor")
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("empty GraphQL page emitted a partial snapshot: %s", stdout.Bytes())
@@ -287,7 +287,7 @@ cat "$GH_FIXTURE_DIR/large.json"
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err == nil {
-		t.Fatal("github-reviews-json accepted totalCount beyond its finite page budget")
+		t.Fatal("github-reviews-json.sh accepted totalCount beyond its finite page budget")
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("GraphQL safety-limit failure emitted output: %s", stdout.Bytes())
@@ -310,10 +310,10 @@ func TestGitHubReviewsJSONUsesTheCurrentFullDatabaseID(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(script), "fullDatabaseId") {
-		t.Fatal("github-reviews-json does not request GitHub's 64-bit review identifier")
+		t.Fatal("github-reviews-json.sh does not request GitHub's 64-bit review identifier")
 	}
 	if strings.Contains(string(script), "databaseId") {
-		t.Fatal("github-reviews-json still requests GitHub's deprecated 32-bit databaseId")
+		t.Fatal("github-reviews-json.sh still requests GitHub's deprecated 32-bit databaseId")
 	}
 }
 

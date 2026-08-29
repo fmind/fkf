@@ -59,10 +59,10 @@ func TestInitCreatesACompleteTrustedBase(t *testing.T) {
 		core.ConfigFileName, ".gitignore", ".gitattributes", core.BaseAgentsFile, "CLAUDE.md",
 		filepath.FromSlash(core.BaseSkillsDir + "/fkf-use/SKILL.md"),
 		filepath.FromSlash(core.BaseSkillsDir + "/fkf-learn/SKILL.md"),
-		filepath.Join(core.BaseBinDir, "git-log-json"),
-		filepath.Join(core.BaseBinDir, "agent-sessions"),
-		filepath.Join(core.BaseBinDir, "agent-memory-files"),
-		filepath.Join(core.BaseBinDir, "fkf-hook"),
+		filepath.Join(core.BaseBinDir, "git-log-json.sh"),
+		filepath.Join(core.BaseBinDir, "agent-sessions.sh"),
+		filepath.Join(core.BaseBinDir, "agent-memory-files.sh"),
+		filepath.Join(core.BaseBinDir, "fkf-hook.sh"),
 	} {
 		if _, err := os.Stat(filepath.Join(root, expected)); err != nil {
 			t.Fatalf("init did not write %s: %v", expected, err)
@@ -194,7 +194,7 @@ func TestInitMakesARelativeBaseAbsolute(t *testing.T) {
 	if base.Root() != want {
 		t.Fatalf("opened root = %q, want %q", base.Root(), want)
 	}
-	if helper, found := base.Env.LookPath("agent-memory-files"); !found || helper != filepath.Join(want, core.BaseBinDir, "agent-memory-files") {
+	if helper, found := base.Env.LookPath("agent-memory-files.sh"); !found || helper != filepath.Join(want, core.BaseBinDir, "agent-memory-files.sh") {
 		t.Fatalf("relative base helper = %q, %v; want its absolute trusted bin path", helper, found)
 	}
 }
@@ -229,7 +229,7 @@ func TestInitFailureLeavesCreationRetryable(t *testing.T) {
 	}
 	for _, expected := range []string{
 		core.BaseAgentsFile,
-		filepath.Join(core.BaseBinDir, "git-log-json"),
+		filepath.Join(core.BaseBinDir, "git-log-json.sh"),
 		filepath.FromSlash(core.BaseSkillsDir + "/fkf-use/SKILL.md"),
 	} {
 		if _, statErr := os.Stat(filepath.Join(root, expected)); statErr != nil {
@@ -728,6 +728,7 @@ func TestTrustPrintsTheCommandsBeforeRecordingThem(t *testing.T) {
     enabled: false
     layer: events
     run: [dormant, --json]
+    test: [dormant-check.sh]
     fields:
       id: .id
       time: .t
@@ -737,8 +738,8 @@ func TestTrustPrintsTheCommandsBeforeRecordingThem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Commands) != 2 || len(report.Commands[0].Run) == 0 || len(report.Commands[1].Body) == 0 {
-		t.Fatalf("commands = %+v, want every declared run:/body: line", report.Commands)
+	if len(report.Commands) != 2 || len(report.Commands[0].Run) == 0 || len(report.Commands[0].Test) == 0 || len(report.Commands[1].Body) == 0 {
+		t.Fatalf("commands = %+v, want every declared run:/test:/body: line", report.Commands)
 	}
 	if report.Commands[0].Name != "dormant" || report.Commands[0].Enabled || report.Commands[1].Name != "synthetic" || !report.Commands[1].Enabled {
 		t.Fatalf("commands = %+v, want disabled and enabled state disclosed in stable name order", report.Commands)
@@ -829,11 +830,11 @@ func TestRefreshWritesTheHookButNeverAScriptThatExists(t *testing.T) {
 	if _, err := services.Init(t.Context(), request, clock); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	hook := filepath.Join(root, core.BaseBinDir, "fkf-hook")
+	hook := filepath.Join(root, core.BaseBinDir, "fkf-hook.sh")
 	if err := os.Remove(hook); err != nil {
 		t.Fatal(err)
 	}
-	edited := filepath.Join(root, core.BaseBinDir, "git-log-json")
+	edited := filepath.Join(root, core.BaseBinDir, "git-log-json.sh")
 	if err := os.WriteFile(edited, []byte("#!/bin/sh\necho mine\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}

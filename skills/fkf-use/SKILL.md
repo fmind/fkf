@@ -45,7 +45,7 @@ Use `fkf config schema` to print the generated configuration schema without open
 
 Root `schema:` is the base's semantic dictionary. Every field has a description and `one`, `optional`, or `many` cardinality; `relation: true` means each value is an FKF URI and becomes an edge. Field names express roles such as `participant` or `reviewer`; URI schemes express identity namespaces such as `person:email/...` or `actor:github.com/...`. FKF does not merge identities or infer relations.
 
-Sources map provider paths into those shared fields. `id` and event `time` are structural. `run:` and `body:` are direct argument lists; a helper's shebang chooses its interpreter. Declare every executable and any non-standard interpreter in `requires:` so `status` can check readiness without parsing command text.
+Sources map provider paths into those shared fields. `id` and event `time` are structural. `run:`, optional `test:`, and `body:` are direct argument lists; a helper's shebang chooses its interpreter. Shell and Python helpers use `.sh` and `.py`. Declare every executable and any non-standard interpreter in `requires:` so `status` can check readiness without parsing command text.
 
 ## Retrieve evidence
 
@@ -117,7 +117,7 @@ For a neighbourhood, `--kind` filters edge kinds such as `participant`. For `gra
 Prefer source glue in this order:
 
 1. direct provider argv in `run:`;
-1. a helper under trust-digested `bin/` for pipelines or expansion;
+1. a `.sh` or `.py` helper under trust-digested `bin/` for pipelines or expansion;
 1. another executable, such as Python, for structured or stateful work.
 
 FKF is not a provider SDK or plugin manager. Any reviewed executable is valid if it emits one complete JSON document. After enabling a preset source, use `fkf config helpers --refresh` to install any newly required official helper; custom helpers are untouched.
@@ -127,20 +127,21 @@ Placeholders use exact lowercase `{{name}}` spelling. FKF generates date and pat
 ```bash
 fkf config helpers --refresh
 fkf sync --dry-run
+fkf test
 fkf sync github-pull-requests --preview --date 2026-05-04
 fkf sync --days 7
 ```
 
 Today is never collected. A day is complete or absent: command failure, timeout, excessive or invalid output, multiple documents, missing required fields, or schema violations write nothing. Preview executes and validates one source once, returns at most three samples, and writes nothing. A `window: true` source runs once per contiguous missing span.
 
-When `run:` fails, FKF logs the source, date or window, safely rendered argv, neutral working directory, timeout, and exit status. Provider stderr remains private, and a `body:` command's record-derived argument is never logged.
+When `run:` or `test:` fails, FKF logs the source, safely rendered argv, neutral working directory, timeout, and exit status; collection adds its date or window. Provider stderr remains private, and a `body:` command's record-derived argument is never logged.
 
 Mutations take one fail-fast lock per physical base. If another writer owns it, report the error rather than retrying around it. Reads, dry runs, previews, and checks stay lock-free.
 
 ## Serve an agent
 
 ```bash
-~/brain/bin/fkf-hook claude
+~/brain/bin/fkf-hook.sh claude
 claude mcp add --transport stdio --scope user fkf -- fkf mcp serve --base ~/brain
 ```
 

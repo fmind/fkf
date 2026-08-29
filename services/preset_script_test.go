@@ -52,19 +52,19 @@ func TestChromiumPagesCollectsEveryProfileWithAGlobalIdentity(t *testing.T) {
 	bin := t.TempDir()
 	writeFakeSQLite(t, bin)
 
-	script := filepath.Join(repositoryRoot(t), "presets", "bin", "chromium-pages")
+	script := filepath.Join(repositoryRoot(t), "presets", "bin", "chromium-pages.sh")
 	command := exec.CommandContext(t.Context(), "sh", script, "2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
 	command.Env = append(os.Environ(), "HOME="+home, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	output, err := command.Output()
 	if err != nil {
-		t.Fatalf("chromium-pages error = %v", err)
+		t.Fatalf("chromium-pages.sh error = %v", err)
 	}
 	var records []map[string]any
 	if err := json.Unmarshal(output, &records); err != nil {
-		t.Fatalf("decode chromium-pages output: %v\n%s", err, output)
+		t.Fatalf("decode chromium-pages.sh output: %v\n%s", err, output)
 	}
 	if len(records) != 2 {
-		t.Fatalf("chromium-pages returned %d profile record(s), want 2: %s", len(records), output)
+		t.Fatalf("chromium-pages.sh returned %d profile record(s), want 2: %s", len(records), output)
 	}
 	first, second := records[0]["uid"], records[1]["uid"]
 	if first == nil || second == nil || first == second {
@@ -78,7 +78,7 @@ func TestChromiumPagesCollectsEveryProfileWithAGlobalIdentity(t *testing.T) {
 		"private-user", "private-password", "sensitive-test-value", "private-test-value", "fragment",
 	} {
 		if strings.Contains(string(output), forbidden) {
-			t.Fatalf("chromium-pages retained URL userinfo, query, or fragment %q: %s", forbidden, output)
+			t.Fatalf("chromium-pages.sh retained URL userinfo, query, or fragment %q: %s", forbidden, output)
 		}
 	}
 	urls := map[any]bool{records[0]["url"]: true, records[1]["url"]: true}
@@ -106,16 +106,16 @@ func TestChromiumPagesUsesSQLiteBackupSoLiveWALVisitsAreIncluded(t *testing.T) {
 	bin := t.TempDir()
 	writeFakeSQLite(t, bin)
 
-	script := filepath.Join(repositoryRoot(t), "presets", "bin", "chromium-pages")
+	script := filepath.Join(repositoryRoot(t), "presets", "bin", "chromium-pages.sh")
 	command := exec.CommandContext(t.Context(), "sh", script, "2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
 	command.Env = append(os.Environ(), "HOME="+home, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	output, err := command.Output()
 	if err != nil {
-		t.Fatalf("chromium-pages error = %v", err)
+		t.Fatalf("chromium-pages.sh error = %v", err)
 	}
 	var records []map[string]any
 	if err := json.Unmarshal(output, &records); err != nil {
-		t.Fatalf("decode chromium-pages output: %v\n%s", err, output)
+		t.Fatalf("decode chromium-pages.sh output: %v\n%s", err, output)
 	}
 	if len(records) != 1 || records[0]["title"] != "Committed in WAL" {
 		t.Fatalf("records = %s, want the committed visit still in the live WAL", output)
@@ -134,15 +134,15 @@ func TestChromiumPagesFailsWhenAHistoryQueryFails(t *testing.T) {
 	bin := t.TempDir()
 	writeFakeSQLite(t, bin)
 
-	script := filepath.Join(repositoryRoot(t), "presets", "bin", "chromium-pages")
+	script := filepath.Join(repositoryRoot(t), "presets", "bin", "chromium-pages.sh")
 	command := exec.CommandContext(t.Context(), "sh", script, "2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
 	command.Env = append(os.Environ(), "HOME="+home, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "FAIL_SQLITE_QUERY=1")
 	output, err := command.Output()
 	if err == nil {
-		t.Fatalf("chromium-pages accepted a failed History query: %s", output)
+		t.Fatalf("chromium-pages.sh accepted a failed History query: %s", output)
 	}
 	if len(output) != 0 {
-		t.Fatalf("chromium-pages emitted partial output after a failed History query: %s", output)
+		t.Fatalf("chromium-pages.sh emitted partial output after a failed History query: %s", output)
 	}
 }
 
@@ -156,11 +156,11 @@ func TestGmailJSONStopsBeforeProviderWhenBoundConversionFails(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, "gws"), []byte(fakeGWS), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	script := filepath.Join(repositoryRoot(t), "presets", "bin", "gmail-json")
+	script := filepath.Join(repositoryRoot(t), "presets", "bin", "gmail-json.sh")
 	command := exec.CommandContext(t.Context(), "sh", script, "2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
 	command.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "GWS_MARKER="+marker)
 	if err := command.Run(); err == nil {
-		t.Fatal("gmail-json succeeded after the RFC3339 conversion failed")
+		t.Fatal("gmail-json.sh succeeded after the RFC3339 conversion failed")
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("gws ran after conversion failure: %v", err)
@@ -184,7 +184,7 @@ esac
 	if err := os.WriteFile(filepath.Join(bin, "gws"), []byte(fakeGWS), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	script := filepath.Join(repositoryRoot(t), "presets", "bin", "gmail-json")
+	script := filepath.Join(repositoryRoot(t), "presets", "bin", "gmail-json.sh")
 	command := exec.CommandContext(t.Context(), "sh", script, "2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
 	command.Env = append(os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -192,7 +192,7 @@ esac
 	)
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("gmail-json error = %v\n%s", err, output)
+		t.Fatalf("gmail-json.sh error = %v\n%s", err, output)
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(output)))
 	var records []map[string]any
@@ -202,12 +202,12 @@ esac
 			if err == io.EOF {
 				break
 			}
-			t.Fatalf("decode gmail-json output: %v\n%s", err, output)
+			t.Fatalf("decode gmail-json.sh output: %v\n%s", err, output)
 		}
 		records = append(records, record)
 	}
 	if len(records) != 1 || records[0]["id"] != "start" {
-		t.Fatalf("gmail-json records = %s, want the exact lower bound and neither outside record", output)
+		t.Fatalf("gmail-json.sh records = %s, want the exact lower bound and neither outside record", output)
 	}
 	calls, err := os.ReadFile(callLog)
 	if err != nil {
@@ -237,7 +237,7 @@ esac
 	if err := os.WriteFile(filepath.Join(bin, "gws"), []byte(fakeGWS), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	script := filepath.Join(repositoryRoot(t), "presets", "bin", "gws-tasks")
+	script := filepath.Join(repositoryRoot(t), "presets", "bin", "gws-tasks.sh")
 	command := exec.CommandContext(t.Context(), "sh", script, "2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
 	command.Env = append(os.Environ(),
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
@@ -245,14 +245,14 @@ esac
 	)
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("gws-tasks error = %v\n%s", err, output)
+		t.Fatalf("gws-tasks.sh error = %v\n%s", err, output)
 	}
 	var records []map[string]any
 	if err := json.Unmarshal(output, &records); err != nil {
-		t.Fatalf("decode gws-tasks output: %v\n%s", err, output)
+		t.Fatalf("decode gws-tasks.sh output: %v\n%s", err, output)
 	}
 	if len(records) != 1 || records[0]["id"] != "inside" {
-		t.Fatalf("gws-tasks records = %s, want only the task strictly before the upper bound", output)
+		t.Fatalf("gws-tasks.sh records = %s, want only the task strictly before the upper bound", output)
 	}
 	for _, private := range []string{"sensitive-task-body", "private-drive-id", "private.example"} {
 		if strings.Contains(string(output), private) {
@@ -286,17 +286,17 @@ JSON
 	if err := os.WriteFile(filepath.Join(bin, "gws"), []byte(fakeGWS), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	script := filepath.Join(repositoryRoot(t), "presets", "bin", "gws-calendar-json")
+	script := filepath.Join(repositoryRoot(t), "presets", "bin", "gws-calendar-json.sh")
 	command := exec.CommandContext(t.Context(), "sh", script,
 		"2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z", "2026-05-04", "2026-05-05")
 	command.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("gws-calendar-json error = %v\n%s", err, output)
+		t.Fatalf("gws-calendar-json.sh error = %v\n%s", err, output)
 	}
 	var records []map[string]any
 	if err := json.Unmarshal(output, &records); err != nil {
-		t.Fatalf("decode gws-calendar-json output: %v\n%s", err, output)
+		t.Fatalf("decode gws-calendar-json.sh output: %v\n%s", err, output)
 	}
 	if len(records) != 1 || records[0]["id"] != "inside" {
 		t.Fatalf("calendar records = %s, want only the event whose start is inside the window", output)
@@ -323,16 +323,16 @@ JSON
 		if err := os.WriteFile(filepath.Join(bin, "gcloud"), []byte(fakeGCloud), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		script := filepath.Join(repositoryRoot(t), "presets", "bin", "gcloud-audit-json")
+		script := filepath.Join(repositoryRoot(t), "presets", "bin", "gcloud-audit-json.sh")
 		command := exec.CommandContext(t.Context(), "sh", script, "2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
 		command.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 		output, err := command.CombinedOutput()
 		if err != nil {
-			t.Fatalf("gcloud-audit-json error = %v\n%s", err, output)
+			t.Fatalf("gcloud-audit-json.sh error = %v\n%s", err, output)
 		}
 		var records []map[string]any
 		if err := json.Unmarshal(output, &records); err != nil {
-			t.Fatalf("decode gcloud-audit-json output: %v\n%s", err, output)
+			t.Fatalf("decode gcloud-audit-json.sh output: %v\n%s", err, output)
 		}
 		if len(records) != 1 || records[0]["uid"] != "example@insert-1@2026-05-04T09:00:00Z" {
 			t.Fatalf("gcloud audit records = %s, want one stable metadata record", output)
@@ -349,15 +349,15 @@ JSON
 		if err := os.WriteFile(filepath.Join(bin, "gcloud"), []byte("#!/bin/sh\nprintf partial\nexit 7\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		script := filepath.Join(repositoryRoot(t), "presets", "bin", "gcloud-audit-json")
+		script := filepath.Join(repositoryRoot(t), "presets", "bin", "gcloud-audit-json.sh")
 		command := exec.CommandContext(t.Context(), "sh", script, "2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
 		command.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 		output, err := command.Output()
 		if err == nil {
-			t.Fatalf("gcloud-audit-json accepted a failed provider: %s", output)
+			t.Fatalf("gcloud-audit-json.sh accepted a failed provider: %s", output)
 		}
 		if len(output) != 0 {
-			t.Fatalf("gcloud-audit-json emitted partial output after provider failure: %s", output)
+			t.Fatalf("gcloud-audit-json.sh emitted partial output after provider failure: %s", output)
 		}
 	})
 }

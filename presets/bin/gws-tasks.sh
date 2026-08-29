@@ -1,11 +1,11 @@
 #!/bin/sh
-# gws-tasks <start> <end> — collect every task list over one exact half-open window.
+# gws-tasks.sh <start> <end> — collect every task list over one exact half-open window.
 set -eu
 
-page_validator=$(cd "$(dirname "$0")" && pwd)/gws-page-json
+page_validator=$(cd "$(dirname "$0")" && pwd)/gws-page-json.sh
 
-start=${1:?usage: gws-tasks <start> <end>}
-end=${2:?usage: gws-tasks <start> <end>}
+start=${1:?usage: gws-tasks.sh <start> <end>}
+end=${2:?usage: gws-tasks.sh <start> <end>}
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -16,7 +16,7 @@ gws tasks tasklists list --params '{"maxResults":100}' --page-all --page-limit 1
 "$page_validator" items < "$tmp/raw-tasklists.json" > "$tmp/tasklists.json"
 jq -r '.items[]? | @base64' "$tmp/tasklists.json" > "$tmp/tasklists"
 [ -s "$tmp/tasklists" ] || {
-  echo "gws-tasks: the account returned no task list; refusing a complete-looking empty window" >&2
+  echo "gws-tasks.sh: the account returned no task list; refusing a complete-looking empty window" >&2
   exit 1
 }
 : > "$tmp/fragments.json"

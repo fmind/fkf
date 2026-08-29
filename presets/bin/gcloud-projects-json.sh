@@ -1,5 +1,5 @@
 #!/bin/sh
-# gcloud-projects-json — collect a complete bounded project snapshot. Provider and projection
+# gcloud-projects-json.sh — collect a complete bounded project snapshot. Provider and projection
 # stages are separate so a failed listing can never become a successful empty JSON result.
 set -eu
 

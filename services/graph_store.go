@@ -11,6 +11,7 @@ import (
 	"io"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -39,7 +40,10 @@ import (
 const (
 	// EdgeSchemaVersion is the edge-list contract version. It lives in the sidecar rather
 	// than on every row, because an index is regenerated as one unit.
-	EdgeSchemaVersion = 1
+	EdgeSchemaVersion = 2
+	// GraphExtractorVersion changes only when edge-derivation semantics change. It is separate
+	// from the metadata shape so identical inputs interpreted by an older extractor become stale.
+	GraphExtractorVersion = 1
 	// EdgeFieldSeparator separates columns. It may not appear inside any field.
 	EdgeFieldSeparator = '\t'
 	// EdgeFieldCount is the exact column count of a well-formed row.
@@ -368,39 +372,106 @@ func containsAllFilters(line []byte, filters [][]byte) bool {
 // than as a header line so that every line of the index is an edge and nothing else, which keeps
 // sort, join, and cut usable with no skip rule.
 type EdgeListMeta struct {
-	SchemaVersion   int      `json:"schema_version"`
-	Columns         []string `json:"columns"`
-	Separator       string   `json:"separator"`
-	GeneratedAt     string   `json:"generated_at"`
-	DocumentsSHA256 string   `json:"documents_sha256"`
-	InputsSHA256    string   `json:"inputs_sha256"`
-	Edges           int      `json:"edges"`
-	Extractors      []string `json:"extractors"`
-	Bytes           int      `json:"bytes"`
-	SHA256          string   `json:"sha256"`
+	SchemaVersion    int                 `json:"schema_version"`
+	ExtractorVersion int                 `json:"extractor_version"`
+	Columns          []string            `json:"columns"`
+	Separator        string              `json:"separator"`
+	GeneratedAt      string              `json:"generated_at"`
+	Edges            int                 `json:"edges"`
+	Extractors       []string            `json:"extractors"`
+	Bytes            int                 `json:"bytes"`
+	SHA256           GraphSHA256Manifest `json:"sha256"`
+}
+
+// GraphSHA256Manifest separates the exact graph output from every meaningful logical input.
+// These are deterministic freshness and integrity fingerprints, not authenticity signatures.
+type GraphSHA256Manifest struct {
+	Inputs  GraphInputSHA256  `json:"inputs"`
+	Outputs GraphOutputSHA256 `json:"outputs"`
+}
+
+// GraphInputSHA256 is the closed graph-input vocabulary. AGGREGATE is synthetic; every other
+// key names one source layer or the edge-relevant root schema semantics.
+type GraphInputSHA256 struct {
+	Aggregate string `json:"AGGREGATE"`
+	Events    string `json:"events"`
+	Index     string `json:"index"`
+	Projects  string `json:"projects"`
+	Tasks     string `json:"tasks"`
+	Wiki      string `json:"wiki"`
+	Schema    string `json:"schema"`
+}
+
+// GraphOutputSHA256 binds metadata to the exact canonical TSV bytes published beside it.
+type GraphOutputSHA256 struct {
+	GraphTSV string `json:"graph.tsv"`
+}
+
+var graphInputNames = []string{"events", "index", "projects", "tasks", "wiki", "schema"}
+
+// NewGraphInputSHA256 validates each named component and computes the canonical aggregate.
+func NewGraphInputSHA256(events, index, projects, tasks, wiki, schema string) (GraphInputSHA256, error) {
+	inputs := GraphInputSHA256{
+		Events: events, Index: index, Projects: projects, Tasks: tasks, Wiki: wiki, Schema: schema,
+	}
+	for _, name := range graphInputNames {
+		if value := inputs.named(name); !isCanonicalSHA256(value) {
+			return GraphInputSHA256{}, fmt.Errorf("%s input digest %q is not a lowercase SHA-256 digest", name, value)
+		}
+	}
+	inputs.Aggregate = aggregateGraphInputsSHA256(inputs)
+	return inputs, nil
+}
+
+func (inputs GraphInputSHA256) named(name string) string {
+	switch name {
+	case "events":
+		return inputs.Events
+	case "index":
+		return inputs.Index
+	case "projects":
+		return inputs.Projects
+	case "tasks":
+		return inputs.Tasks
+	case "wiki":
+		return inputs.Wiki
+	case "schema":
+		return inputs.Schema
+	default:
+		return ""
+	}
+}
+
+func aggregateGraphInputsSHA256(inputs GraphInputSHA256) string {
+	digest := sha256.New()
+	_, _ = digest.Write([]byte("fkf-graph-inputs-v3\x00"))
+	writeDigestValue(digest, []byte("extractor_version"))
+	writeDigestValue(digest, []byte(strconv.Itoa(GraphExtractorVersion)))
+	for _, name := range graphInputNames {
+		writeDigestValue(digest, []byte(name))
+		writeDigestValue(digest, []byte(inputs.named(name)))
+	}
+	return hex.EncodeToString(digest.Sum(nil))
 }
 
 // NewEdgeListMeta derives the sidecar from the rows being written. The clock is a parameter
 // rather than an ambient time.Now call so a test can assert byte-identical output; determinism
 // is a property of the function, not something a caller has to arrange.
 func NewEdgeListMeta(
-	edges []Edge, generatedAt time.Time, documentsSHA256, inputsSHA256 string,
+	edges []Edge, generatedAt time.Time, inputs GraphInputSHA256,
 ) (EdgeListMeta, error) {
 	var encoded bytes.Buffer
 	if err := EncodeEdges(&encoded, edges); err != nil {
 		return EdgeListMeta{}, err
 	}
-	if !isCanonicalSHA256(documentsSHA256) {
-		return EdgeListMeta{}, fmt.Errorf("documents_sha256 %q is not a lowercase SHA-256 digest", documentsSHA256)
+	if problems := graphInputDigestProblems(inputs); len(problems) > 0 {
+		return EdgeListMeta{}, errors.New(strings.Join(problems, "; "))
 	}
-	if !isCanonicalSHA256(inputsSHA256) {
-		return EdgeListMeta{}, fmt.Errorf("inputs_sha256 %q is not a lowercase SHA-256 digest", inputsSHA256)
-	}
-	return edgeListMetaFromBytes(edges, generatedAt, documentsSHA256, inputsSHA256, encoded.Bytes()), nil
+	return edgeListMetaFromBytes(edges, generatedAt, inputs, encoded.Bytes()), nil
 }
 
 func edgeListMetaFromBytes(
-	edges []Edge, generatedAt time.Time, documentsSHA256, inputsSHA256 string, encoded []byte,
+	edges []Edge, generatedAt time.Time, inputs GraphInputSHA256, encoded []byte,
 ) EdgeListMeta {
 	seen := make(map[string]struct{}, 8)
 	extractors := make([]string, 0, 8)
@@ -414,17 +485,29 @@ func edgeListMetaFromBytes(
 	sort.Strings(extractors)
 	digest := sha256.Sum256(encoded)
 	return EdgeListMeta{
-		SchemaVersion:   EdgeSchemaVersion,
-		Columns:         slices.Clone(EdgeColumns),
-		Separator:       "\\t",
-		GeneratedAt:     generatedAt.UTC().Format(time.RFC3339),
-		DocumentsSHA256: documentsSHA256,
-		InputsSHA256:    inputsSHA256,
-		Edges:           len(DedupeEdges(edges)),
-		Extractors:      extractors,
-		Bytes:           len(encoded),
-		SHA256:          hex.EncodeToString(digest[:]),
+		SchemaVersion: EdgeSchemaVersion, ExtractorVersion: GraphExtractorVersion,
+		Columns: slices.Clone(EdgeColumns), Separator: "\\t",
+		GeneratedAt: generatedAt.UTC().Format(time.RFC3339),
+		Edges:       len(DedupeEdges(edges)), Extractors: extractors, Bytes: len(encoded),
+		SHA256: GraphSHA256Manifest{
+			Inputs: inputs, Outputs: GraphOutputSHA256{GraphTSV: hex.EncodeToString(digest[:])},
+		},
 	}
+}
+
+func graphInputDigestProblems(inputs GraphInputSHA256) []string {
+	problems := make([]string, 0, len(graphInputNames)+1)
+	for _, name := range graphInputNames {
+		if value := inputs.named(name); !isCanonicalSHA256(value) {
+			problems = append(problems, fmt.Sprintf("%s input digest %q is not a lowercase SHA-256 digest", name, value))
+		}
+	}
+	if !isCanonicalSHA256(inputs.Aggregate) {
+		problems = append(problems, fmt.Sprintf("AGGREGATE input digest %q is not a lowercase SHA-256 digest", inputs.Aggregate))
+	} else if want := aggregateGraphInputsSHA256(inputs); inputs.Aggregate != want {
+		problems = append(problems, "AGGREGATE input digest does not match extractor_version and named inputs")
+	}
+	return problems
 }
 
 func isCanonicalSHA256(value string) bool {
@@ -448,13 +531,8 @@ func WriteEdgeList(path, metaPath string, edges []Edge, meta EdgeListMeta) error
 	if err != nil || meta.GeneratedAt != generatedAt.UTC().Format(time.RFC3339) {
 		return fmt.Errorf("edge-list metadata generated_at %q is not canonical UTC RFC3339", meta.GeneratedAt)
 	}
-	if !isCanonicalSHA256(meta.DocumentsSHA256) {
-		return fmt.Errorf("edge-list metadata documents_sha256 %q is not a lowercase SHA-256 digest",
-			meta.DocumentsSHA256)
-	}
-	if !isCanonicalSHA256(meta.InputsSHA256) {
-		return fmt.Errorf("edge-list metadata inputs_sha256 %q is not a lowercase SHA-256 digest",
-			meta.InputsSHA256)
+	if problems := graphInputDigestProblems(meta.SHA256.Inputs); len(problems) > 0 {
+		return fmt.Errorf("edge-list metadata %s", strings.Join(problems, "; "))
 	}
 	for index, edge := range edges {
 		if edge.Indexed != meta.GeneratedAt {
@@ -462,13 +540,10 @@ func WriteEdgeList(path, metaPath string, edges []Edge, meta EdgeListMeta) error
 				index, edge.Indexed, meta.GeneratedAt)
 		}
 	}
-	expected := edgeListMetaFromBytes(
-		edges, generatedAt, meta.DocumentsSHA256, meta.InputsSHA256, buffer.Bytes(),
-	)
+	expected := edgeListMetaFromBytes(edges, generatedAt, meta.SHA256.Inputs, buffer.Bytes())
 	if meta.SchemaVersion != expected.SchemaVersion || !slices.Equal(meta.Columns, expected.Columns) ||
+		meta.ExtractorVersion != expected.ExtractorVersion ||
 		meta.Separator != expected.Separator || meta.GeneratedAt != expected.GeneratedAt ||
-		meta.DocumentsSHA256 != expected.DocumentsSHA256 ||
-		meta.InputsSHA256 != expected.InputsSHA256 ||
 		meta.Edges != expected.Edges || !slices.Equal(meta.Extractors, expected.Extractors) ||
 		meta.Bytes != expected.Bytes || meta.SHA256 != expected.SHA256 {
 		return errors.New("edge-list metadata does not describe the exact canonical encoded rows")

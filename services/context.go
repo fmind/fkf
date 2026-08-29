@@ -139,7 +139,7 @@ type Receipt struct {
 	RankingVersion int    `json:"ranking_version"`
 	ToolVersion    string `json:"tool_version"`
 	// Notice is ContextNotice, repeated on every pack rather than said once. `fkf mcp serve`
-	// says it once, in the server's Instructions, at connection time — but `fkf-hook`, the
+	// says it once, in the server's Instructions, at connection time — but `fkf-hook.sh`, the
 	// session-start hook every preset installs, calls `fkf context --format text` directly and
 	// never goes through MCP at all, and a long MCP session can compact its own history well
 	// past a notice sent only once. The pack has to say what it is on every delivery, not just

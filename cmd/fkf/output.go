@@ -305,6 +305,8 @@ func operationStreamOf(result any) (reflect.Value, bool) {
 		return reflect.ValueOf(typed.Hits), true
 	case *services.SyncReport:
 		return reflect.ValueOf(typed.Units), true
+	case *services.SourceTestReport:
+		return reflect.ValueOf(typed.Sources), true
 	case *services.ValidationReport:
 		return reflect.ValueOf(typed.Issues), true
 	case *services.Status:

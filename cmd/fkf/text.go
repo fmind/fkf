@@ -107,6 +107,8 @@ func renderOperations(w *textWriter, result any) bool {
 		writeInitText(w, typed)
 	case *services.TrustReport:
 		writeTrustText(w, typed)
+	case *services.SourceTestReport:
+		writeSourceTestText(w, typed)
 	case *services.HelperReport:
 		writeHelpersText(w, typed)
 	case *services.ValidationReport:
@@ -217,7 +219,7 @@ func writeContextText(w *textWriter, pack *services.ContextPack) {
 	}
 	w.line("")
 	// Printed here, not only once by `fkf mcp serve` at connection time: this is the ONLY
-	// framing a session driven by `fkf-hook` ever sees, since the hook calls --format text
+	// framing a session driven by `fkf-hook.sh` ever sees, since the hook calls --format text
 	// directly and never goes through MCP's Instructions at all.
 	w.line(receipt.Notice)
 	if len(pack.Items) == 0 {
@@ -594,6 +596,17 @@ func writeSyncText(w *textWriter, report *services.SyncReport) {
 	}
 }
 
+func writeSourceTestText(w *textWriter, report *services.SourceTestReport) {
+	for _, result := range report.Sources {
+		w.printf("%-24s %-7s %s", result.Source, result.Outcome, result.Elapsed)
+		if result.Error != "" {
+			w.printf("  %s", result.Error)
+		}
+		w.line("")
+	}
+	w.printf("\n%d passed, %d failed in %s\n", report.Passed, report.Failed, report.Elapsed)
+}
+
 func writeInitText(w *textWriter, report *services.InitReport) {
 	verb := "refreshed"
 	if report.Created {
@@ -798,7 +811,7 @@ func writeDocumentText(w *textWriter, document *sources.Document) {
 // inline flattens collected or authored free text onto the one line this renderer allocated
 // for it. A record's title is unmodified provider data — a mail subject, a PR title, a page
 // title — so a newline in it would otherwise emit lines indistinguishable from fkf's own, and
-// `fkf context --format text` is exactly the string bin/fkf-hook feeds an agent unattended at
+// `fkf context --format text` is exactly the string bin/fkf-hook.sh feeds an agent unattended at
 // every session start. Escaping belongs here rather than in services/: JSON already escapes,
 // and rendering must not mutate the stored record.
 func inline(value string) string {
@@ -1022,6 +1035,13 @@ func writeTrustedSourceText(w *textWriter, source services.TrustedSource) {
 			arguments = append(arguments, strconv.QuoteToASCII(argument))
 		}
 		w.printf("  run:  [%s]\n", strings.Join(arguments, ", "))
+	}
+	if len(source.Test) > 0 {
+		arguments := make([]string, 0, len(source.Test))
+		for _, argument := range source.Test {
+			arguments = append(arguments, strconv.QuoteToASCII(argument))
+		}
+		w.printf("  test: [%s]\n", strings.Join(arguments, ", "))
 	}
 	if len(source.Body) > 0 {
 		arguments := make([]string, 0, len(source.Body))

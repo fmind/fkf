@@ -137,6 +137,29 @@ Markdown link titles are tooltip metadata and never hidden graph carriers. This 
 
 Graph metadata binds the exact URI and bytes of every collected document and authored Markdown input, plus the canonical TSV bytes. Every graph read recomputes the inputs before accepting the cache. A neighbourhood walk keeps one validated graph descriptor across its hops and rechecks the bytes before return.
 
+`graph.meta.json` schema version 2 exposes the complete manifest:
+
+```json
+{
+  "schema_version": 2,
+  "extractor_version": 1,
+  "sha256": {
+    "inputs": {
+      "AGGREGATE": "...",
+      "events": "...",
+      "index": "...",
+      "projects": "...",
+      "tasks": "...",
+      "wiki": "...",
+      "schema": "..."
+    },
+    "outputs": { "graph.tsv": "..." }
+  }
+}
+```
+
+Collected components frame each canonical document URI with its encoded bytes. Authored components frame each page URI with its exact bytes. `schema` includes field names, cardinalities, and relation flags; descriptions and examples cannot change an edge and remain outside the digest. `AGGREGATE` frames the extractor version and every named input pair. Empty and disabled layers still have deterministic component digests.
+
 ```bash
 fkf build graph
 fkf graph

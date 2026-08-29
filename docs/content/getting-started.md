@@ -120,9 +120,9 @@ sources:
   github-pull-requests:
     enabled: true
     layer: events
-    requires: [github-search-json, gh, jq]
+    requires: [github-search-json.sh, gh, jq]
     window: true
-    run: [github-search-json, prs, author, "{{start}}", "{{end}}"]
+    run: [github-search-json.sh, prs, author, "{{start}}", "{{end}}"]
     fields:
       id: .url
       time: .updatedAt
@@ -135,7 +135,7 @@ sources:
 
 The field name states the role; the URI states the identity namespace. `participant` is unambiguous where `people` is not, while values can distinguish an email person from a GitHub actor. FKF validates and transcribes those choices without merging identities or inferring relationships.
 
-Keep direct provider argv in `run:`. Move pipelines and expansion to a helper under `bin/`; use Python or another executable when structured or stateful logic would be clearer. The helper's shebang selects its interpreter, so the same base works on a Mac whose interactive shell is Zsh and on a Linux host using Bash or Fish.
+Keep direct provider argv in `run:`. Move pipelines and expansion to a `.sh` or `.py` helper under `bin/`; use Python when structured or stateful logic would be clearer. The helper's shebang selects its interpreter, so the same base works on a Mac whose interactive shell is Zsh and on a Linux host using Bash or Fish.
 
 Declare each executable dependency explicitly in `requires:`. `status` locates those bare names without parsing the run line or executing a version probe.
 
@@ -176,7 +176,7 @@ Every result prints a URI accepted by `read`. Generic `--grep` and `--where` rep
 Use the base's session-start hook for the first compact repository-scoped pack and the read-only MCP server for later questions:
 
 ```bash
-~/brain/bin/fkf-hook claude
+~/brain/bin/fkf-hook.sh claude
 claude mcp add --transport stdio --scope user fkf -- fkf mcp serve --base ~/brain
 ```
 

@@ -1,12 +1,12 @@
 #!/bin/sh
-# gmail-json <start> <end> — collect Gmail metadata in the exact half-open RFC3339 window.
+# gmail-json.sh <start> <end> — collect Gmail metadata in the exact half-open RFC3339 window.
 # Gmail interprets date operands at midnight Pacific time, so the API query uses epoch seconds.
 set -eu
 
-page_validator=$(cd "$(dirname "$0")" && pwd)/gws-page-json
+page_validator=$(cd "$(dirname "$0")" && pwd)/gws-page-json.sh
 
-start=${1:?usage: gmail-json <start> <end>}
-end=${2:?usage: gmail-json <start> <end>}
+start=${1:?usage: gmail-json.sh <start> <end>}
+end=${2:?usage: gmail-json.sh <start> <end>}
 
 # Assignment-only commands carry jq's exit status; set -e therefore stops before gws if either
 # controlled RFC3339 bound cannot be converted.

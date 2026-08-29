@@ -15,7 +15,7 @@ import (
 	"github.com/fmind/fkf/services"
 )
 
-const githubSearchHelper = "github-search-json"
+const githubSearchHelper = "github-search-json.sh"
 
 type githubSearchRecord struct {
 	URL string `json:"url"`
@@ -113,11 +113,11 @@ cat "$GH_FIXTURE_DIR/$file"
 		"prs", "author", "2026-05-04T00:00:00Z", "2026-05-04T00:00:04Z")
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("github-search-json error = %v\n%s", err, output)
+		t.Fatalf("github-search-json.sh error = %v\n%s", err, output)
 	}
 	var records []githubSearchRecord
 	if err := json.Unmarshal(output, &records); err != nil {
-		t.Fatalf("decode github-search-json output: %v\n%s", err, output)
+		t.Fatalf("decode github-search-json.sh output: %v\n%s", err, output)
 	}
 	want := []string{
 		"https://github.example.test/acme/project/pull/1",
@@ -182,10 +182,10 @@ cat "$GH_FIXTURE_DIR/saturated.json"
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err == nil {
-		t.Fatal("github-search-json accepted a saturated one-second slice")
+		t.Fatal("github-search-json.sh accepted a saturated one-second slice")
 	}
 	if stdout.Len() != 0 {
-		t.Fatalf("github-search-json emitted partial stdout before failing: %s", stdout.Bytes())
+		t.Fatalf("github-search-json.sh emitted partial stdout before failing: %s", stdout.Bytes())
 	}
 	if message := stderr.String(); !strings.Contains(message, "one-second") ||
 		!strings.Contains(message, "cannot prove completeness") {
@@ -216,7 +216,7 @@ cat "$GH_FIXTURE_DIR/incomplete.json"
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err == nil {
-		t.Fatal("github-search-json accepted incomplete_results=true")
+		t.Fatal("github-search-json.sh accepted incomplete_results=true")
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("incomplete search emitted partial stdout: %s", stdout.Bytes())
@@ -248,7 +248,7 @@ cat "$GH_FIXTURE_DIR/$file"
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err == nil {
-		t.Fatal("github-search-json accepted fewer items than total_count")
+		t.Fatal("github-search-json.sh accepted fewer items than total_count")
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("short REST result emitted partial stdout: %s", stdout.Bytes())
@@ -282,11 +282,11 @@ cat "$GH_FIXTURE_DIR/$file"
 		"issues", "author", "2026-05-04T00:00:00Z", "2026-05-04T00:00:01Z")
 	output, err := command.CombinedOutput()
 	if err != nil {
-		t.Fatalf("github-search-json error = %v\n%s", err, output)
+		t.Fatalf("github-search-json.sh error = %v\n%s", err, output)
 	}
 	var records []githubSearchRecord
 	if err := json.Unmarshal(output, &records); err != nil {
-		t.Fatalf("decode github-search-json output: %v\n%s", err, output)
+		t.Fatalf("decode github-search-json.sh output: %v\n%s", err, output)
 	}
 	if len(records) != 2 {
 		t.Fatalf("search records = %s, want both declared pages", output)
@@ -324,7 +324,7 @@ cat "$GH_FIXTURE_DIR/empty.json"
 				test.kind, test.mode, "2026-05-04T00:00:00Z", "2026-05-04T00:00:01Z")
 			output, err := command.CombinedOutput()
 			if err != nil {
-				t.Fatalf("github-search-json error = %v\n%s", err, output)
+				t.Fatalf("github-search-json.sh error = %v\n%s", err, output)
 			}
 			if string(output) != "[]\n" {
 				t.Fatalf("empty search output = %q, want one empty JSON array", output)
@@ -351,7 +351,7 @@ func TestGitHubSearchJSONRejectsTheObsoleteReviewedMode(t *testing.T) {
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err == nil {
-		t.Fatal("github-search-json still accepts reviewed pull-request search rows")
+		t.Fatal("github-search-json.sh still accepts reviewed pull-request search rows")
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("obsolete reviewed mode emitted output: %s", stdout.Bytes())

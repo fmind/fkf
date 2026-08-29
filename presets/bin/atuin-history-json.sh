@@ -1,11 +1,11 @@
 #!/bin/sh
-# atuin-history-json <start> <end> <database> — collect shell activity metadata without
+# atuin-history-json.sh <start> <end> <database> — collect shell activity metadata without
 # exposing the command column. SQLite and jq run as separate fail-fast stages.
 set -eu
 
-start=${1:?usage: atuin-history-json <start> <end> <database>}
-end=${2:?usage: atuin-history-json <start> <end> <database>}
-database=${3:?usage: atuin-history-json <start> <end> <database>}
+start=${1:?usage: atuin-history-json.sh <start> <end> <database>}
+end=${2:?usage: atuin-history-json.sh <start> <end> <database>}
+database=${3:?usage: atuin-history-json.sh <start> <end> <database>}
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/fkf-atuin.XXXXXX")
 rows=$work_dir/rows.ndjson
 trap 'exit 1' HUP INT TERM

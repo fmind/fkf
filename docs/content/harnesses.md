@@ -15,7 +15,7 @@ MCP does not train the model or copy the whole base into its prompt. It gives th
 
 ## Proof boundary
 
-The repository hermetically tests every `bin/fkf-hook` output envelope, empty response, first-call gate, repository-name parser, closed `PATH`, and unknown-harness failure. Those tests prove FKF's adapter bytes. They do not prove that a particular installed or hosted harness still consumes the bytes, so the setup recipes below link to the vendor contract they depend on.
+The repository hermetically tests every `bin/fkf-hook.sh` output envelope, empty response, first-call gate, repository-name parser, closed `PATH`, and unknown-harness failure. Those tests prove FKF's adapter bytes. They do not prove that a particular installed or hosted harness still consumes the bytes, so the setup recipes below link to the vendor contract they depend on.
 
 The adapter table is the complete supported hook vocabulary:
 
@@ -57,7 +57,7 @@ Codex's stdio form and shared MCP configuration are documented in the [official 
 
 ## The tested context hook
 
-`fkf init` writes `bin/fkf-hook` for optional session integration. The hook resolves its base from its own location, reads the current repository's strict `owner/name` and branch, and runs:
+`fkf init` writes `bin/fkf-hook.sh` for optional session integration. The hook resolves its base from its own location, reads the current repository's strict `owner/name` and branch, and runs:
 
 ```bash
 fkf context --base <hook-parent> --budget 1500 --format text -- "<owner/name> <branch>"
@@ -88,7 +88,7 @@ Claude Code documents `SessionStart`, its `startup|resume|clear|compact|fork` so
         "hooks": [
           {
             "type": "command",
-            "command": "/absolute/path/to/brain/bin/fkf-hook claude",
+            "command": "/absolute/path/to/brain/bin/fkf-hook.sh claude",
             "timeout": 20,
             "statusMessage": "Loading FKF context"
           }
@@ -111,7 +111,7 @@ matcher = "startup|resume|clear|compact"
 
 [[hooks.SessionStart.hooks]]
 type = "command"
-command = "/absolute/path/to/brain/bin/fkf-hook codex"
+command = "/absolute/path/to/brain/bin/fkf-hook.sh codex"
 timeout = 20
 statusMessage = "Loading FKF context"
 ```
@@ -120,27 +120,27 @@ Add it to `~/.codex/config.toml` or a trusted project's `.codex/config.toml`, th
 
 ### Gemini CLI
 
-Add `/absolute/path/to/brain/bin/fkf-hook gemini` as a `SessionStart` command in the user or project `settings.json`. FKF returns Gemini's `hookSpecificOutput.additionalContext` JSON. The exact hook object and millisecond timeout are defined in the [Gemini CLI hooks reference](https://geminicli.com/docs/hooks/reference/).
+Add `/absolute/path/to/brain/bin/fkf-hook.sh gemini` as a `SessionStart` command in the user or project `settings.json`. FKF returns Gemini's `hookSpecificOutput.additionalContext` JSON. The exact hook object and millisecond timeout are defined in the [Gemini CLI hooks reference](https://geminicli.com/docs/hooks/reference/).
 
 ### Copilot CLI
 
-Add `/absolute/path/to/brain/bin/fkf-hook copilot` to a `sessionStart` command entry under `~/.copilot/hooks/*.json`, or another scope documented by GitHub. FKF returns `additionalContext` JSON. See the [Copilot hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference) for the versioned file shape and scope order.
+Add `/absolute/path/to/brain/bin/fkf-hook.sh copilot` to a `sessionStart` command entry under `~/.copilot/hooks/*.json`, or another scope documented by GitHub. FKF returns `additionalContext` JSON. See the [Copilot hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference) for the versioned file shape and scope order.
 
 ### Kiro
 
-Create a version `v1` hook under `.kiro/hooks/*.json` with trigger `SessionStart` and command `/absolute/path/to/brain/bin/fkf-hook kiro`. Kiro adds successful command stdout to agent context. See [Kiro hooks](https://kiro.dev/docs/hooks/) for the current standalone file schema.
+Create a version `v1` hook under `.kiro/hooks/*.json` with trigger `SessionStart` and command `/absolute/path/to/brain/bin/fkf-hook.sh kiro`. Kiro adds successful command stdout to agent context. See [Kiro hooks](https://kiro.dev/docs/hooks/) for the current standalone file schema.
 
 ### Cursor
 
-Register `/absolute/path/to/brain/bin/fkf-hook cursor` for `sessionStart` in the user or project `hooks.json`. FKF returns `additional_context` JSON. Cursor treats this event as fire-and-forget, so test the installed client after changing the hook. See the [Cursor hooks reference](https://prod.cursor.com/docs/hooks).
+Register `/absolute/path/to/brain/bin/fkf-hook.sh cursor` for `sessionStart` in the user or project `hooks.json`. FKF returns `additional_context` JSON. Cursor treats this event as fire-and-forget, so test the installed client after changing the hook. See the [Cursor hooks reference](https://prod.cursor.com/docs/hooks).
 
 ### Antigravity
 
-Register `/absolute/path/to/brain/bin/fkf-hook antigravity` as a `PreInvocation` command in the workspace `.agents/hooks.json` or global `~/.gemini/config/hooks.json`. FKF returns one `injectSteps` ephemeral message only for invocation zero, so later model calls do not repeatedly spend the session-start budget. See the [Antigravity hooks reference](https://www.antigravity.google/docs/hooks/).
+Register `/absolute/path/to/brain/bin/fkf-hook.sh antigravity` as a `PreInvocation` command in the workspace `.agents/hooks.json` or global `~/.gemini/config/hooks.json`. FKF returns one `injectSteps` ephemeral message only for invocation zero, so later model calls do not repeatedly spend the session-start budget. See the [Antigravity hooks reference](https://www.antigravity.google/docs/hooks/).
 
 ### Cline
 
-Create the executable `TaskStart` hook at `.clinerules/hooks/TaskStart` or the user-level location and have it execute `/absolute/path/to/brain/bin/fkf-hook cline`. FKF returns `cancel: false` with `contextModification`. See the [Cline hooks reference](https://docs.cline.bot/customization/hooks) for enablement and platform-specific executable rules.
+Create the executable `TaskStart` hook at `.clinerules/hooks/TaskStart` or the user-level location and have it execute `/absolute/path/to/brain/bin/fkf-hook.sh cline`. FKF returns `cancel: false` with `contextModification`. See the [Cline hooks reference](https://docs.cline.bot/customization/hooks) for enablement and platform-specific executable rules.
 
 ### Devin Local (experimental)
 
@@ -150,7 +150,7 @@ Only the adapter bytes are repository-tested. Follow each linked vendor page for
 
 ## Collected local metadata
 
-When enabled, the bundled `agent-sessions` and `agent-memory-files` collectors read metadata from supported local stores and skip absent products. They never collect prompts or responses.
+When enabled, the bundled `agent-sessions.sh` and `agent-memory-files.sh` collectors read metadata from supported local stores and skip absent products. They never collect prompts or responses.
 
 | Harness         | Session metadata store                            | Memory metadata store                  |
 | --------------- | ------------------------------------------------- | -------------------------------------- |

@@ -81,7 +81,7 @@ func newInitCommand() *cli.Command {
 func newTrustCommand() *cli.Command {
 	return &cli.Command{
 		Name: "trust", Category: groupRun,
-		Usage: "Review every declared run: and body: command, body-bound field path, enabled state, " +
+		Usage: "Review every declared run:, test:, and body: command, body-bound field path, enabled state, " +
 			"invocation policy, bin: PATH directories, and helpers; " +
 			"then record trust." + markWrite,
 		Description: "Reading the commands is the act of trusting them, so the listing is part of " +
@@ -111,6 +111,39 @@ func newTrustCommand() *cli.Command {
 				return run()
 			}
 			return withWriterLock(ctx, base.Root(), run)
+		},
+	}
+}
+
+func newTestCommand() *cli.Command {
+	return &cli.Command{
+		Name: "test", Category: groupRun,
+		Usage:     "Run trusted source verification hooks." + markRun,
+		ArgsUsage: "[source...]",
+		Description: "With no arguments, runs hooks declared by enabled sources in stable name order. " +
+			"Named sources run even when disabled; --all includes every source that declares a hook. " +
+			"Hooks are direct argv, receive only {{base}} and {{home}}, and never collect or write evidence.",
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "all", Usage: "Test every source that declares a hook, including disabled sources."},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.Bool("all") && cmd.Args().Len() > 0 {
+				return invalidUsage(errUsage("fkf test --all cannot be combined with source names"))
+			}
+			base, err := openBase(cmd)
+			if err != nil {
+				return err
+			}
+			report, err := services.TestSources(ctx, base, services.SourceTestRequest{
+				Targets: cmd.Args().Slice(), All: cmd.Bool("all"),
+			})
+			if err := emit(cmd, report, err); err != nil {
+				return err
+			}
+			if !report.Complete {
+				return partialFailure(fmt.Errorf("%d source test(s) failed:\n%s", report.Failed, report.FailureSummary()))
+			}
+			return nil
 		},
 	}
 }

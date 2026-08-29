@@ -370,6 +370,14 @@ sources:
 	}
 }
 
+func TestTrustSourceDigestCoversSourceTestHook(t *testing.T) {
+	without := &Source{Name: "source", Run: []string{"collect.sh"}}
+	with := &Source{Name: "source", Run: []string{"collect.sh"}, Test: []string{"collect.sh", "--test"}}
+	if sourceDigest(without) == sourceDigest(with) {
+		t.Fatal("adding a source test hook left the execution trust digest unchanged")
+	}
+}
+
 func TestTrustSourceDigestCoversBodyFieldPaths(t *testing.T) {
 	const config = `name: t
 layers: {events: true}

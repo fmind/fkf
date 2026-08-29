@@ -440,11 +440,14 @@ func baseExecutionDigest(config *Config) string {
 // field paths, and invocation policy. Retrieval-only projections and semantic
 // descriptions remain outside execution trust.
 func sourceDigest(source *Source) string {
-	digest := newFramedDigest("source-execution-v2")
+	digest := newFramedDigest("source-execution-v3")
 	digest.boolean("enabled", source.Enabled)
 	digest.field("layer", string(source.Layer))
 	for _, argument := range source.Run {
 		digest.field("run", argument)
+	}
+	for _, argument := range source.Test {
+		digest.field("test", argument)
 	}
 	for _, argument := range source.Body {
 		digest.field("body", argument)

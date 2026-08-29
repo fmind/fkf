@@ -87,6 +87,10 @@ const MaxFreshnessAgeHours = 10 * 365 * 24
 // value fkf itself computes; collected data never chooses an argument or executable.
 var RunPlaceholders = []string{"date", "next_date", "start", "end", "base", "home"}
 
+// TestPlaceholders are stable machine/base paths only. A source verification hook is independent
+// of collection windows and stored values, so dates and record fields never enter its argv.
+var TestPlaceholders = []string{"base", "home"}
+
 // bodyStaticPlaceholders are the body substitutions that do not come from a record. Every
 // declared field name is also available, which is safe because body is argv and never shell.
 var bodyStaticPlaceholders = []string{"base", "home"}
@@ -103,6 +107,7 @@ type Source struct {
 	Enabled  bool          `json:"enabled"`
 	Layer    Layer         `json:"layer"`
 	Run      []string      `json:"run"`
+	Test     []string      `json:"test,omitempty"`
 	Format   OutputFormat  `json:"format"`
 	Records  FieldPath     `json:"records,omitzero"`
 	Fields   FieldMap      `json:"fields,omitempty"`
@@ -257,6 +262,7 @@ type fileSource struct {
 	Enabled     bool       `yaml:"enabled"`
 	Layer       string     `yaml:"layer"`
 	Run         *[]string  `yaml:"run"`
+	Test        *[]string  `yaml:"test"`
 	Format      string     `yaml:"format"`
 	Records     string     `yaml:"records"`
 	Fields      FieldMap   `yaml:"fields"`
@@ -466,10 +472,17 @@ func buildSource(name string, file fileSource, path string) (*Source, error) {
 	if file.Run == nil || len(*file.Run) == 0 {
 		return fail("run is required and must contain an executable")
 	}
+	if file.Test != nil && len(*file.Test) == 0 {
+		return fail("test must contain an executable when declared")
+	}
 	source := &Source{
 		Name: name, Enabled: file.Enabled, Layer: LayerEvents, Format: FormatJSON,
-		Run: append([]string(nil), (*file.Run)...), Body: file.Body, Requires: append([]string(nil), file.Requires...),
+		Run:  append([]string(nil), (*file.Run)...),
+		Body: file.Body, Requires: append([]string(nil), file.Requires...),
 		Install: strings.TrimSpace(file.Install), Window: file.Window, Fields: file.Fields,
+	}
+	if file.Test != nil {
+		source.Test = append([]string(nil), (*file.Test)...)
 	}
 	if layer := strings.TrimSpace(file.Layer); layer != "" {
 		if Layer(layer) != LayerEvents && Layer(layer) != LayerIndex {
@@ -625,6 +638,9 @@ func validateSource(config *Config, source *Source) error {
 	if err := validateRun(config, source, fail); err != nil {
 		return err
 	}
+	if err := validateTest(config, source, fail); err != nil {
+		return err
+	}
 	if err := validateRequirements(source, fail); err != nil {
 		return err
 	}
@@ -667,6 +683,36 @@ func validateRun(config *Config, source *Source, fail func(string, ...any) error
 			}
 			if source.Layer == LayerIndex && contains(datePlaceholders, name) {
 				return fail("run[%d]: {{%s}} is a date placeholder and an index source collects a point in time, not a day", index, name)
+			}
+		}
+	}
+	return nil
+}
+
+func validateTest(config *Config, source *Source, fail func(string, ...any) error) error {
+	for index, argument := range source.Test {
+		if problem := executionTextProblem(argument); problem != "" {
+			return fail("test[%d] %s", index, problem)
+		}
+		names, err := placeholderNames(argument)
+		if err != nil {
+			return fail("test[%d]: %v", index, err)
+		}
+		if index == 0 {
+			if strings.TrimSpace(argument) == "" {
+				return fail("test[0] must be the executable to run")
+			}
+			if len(names) > 0 {
+				return fail("test[0] must be a literal executable; placeholders are allowed only in arguments")
+			}
+			if err := validateArgvExecutable(config, "test", argument, fail); err != nil {
+				return err
+			}
+		}
+		for _, name := range names {
+			if !contains(TestPlaceholders, name) {
+				return fail("test[%d]: unknown placeholder {{%s}}; known placeholders are %s",
+					index, name, strings.Join(TestPlaceholders, ", "))
 			}
 		}
 	}

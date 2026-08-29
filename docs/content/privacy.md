@@ -44,12 +44,13 @@ $ fkf sync --base ~/team-brain
 fkf: base is not trusted on this machine: /home/you/team-brain has never been trusted here; run `fkf trust --base /home/you/team-brain` to read its commands and record them
 ```
 
-`fkf trust` prints the complete fkf-owned execution definition: every declared `run:` and `body:` with its enabled state, executable search path and invocation policy, and every file under the base's `bin/`. Disabled sources are visible in the review but cannot be collected or used for historical body fetching. It then records the digest. The listing is part of the command rather than a step you are told to perform first, because reading that definition is the act of trusting it:
+`fkf trust` prints the complete fkf-owned execution definition: every declared `run:`, `test:`, and `body:` with its enabled state, executable search path and invocation policy, and every file under the base's `bin/`. Disabled sources are visible in the review but cannot be collected or used for historical body fetching; an explicitly named `fkf test` or `fkf test --all` may still run their declared verification hooks. It then records the digest. The listing is part of the command rather than a step you are told to perform first, because reading that definition is the act of trusting it:
 
 ```console
 $ fkf trust --base ~/team-brain
 jira-issues
   run:  ["acli", "jira", "workitem", "search", "--jql", "updated >= '{{date}}'", "--json"]
+  test: ["jira-check.sh"]
   body: ["acli", "jira", "workitem", "view", "{{id}}", "--json"]
 
 trusted /home/you/team-brain (digest 4f2a9c1e8b30)
@@ -62,19 +63,21 @@ Four details matter more than the flow:
 - **Declared commands start from a neutral directory.** Their working directory is `/`, not the base root. A relative interpreter argument or implicit module lookup therefore cannot reach `wiki/`, `projects/`, `tasks/`, `events/`, or `index/`. Commands receive `{{base}}` as an explicit data path when configured; executable and interpreted support belongs under the trust-digested `bin/` PATH.
 - **Any executable-boundary change re-arms the gate.** A configuration edit that changes only retrieval semantics does not. After a pull that changes the canonical plan, a helper, or its executable bit, the next execution stops and the trust report leads with the semantic item that changed.
 - **The record lives outside the base**, in `$XDG_STATE_HOME/fkf/trust/` (or `~/.local/state/fkf/trust/`), named by the SHA-256 of the base's absolute path. Storing it inside the base would make trust clonable, which is precisely what the gate exists to prevent, and machine-local state has no business in a repository you may push.
-- **Only two command families execute what the base declares:** `fkf sync` (including the write-free `--preview`) and record `fkf read --body`. `status` locates explicit `requires:` names but never runs them. Every other command reads files; `?jq=` is evaluated in-process by gojq with environment and file-loading builtins disabled. `fkf trust --check` reports the state and records nothing, while `--all` prints the full disclosure even when a concise change report is available.
+- **Only three command families execute what the base declares:** `fkf sync` (including the write-free `--preview`), `fkf test`, and record `fkf read --body`. `status` locates explicit `requires:` names but never runs them. Every other command reads files; `?jq=` is evaluated in-process by gojq with environment and file-loading builtins disabled. `fkf trust --check` reports the state and records nothing, while `--all` prints the full disclosure even when a concise change report is available.
 
 ## Why both commands are argument lists
 
 Both commands cross the process boundary as argv. The difference is which placeholders they may use:
 
-| Placeholder                                      | Value comes from                  | May appear in           |
-| ------------------------------------------------ | --------------------------------- | ----------------------- |
-| `{{date}}` `{{next_date}}` `{{start}}` `{{end}}` | the day being collected           | `run:` (events sources) |
-| `{{base}}` `{{home}}`                            | the resolved base root, your home | `run:` and `body:`      |
-| any declared max-one field, such as `{{id}}`     | a collected record                | `body:` only            |
+| Placeholder                                      | Value comes from                  | May appear in            |
+| ------------------------------------------------ | --------------------------------- | ------------------------ |
+| `{{date}}` `{{next_date}}` `{{start}}` `{{end}}` | the day being collected           | `run:` (events sources)  |
+| `{{base}}` `{{home}}`                            | the resolved base root, your home | `run:`, `test:`, `body:` |
+| any declared max-one field, such as `{{id}}`     | a collected record                | `body:` only             |
 
 `run:` receives only dates and paths generated by FKF. The first item is a literal executable; FKF substitutes every later item independently and invokes it without a shell. Pipelines, globs, and expansion therefore require a helper under `bin/`, where the helper's shebang names its interpreter and trust covers the bytes and executable bit. No collected data chooses a run executable or argument.
+
+`test:` receives only base and home paths. It has no collection window or stored field placeholder and writes no evidence.
 
 `body:` fetches one record's body on demand, and its placeholders can come from data a provider returned. Before exec, each data-derived substituted value must be valid UTF-8, 1 to 256 bytes, contain visible content, contain no control or format characters, and not start with `-`. Unicode, spaces, and punctuation remain one opaque argument.
 

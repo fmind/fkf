@@ -15,7 +15,7 @@ import (
 )
 
 func TestOptionalGCloudAuditHelperUsesBoundedOverflowDetection(t *testing.T) {
-	script, err := os.ReadFile(filepath.Join(repositoryRoot(t), "presets", "bin", "gcloud-audit-json"))
+	script, err := os.ReadFile(filepath.Join(repositoryRoot(t), "presets", "bin", "gcloud-audit-json.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,16 +41,16 @@ func TestAgentSessionsCollectorRunsOneExactDayAtATime(t *testing.T) {
 	if source.Window {
 		t.Fatal("agent-sessions declares window: true, so one session envelope is range-dependently bucketed into only one day")
 	}
-	if !slices.Equal(source.Run, []string{"agent-sessions", "{{start}}", "{{end}}"}) {
+	if !slices.Equal(source.Run, []string{"agent-sessions.sh", "{{start}}", "{{end}}"}) {
 		t.Fatalf("agent-sessions run = %q, want exact RFC3339 day bounds", source.Run)
 	}
-	for _, requirement := range []string{"agent-sessions", "find", "jq", "sqlite3", "touch"} {
+	for _, requirement := range []string{"agent-sessions.sh", "find", "jq", "sqlite3", "touch"} {
 		if !slices.Contains(source.Requires, requirement) {
 			t.Errorf("agent-sessions requirements = %v, want %q for truthful readiness", source.Requires, requirement)
 		}
 	}
 	memory := config.Sources["agent-memory-files"]
-	for _, requirement := range []string{"agent-memory-files", "find", "jq", "stat"} {
+	for _, requirement := range []string{"agent-memory-files.sh", "find", "jq", "stat"} {
 		if !slices.Contains(memory.Requires, requirement) {
 			t.Errorf("agent-memory-files requirements = %v, want %q for truthful readiness", memory.Requires, requirement)
 		}
@@ -70,13 +70,13 @@ func TestGmailCollectorUsesTheFailFastExactWindowHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := config.Sources["google-gmail-emails"]
-	if !slices.Equal(source.Run, []string{"gmail-json", "{{start}}", "{{end}}"}) {
+	if !slices.Equal(source.Run, []string{"gmail-json.sh", "{{start}}", "{{end}}"}) {
 		t.Fatalf("Gmail run = %q, want the auditable helper and exact RFC3339 bounds", source.Run)
 	}
-	if !slices.Contains(source.Requires, "gmail-json") {
+	if !slices.Contains(source.Requires, "gmail-json.sh") {
 		t.Fatalf("Gmail requirements = %v, want its bundled helper declared explicitly", source.Requires)
 	}
-	script, err := os.ReadFile(filepath.Join(repositoryRoot(t), "presets", "bin", "gmail-json"))
+	script, err := os.ReadFile(filepath.Join(repositoryRoot(t), "presets", "bin", "gmail-json.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestEveryGWSPageAllCollectorDeclaresAnExplicitPageLimit(t *testing.T) {
 			if pageLimit < 0 || pageLimit+1 >= len(source.Run) || source.Run[pageLimit+1] != "100" {
 				t.Errorf("%s/%s uses --page-all without --page-limit 100: %q", preset, source.Name, source.Run)
 			}
-			if source.Run[0] != "gws-page-json" {
+			if source.Run[0] != "gws-page-json.sh" {
 				t.Errorf("%s/%s delegates pagination without the completeness-checking helper: %q",
 					preset, source.Name, source.Run)
 			}
@@ -148,9 +148,9 @@ func TestEveryGWSPageAllCollectorDeclaresAnExplicitPageLimit(t *testing.T) {
 	}
 
 	for _, path := range []string{
-		filepath.Join(repositoryRoot(t), "presets", "bin", "gmail-json"),
-		filepath.Join(repositoryRoot(t), "presets", "bin", "gws-calendar-json"),
-		filepath.Join(repositoryRoot(t), "presets", "bin", "gws-tasks"),
+		filepath.Join(repositoryRoot(t), "presets", "bin", "gmail-json.sh"),
+		filepath.Join(repositoryRoot(t), "presets", "bin", "gws-calendar-json.sh"),
+		filepath.Join(repositoryRoot(t), "presets", "bin", "gws-tasks.sh"),
 	} {
 		body, err := os.ReadFile(path)
 		if err != nil {
@@ -164,7 +164,7 @@ func TestEveryGWSPageAllCollectorDeclaresAnExplicitPageLimit(t *testing.T) {
 			}
 		}
 		if strings.Contains(string(body), "--page-all") &&
-			!strings.Contains(string(body), "gws-page-json") {
+			!strings.Contains(string(body), "gws-page-json.sh") {
 			t.Errorf("%s delegates a page ceiling to gws without validating the terminal token", path)
 		}
 	}
@@ -246,17 +246,17 @@ func TestGitHubRepositorySourcesUseTheBoundedCollectorAndRespectTheBaseScope(t *
 		}
 		configs[preset] = config
 		run := config.Sources["github-repositories"].Run
-		if len(run) == 0 || run[0] != "github-list-json" {
+		if len(run) == 0 || run[0] != "github-list-json.sh" {
 			t.Errorf("%s GitHub repository snapshot bypasses the bounded Link collector: %s", preset, run)
 		}
 	}
 
 	personal := configs[services.PresetPersonal].Sources["github-repositories"].Run
-	if !slices.Equal(personal, []string{"github-list-json", "user-repositories"}) {
+	if !slices.Equal(personal, []string{"github-list-json.sh", "user-repositories"}) {
 		t.Fatalf("personal GitHub repository scope = %q, want every repository accessible to the authenticated user", personal)
 	}
 	team := configs[services.PresetTeam].Sources["github-repositories"].Run
-	if !slices.Equal(team, []string{"github-list-json", "org-repositories", "REPLACE_WITH_ORG"}) {
+	if !slices.Equal(team, []string{"github-list-json.sh", "org-repositories", "REPLACE_WITH_ORG"}) {
 		t.Fatalf("team GitHub repository scope = %q, want one explicit organization and no personal repository spill", team)
 	}
 }
@@ -339,7 +339,7 @@ func TestEveryShippedPresetArtifactBelongsToADeclaredSource(t *testing.T) {
 	}
 	for _, helper := range helpers {
 		name := filepath.Base(helper)
-		if name != "fkf-hook" && !required[name] {
+		if name != "fkf-hook.sh" && !required[name] {
 			t.Errorf("orphan bundled helper %s is not declared in any preset source's requires", name)
 		}
 	}

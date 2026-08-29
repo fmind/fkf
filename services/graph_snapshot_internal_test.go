@@ -118,7 +118,7 @@ func TestNeighbourQueriesReuseOneValidatedGraphGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.SnapshotSHA256 != meta.SHA256 || in.SnapshotSHA256 != meta.SHA256 ||
+	if out.SnapshotSHA256 != meta.SHA256.Outputs.GraphTSV || in.SnapshotSHA256 != meta.SHA256.Outputs.GraphTSV ||
 		len(out.Edges) != 1 || out.Edges[0].Dst != "tag:shared" || len(in.Edges) != 2 {
 		t.Fatalf("out = %+v, in = %+v; want both queries bound to the validated old generation", out, in)
 	}
@@ -171,18 +171,14 @@ func TestValidatedGraphCacheRejectsAnInPlaceChangeDuringTheRead(t *testing.T) {
 
 func writeSnapshotTestGraph(t *testing.T, base *Base, edges []Edge, generatedAt time.Time) {
 	t.Helper()
-	documentsDigest, err := collectedDocumentsSHA256(t.Context(), base)
-	if err != nil {
-		t.Fatal(err)
-	}
-	inputsDigest, err := graphInputsSHA256(t.Context(), base, documentsDigest)
+	inputsDigest, err := graphInputSHA256(t.Context(), base)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for index := range edges {
 		edges[index].Indexed = generatedAt.Format(time.RFC3339)
 	}
-	meta, err := NewEdgeListMeta(edges, generatedAt, documentsDigest, inputsDigest)
+	meta, err := NewEdgeListMeta(edges, generatedAt, inputsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}

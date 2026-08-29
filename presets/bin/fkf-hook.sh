@@ -1,5 +1,5 @@
 #!/bin/sh
-# fkf-hook <harness> — written into <base>/bin by `fkf init`. The session-start hook for the base
+# fkf-hook.sh <harness> — written into <base>/bin by `fkf init`. The session-start hook for the base
 # this script lives in: it reads the hook's stdin when the harness sends one, finds the repository
 # and branch the agent is working in, asks `fkf context` for a budgeted pack about them, and
 # prints it in the envelope the harness expects. One script, one line per harness:
@@ -15,14 +15,14 @@
 #   cline        {"contextModification": …}        Cline          TaskStart
 #
 # The base is the directory above this script, so the line that names the script in a harness
-# configuration is the disclosure: `~/brain/bin/fkf-hook claude` says which base the session can
+# configuration is the disclosure: `~/brain/bin/fkf-hook.sh claude` says which base the session can
 # see. The pack is evidence, never instructions; fkf reads no secret and executes nothing to
 # produce it. The hook never blocks a session: with no repository, no base, or no fkf on PATH it
 # prints an empty envelope and exits 0. The budget is a constant below; raise it for a harness
 # that starts every session empty, lower it when the hook also fires on every prompt.
 set -u
 
-harness=${1:?usage: fkf-hook <claude|codex|kiro|copilot|gemini|devin|cursor|antigravity|cline>}
+harness=${1:?usage: fkf-hook.sh <claude|codex|kiro|copilot|gemini|devin|cursor|antigravity|cline>}
 budget=1500
 
 # Resolve the base with shell builtins before any command lookup. The inherited PATH is
@@ -124,5 +124,5 @@ case "$harness" in
   cursor) printf '%s' "$pack" | jq -Rs '{additional_context: .}' ;;
   antigravity) printf '%s' "$pack" | jq -Rs '{injectSteps: [{ephemeralMessage: .}]}' ;;
   cline) printf '%s' "$pack" | jq -Rs '{cancel: false, contextModification: .}' ;;
-  *) echo "fkf-hook: unknown harness $harness" >&2; exit 1 ;;
+  *) echo "fkf-hook.sh: unknown harness $harness" >&2; exit 1 ;;
 esac

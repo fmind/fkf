@@ -135,6 +135,16 @@ fkf trust --all
 
 Trust prints the base's executable plan and records its canonical digest. A changed base leads with per-item differences; `--all` prints the complete disclosure. `--check` records nothing. Comments, YAML order, descriptions, examples, and retrieval-only mappings do not re-arm an unchanged execution plan.
 
+### `test`
+
+```bash
+fkf test
+fkf test github-pull-requests
+fkf test --all
+```
+
+With no arguments, test runs hooks declared by enabled sources in stable name order. Naming sources includes disabled ones; `--all` runs every declared hook and cannot be combined with names. Hooks run sequentially under the source timeout, capture no printable provider output, write no evidence, and continue after an ordinary failure so the report names every failed source. An untrusted base exits `3`; one or more hook failures exit `1`.
+
 ### `sync`
 
 ```bash
@@ -175,9 +185,11 @@ The bare command writes the managed wiki-index block first, then rebuilds the gr
 fkf new task open-graph-v1
 fkf new project fkf --tag fkf
 fkf new wiki retrieval-boundary --tag retrieval
+fkf new helper collect-prs.sh
+fkf new helper collect-prs.py
 ```
 
-The subcommands scaffold the strict write shape for task traces, projects, and wiki concepts without overwriting existing files. Project and wiki pages require at least one `--tag`; repeat the flag to add more.
+The subcommands scaffold the strict write shape for task traces, projects, wiki concepts, and owner-only helpers without overwriting existing files. Project and wiki pages require at least one `--tag`; repeat the flag to add more. Helpers require an explicit `.sh` or `.py` extension; the generated `requires:` list includes `python3` for a Python helper.
 
 ### `config`
 
@@ -209,6 +221,6 @@ Upgrade resolves the latest stable GitHub release, downloads the archive and `ch
 
 ## Aliases and time bounds
 
-One-letter aliases are the first letter, assigned to the command typed most often when two collide. Root `init`, `trust`, `status`, and `config` therefore have no alias; `upgrade` is `u`. Subcommand aliases follow the same fixed vocabulary shown in `fkf --help`.
+One-letter aliases are the first letter, assigned to the command typed most often when two collide. Root `init`, `trust`, `test`, `status`, and `config` therefore have no alias; `upgrade` is `u`. Subcommand aliases follow the same fixed vocabulary shown in `fkf --help`.
 
 `--since` and `--until` accept `YYYY-MM-DD`, `today`, `yesterday`, or a positive relative window such as `7d`, `6w`, `3m`, or `1y`. Day keywords name one absolute day; use the same keyword on both bounds to select exactly that day.

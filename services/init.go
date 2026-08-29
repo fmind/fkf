@@ -33,7 +33,7 @@ var Presets = []string{PresetMinimal, PresetPersonal, PresetTeam}
 
 // hookScript is the session-start hook every base gets. It is named once because `status`
 // checks it for drift: it calls `fkf` itself, so a stale copy is a broken one.
-const hookScript = "fkf-hook"
+const hookScript = "fkf-hook.sh"
 
 var baseNamePattern = regexp.MustCompile(`[^a-z0-9-]+`)
 
@@ -533,7 +533,7 @@ func nextSteps(root string, report *InitReport) []string {
 		"claude mcp add --transport stdio --scope user fkf -- fkf mcp serve --base " + rootArgument,
 		// The one line that makes the base part of every session rather than a command to
 		// remember: the skill's "Serving an agent" section names the hook per harness.
-		shellArg(filepath.Join(root, core.BaseBinDir, "fkf-hook")) + " claude              # your harness's session-start hook; see the fkf-use skill, Serving an agent",
+		shellArg(filepath.Join(root, core.BaseBinDir, "fkf-hook.sh")) + " claude              # your harness's session-start hook; see the fkf-use skill, Serving an agent",
 	}...)
 }
 
@@ -579,6 +579,7 @@ type TrustedSource struct {
 	Enabled    bool          `json:"enabled"`
 	Layer      core.Layer    `json:"layer"`
 	Run        []string      `json:"run,omitempty"`
+	Test       []string      `json:"test,omitempty"`
 	Body       []string      `json:"body,omitempty"`
 	BodyFields core.FieldMap `json:"body_fields,omitempty"`
 	// Policy is how fkf will invoke the commands above — retries, pacing, timeout. It is part
@@ -610,7 +611,8 @@ func Trust(ctx context.Context, base *Base, record, all bool) (*TrustReport, err
 			bodyFields[fieldName] = append(core.FieldPaths(nil), source.Fields.Paths(fieldName)...)
 		}
 		report.Commands = append(report.Commands, TrustedSource{
-			Name: source.Name, Enabled: source.Enabled, Layer: source.Layer, Run: source.Run, Body: source.Body,
+			Name: source.Name, Enabled: source.Enabled, Layer: source.Layer,
+			Run: source.Run, Test: source.Test, Body: source.Body,
 			BodyFields: bodyFields,
 			// How fkf will invoke the line above. A review that says what runs but not how
 			// many times, how often, or for how long is not the whole disclosure.

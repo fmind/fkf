@@ -513,7 +513,7 @@ func TestContextExpandRefusesAPartialGraphJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	metadata, err := services.NewEdgeListMeta(
-		edges, base.Now(), currentMeta.DocumentsSHA256, currentMeta.InputsSHA256,
+		edges, base.Now(), currentMeta.SHA256.Inputs,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -559,7 +559,7 @@ func TestContextExpansionPropagatesAStaleGraphTarget(t *testing.T) {
 		},
 	}
 	metadata, err := services.NewEdgeListMeta(
-		edges, base.Now(), currentMeta.DocumentsSHA256, currentMeta.InputsSHA256,
+		edges, base.Now(), currentMeta.SHA256.Inputs,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1094,7 +1094,7 @@ func TestContextPhraseScoringIsPinnedByAGoldenFixture(t *testing.T) {
 
 // --- Self-framing, budget honesty, and the empty-pack contract ------------------------------
 
-// TestContextAlwaysCarriesTheNotice is the self-framing guarantee: `fkf-hook` — the session-
+// TestContextAlwaysCarriesTheNotice is the self-framing guarantee: `fkf-hook.sh` — the session-
 // start hook every preset installs — calls `fkf context --format text` directly and never goes
 // through MCP's Instructions, so the pack is the only place a session driven by it ever sees a
 // trust framing at all. It has to be there whether the pack is full or empty.
@@ -1172,7 +1172,7 @@ func TestContextWarnsWhenNoCandidatesExistAtAll(t *testing.T) {
 
 // TestContextReportsTheUnharvestedBacklog is the trailing line the context receipt owes the
 // `learn` skill's own backlog: `fkf list tasks learned --unharvested` and `fkf status` already surface
-// it, but a session driven by `fkf-hook` reads neither of those — it reads this pack, every
+// it, but a session driven by `fkf-hook.sh` reads neither of those — it reads this pack, every
 // turn, and the backlog stays invisible to it unless the pack says so itself.
 func TestContextReportsTheUnharvestedBacklog(t *testing.T) {
 	base := newBase(t, baseConfig, &fakeRunner{})

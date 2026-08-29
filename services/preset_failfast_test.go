@@ -77,9 +77,9 @@ func TestAgentSessionsFailsWithoutOutputWhenSQLiteFails(t *testing.T) {
 exit 37
 `)
 
-	stdout, stderr, err := runPresetScript(t, "agent-sessions", home, bin, nil,
+	stdout, stderr, err := runPresetScript(t, "agent-sessions.sh", home, bin, nil,
 		"2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
-	requirePresetFailureWithoutOutput(t, "agent-sessions", stdout, stderr, err)
+	requirePresetFailureWithoutOutput(t, "agent-sessions.sh", stdout, stderr, err)
 }
 
 func TestAgentSessionsFailsWithoutOutputWhenFindFails(t *testing.T) {
@@ -93,9 +93,9 @@ func TestAgentSessionsFailsWithoutOutputWhenFindFails(t *testing.T) {
 	}
 	writePresetFake(t, bin, "find", "exit 38\n")
 
-	stdout, stderr, err := runPresetScript(t, "agent-sessions", home, bin, nil,
+	stdout, stderr, err := runPresetScript(t, "agent-sessions.sh", home, bin, nil,
 		"2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
-	requirePresetFailureWithoutOutput(t, "agent-sessions", stdout, stderr, err)
+	requirePresetFailureWithoutOutput(t, "agent-sessions.sh", stdout, stderr, err)
 }
 
 func TestAgentSessionsQualifiesProviderIDsByHarness(t *testing.T) {
@@ -123,33 +123,33 @@ func TestAgentSessionsQualifiesProviderIDsByHarness(t *testing.T) {
 	writePresetFake(t, bin, "sqlite3", `printf '%s\n' '[{"id":"shared","activity_time":1777885200000,"title":"OpenCode","directory":null}]'
 `)
 
-	stdout, stderr, err := runPresetScript(t, "agent-sessions", home, bin, nil,
+	stdout, stderr, err := runPresetScript(t, "agent-sessions.sh", home, bin, nil,
 		"2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
 	if err != nil {
-		t.Fatalf("agent-sessions failed: %v; stderr=%q", err, stderr)
+		t.Fatalf("agent-sessions.sh failed: %v; stderr=%q", err, stderr)
 	}
 	var records []struct {
 		ID    string `json:"id"`
 		Agent string `json:"agent"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &records); err != nil {
-		t.Fatalf("decode agent-sessions output: %v; stdout=%q", err, stdout)
+		t.Fatalf("decode agent-sessions.sh output: %v; stdout=%q", err, stdout)
 	}
 	want := map[string]string{
 		"antigravity:shared": "antigravity",
 		"opencode:shared":    "opencode",
 	}
 	if len(records) != len(want) {
-		t.Fatalf("agent-sessions records = %+v, want one per harness", records)
+		t.Fatalf("agent-sessions.sh records = %+v, want one per harness", records)
 	}
 	for _, record := range records {
 		if want[record.ID] != record.Agent {
-			t.Fatalf("agent-sessions record = %+v, want a harness-qualified id", record)
+			t.Fatalf("agent-sessions.sh record = %+v, want a harness-qualified id", record)
 		}
 		delete(want, record.ID)
 	}
 	if len(want) != 0 {
-		t.Fatalf("agent-sessions missing qualified ids: %v", want)
+		t.Fatalf("agent-sessions.sh missing qualified ids: %v", want)
 	}
 }
 
@@ -180,14 +180,14 @@ INSERT INTO sessions VALUES ('malformed', NULL,
 		linkPresetTool(t, bin, name)
 	}
 
-	stdout, stderr, err := runPresetScript(t, "agent-sessions", home, bin, nil,
+	stdout, stderr, err := runPresetScript(t, "agent-sessions.sh", home, bin, nil,
 		"2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
 	if err != nil {
-		t.Fatalf("agent-sessions failed: %v; stderr=%q", err, stderr)
+		t.Fatalf("agent-sessions.sh failed: %v; stderr=%q", err, stderr)
 	}
 	for _, forbidden := range []string{"secret-user", "secret-password", "leaky-user", "leaky-password"} {
 		if strings.Contains(stdout, forbidden) {
-			t.Fatalf("agent-sessions leaked Copilot repository userinfo %q to stdout: %s", forbidden, stdout)
+			t.Fatalf("agent-sessions.sh leaked Copilot repository userinfo %q to stdout: %s", forbidden, stdout)
 		}
 	}
 	var records []struct {
@@ -195,7 +195,7 @@ INSERT INTO sessions VALUES ('malformed', NULL,
 		Repo string `json:"repo"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &records); err != nil {
-		t.Fatalf("decode agent-sessions output: %v; stdout=%q", err, stdout)
+		t.Fatalf("decode agent-sessions.sh output: %v; stdout=%q", err, stdout)
 	}
 	want := map[string]string{
 		"copilot:safe":      "example/project",
@@ -203,16 +203,16 @@ INSERT INTO sessions VALUES ('malformed', NULL,
 		"copilot:malformed": "",
 	}
 	if len(records) != len(want) {
-		t.Fatalf("agent-sessions records = %+v, want one per Copilot fixture", records)
+		t.Fatalf("agent-sessions.sh records = %+v, want one per Copilot fixture", records)
 	}
 	for _, record := range records {
 		if record.Repo != want[record.ID] {
-			t.Fatalf("agent-sessions record = %+v, want repo %q", record, want[record.ID])
+			t.Fatalf("agent-sessions.sh record = %+v, want repo %q", record, want[record.ID])
 		}
 		delete(want, record.ID)
 	}
 	if len(want) != 0 {
-		t.Fatalf("agent-sessions omitted Copilot fixtures: %v", want)
+		t.Fatalf("agent-sessions.sh omitted Copilot fixtures: %v", want)
 	}
 }
 
@@ -244,7 +244,7 @@ esac
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			script := filepath.Join(repositoryRoot(t), "presets", "bin", "fkf-hook")
+			script := filepath.Join(repositoryRoot(t), "presets", "bin", "fkf-hook.sh")
 			command := exec.CommandContext(t.Context(), script, "codex")
 			command.Env = []string{
 				"HOME=" + home,
@@ -254,16 +254,16 @@ esac
 			}
 			output, err := command.CombinedOutput()
 			if err != nil {
-				t.Fatalf("fkf-hook failed: %v; output=%q", err, output)
+				t.Fatalf("fkf-hook.sh failed: %v; output=%q", err, output)
 			}
 			for _, forbidden := range []string{"secret-user", "secret-password", "leaky-user", "leaky-password"} {
 				if strings.Contains(string(output), forbidden) {
-					t.Fatalf("fkf-hook leaked remote userinfo %q: %s", forbidden, output)
+					t.Fatalf("fkf-hook.sh leaked remote userinfo %q: %s", forbidden, output)
 				}
 			}
 			parts := strings.SplitN(strings.TrimSpace(string(output)), " -- ", 2)
 			if len(parts) != 2 || parts[1] != testCase.want {
-				t.Fatalf("fkf-hook query = %q, want %q", output, testCase.want)
+				t.Fatalf("fkf-hook.sh query = %q, want %q", output, testCase.want)
 			}
 		})
 	}
@@ -329,7 +329,7 @@ func assertPublishedHookEnvelopes(t *testing.T, run hookRunner, pack string) {
 		t.Run(testCase.harness, func(t *testing.T) {
 			output, stderr, err := run(t, testCase.harness, testCase.input, pack, t.TempDir())
 			if err != nil {
-				t.Fatalf("fkf-hook failed: %v; stderr=%q", err, stderr)
+				t.Fatalf("fkf-hook.sh failed: %v; stderr=%q", err, stderr)
 			}
 			if testCase.plain {
 				if output != pack+"\n" {
@@ -408,7 +408,7 @@ esac
 `)
 	writePresetFake(t, bin, "fkf", `printf '%s' "${FAKE_PACK-}"
 `)
-	script := filepath.Join(repositoryRoot(t), "presets", "bin", "fkf-hook")
+	script := filepath.Join(repositoryRoot(t), "presets", "bin", "fkf-hook.sh")
 	run := publishedHarnessRunner(home, bin, script)
 	const pack = "trusted pack"
 	assertPublishedHookEnvelopes(t, run, pack)
@@ -489,7 +489,7 @@ esac
 printf '%s\n' 'shadow pack'
 `)
 
-			script := filepath.Join(repositoryRoot(t), "presets", "bin", "fkf-hook")
+			script := filepath.Join(repositoryRoot(t), "presets", "bin", "fkf-hook.sh")
 			command := exec.CommandContext(t.Context(), script, "codex")
 			command.Dir = work
 			command.Env = []string{
@@ -501,13 +501,13 @@ printf '%s\n' 'shadow pack'
 			}
 			output, err := command.CombinedOutput()
 			if err != nil {
-				t.Fatalf("fkf-hook failed: %v; output=%q", err, output)
+				t.Fatalf("fkf-hook.sh failed: %v; output=%q", err, output)
 			}
 			if string(output) != "trusted pack\n" {
-				t.Fatalf("fkf-hook output = %q, want trusted pack", output)
+				t.Fatalf("fkf-hook.sh output = %q, want trusted pack", output)
 			}
 			if shadowed, err := os.ReadFile(shadowLog); err == nil {
-				t.Fatalf("fkf-hook executed commands through an inherited PATH entry: %s", shadowed)
+				t.Fatalf("fkf-hook.sh executed commands through an inherited PATH entry: %s", shadowed)
 			} else if !os.IsNotExist(err) {
 				t.Fatalf("read shadow command log: %v", err)
 			}
@@ -645,17 +645,17 @@ esac
 		Time string `json:"time"`
 	} {
 		t.Helper()
-		stdout, stderr, err := runPresetScript(t, "agent-sessions", home, bin,
+		stdout, stderr, err := runPresetScript(t, "agent-sessions.sh", home, bin,
 			[]string{"TEST_HOME=" + home}, start, end)
 		if err != nil {
-			t.Fatalf("agent-sessions %s failed: %v; stderr=%q", start, err, stderr)
+			t.Fatalf("agent-sessions.sh %s failed: %v; stderr=%q", start, err, stderr)
 		}
 		var records []struct {
 			ID   string `json:"id"`
 			Time string `json:"time"`
 		}
 		if err := json.Unmarshal([]byte(stdout), &records); err != nil {
-			t.Fatalf("decode agent-sessions %s: %v; stdout=%q", start, err, stdout)
+			t.Fatalf("decode agent-sessions.sh %s: %v; stdout=%q", start, err, stdout)
 		}
 		return records
 	}
@@ -697,9 +697,9 @@ func TestAgentMemoryFilesFailsWithoutOutputWhenFindFails(t *testing.T) {
 	}
 	writePresetFake(t, bin, "find", "exit 39\n")
 
-	stdout, stderr, err := runPresetScript(t, "agent-memory-files", home, bin, nil,
+	stdout, stderr, err := runPresetScript(t, "agent-memory-files.sh", home, bin, nil,
 		"2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
-	requirePresetFailureWithoutOutput(t, "agent-memory-files", stdout, stderr, err)
+	requirePresetFailureWithoutOutput(t, "agent-memory-files.sh", stdout, stderr, err)
 }
 
 func TestAgentMemoryFilesFailsWhenStatCannotReadACandidate(t *testing.T) {
@@ -715,12 +715,12 @@ func TestAgentMemoryFilesFailsWhenStatCannotReadACandidate(t *testing.T) {
 	writePresetFake(t, bin, "find", `printf '%s\n' "$TEST_FILE"`)
 	writePresetFake(t, bin, "stat", "exit 41\n")
 
-	stdout, stderr, err := runPresetScript(t, "agent-memory-files", home, bin,
+	stdout, stderr, err := runPresetScript(t, "agent-memory-files.sh", home, bin,
 		[]string{"TEST_FILE=" + filepath.Join(memory, "unreadable.md")},
 		"2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
-	requirePresetFailureWithoutOutput(t, "agent-memory-files", stdout, stderr, err)
+	requirePresetFailureWithoutOutput(t, "agent-memory-files.sh", stdout, stderr, err)
 	if !strings.Contains(stderr, "stat could not read") {
-		t.Fatalf("agent-memory-files error = %q, want a clear stat failure", stderr)
+		t.Fatalf("agent-memory-files.sh error = %q, want a clear stat failure", stderr)
 	}
 }
 
@@ -771,7 +771,7 @@ func TestAgentMemoryFilesUsesHalfOpenWindowAndBoundedTitlePreview(t *testing.T) 
 esac
 `)
 
-	stdout, stderr, err := runPresetScript(t, "agent-memory-files", home, bin, []string{
+	stdout, stderr, err := runPresetScript(t, "agent-memory-files.sh", home, bin, []string{
 		"START_FILE=" + filepath.Join(memory, "start.md"),
 		"START_EPOCH=" + strconv.FormatInt(start.Unix(), 10),
 		"BOUNDED_FILE=" + filepath.Join(memory, "bounded.md"),
@@ -781,30 +781,30 @@ esac
 	},
 		start.Format(time.RFC3339), end.Format(time.RFC3339))
 	if err != nil {
-		t.Fatalf("agent-memory-files failed: %v; stderr=%q", err, stderr)
+		t.Fatalf("agent-memory-files.sh failed: %v; stderr=%q", err, stderr)
 	}
 	var records []struct {
 		ID    string `json:"id"`
 		Title string `json:"title"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &records); err != nil {
-		t.Fatalf("decode agent-memory-files output: %v; stdout=%q", err, stdout)
+		t.Fatalf("decode agent-memory-files.sh output: %v; stdout=%q", err, stdout)
 	}
 	want := map[string]string{
 		filepath.Join(memory, "start.md"):   "At start",
 		filepath.Join(memory, "bounded.md"): "bounded",
 	}
 	if len(records) != len(want) {
-		t.Fatalf("agent-memory-files records = %+v, want start-inclusive/end-exclusive records", records)
+		t.Fatalf("agent-memory-files.sh records = %+v, want start-inclusive/end-exclusive records", records)
 	}
 	for _, record := range records {
 		if want[record.ID] != record.Title {
-			t.Fatalf("agent-memory-files record = %+v, want title %q", record, want[record.ID])
+			t.Fatalf("agent-memory-files.sh record = %+v, want title %q", record, want[record.ID])
 		}
 		delete(want, record.ID)
 	}
 	if len(want) != 0 {
-		t.Fatalf("agent-memory-files missing records: %v", want)
+		t.Fatalf("agent-memory-files.sh missing records: %v", want)
 	}
 }
 
@@ -817,9 +817,9 @@ func TestGitLogJSONFailsWithoutOutputWhenFindFails(t *testing.T) {
 	}
 	writePresetFake(t, bin, "find", "exit 40\n")
 
-	stdout, stderr, err := runPresetScript(t, "git-log-json", home, bin, nil,
+	stdout, stderr, err := runPresetScript(t, "git-log-json.sh", home, bin, nil,
 		"2026-05-04", "2026-05-05", root, "author@example.test")
-	requirePresetFailureWithoutOutput(t, "git-log-json", stdout, stderr, err)
+	requirePresetFailureWithoutOutput(t, "git-log-json.sh", stdout, stderr, err)
 }
 
 func TestGitLogJSONFailsWithoutOutputWhenGitLogFails(t *testing.T) {
@@ -849,8 +849,8 @@ func TestGitLogJSONFailsWithoutOutputWhenGitLogFails(t *testing.T) {
 esac
 `)
 
-	stdout, stderr, err := runPresetScript(t, "git-log-json", home, bin,
+	stdout, stderr, err := runPresetScript(t, "git-log-json.sh", home, bin,
 		[]string{"TEST_ROOT=" + root},
 		"2026-05-04", "2026-05-05", root, "author@example.test")
-	requirePresetFailureWithoutOutput(t, "git-log-json", stdout, stderr, err)
+	requirePresetFailureWithoutOutput(t, "git-log-json.sh", stdout, stderr, err)
 }
