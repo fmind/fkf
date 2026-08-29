@@ -8,13 +8,7 @@ FKF is one Go binary and one base: a git repository of plain JSON and Markdown. 
 
 ## Install
 
-With Go 1.27 or later, install the latest stable release:
-
-```bash
-go install github.com/fmind/fkf/cmd/fkf@latest
-```
-
-Go writes to `GOBIN` when set, otherwise to `$(go env GOPATH)/bin`. Without Go, the installer selects the latest Linux or macOS archive for amd64 or arm64, verifies it against the release checksums, and writes to `~/.local/bin` without `sudo`:
+The installer selects the latest Linux or macOS release archive for amd64 or arm64, verifies it against the published checksums, and writes to `~/.local/bin` without `sudo`:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/fmind/fkf/main/install.sh | sh
@@ -28,7 +22,9 @@ For cryptographic release-provenance verification, authenticate the GitHub CLI a
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/fmind/fkf/main/install.sh | FKF_VERIFY_ATTESTATION=1 sh
 ```
 
-Set `FKF_INSTALL_DIR` to an absolute directory to change the destination, or `FKF_VERSION=v1.0.0` to pin a release. You can also download an archive and `checksums.txt` directly from the [latest release](https://github.com/fmind/fkf/releases/latest). Each archive contains the binary, project license, README, and checked-in notices for the linked Go runtime and dependencies.
+Set `FKF_INSTALL_DIR` to an absolute directory to change the destination, or `FKF_VERSION=v2.0.0` to pin a release. You can also download an archive and `checksums.txt` directly from the [latest release](https://github.com/fmind/fkf/releases/latest). Each archive contains the binary, project license, README, and checked-in notices for the linked Go runtime and dependencies.
+
+The module intentionally remains `github.com/fmind/fkf`. Go's major-version import rules therefore keep `go install github.com/fmind/fkf/cmd/fkf@latest` on the v1 line; use a release archive for v2. Source builds remain available from a tagged checkout.
 
 Once FKF is installed, upgrade the executable that launched it:
 
