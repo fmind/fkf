@@ -15,6 +15,10 @@ import (
 	"github.com/fmind/fkf/sources"
 )
 
+// Keep interpreter-backed isolation tests bounded without turning cold startup on a loaded CI
+// runner into a latency contract.
+const interpreterStartupTestTimeout = 5 * time.Second
+
 func TestExecRunnerLogsDeclaredCommandContextWithoutProviderStderr(t *testing.T) {
 	const privateStderr = "synthetic-provider-private-stderr"
 	t.Setenv("FKF_SYNTHETIC_PRIVATE_STDERR", privateStderr)
@@ -281,7 +285,7 @@ func TestBuildRunCommandDoesNotImportPythonFromTheBaseRoot(t *testing.T) {
 		&core.Source{Run: []string{python, "-c", "print('declared')"}},
 		sources.Environment{Root: root, Env: map[string]string{"PATH": os.Getenv("PATH")}},
 		sources.Window{},
-		time.Second,
+		interpreterStartupTestTimeout,
 	)
 	output, err := sources.ExecRunner().Run(t.Context(), command)
 	if err != nil {

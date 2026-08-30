@@ -15,6 +15,10 @@ import (
 	"time"
 )
 
+// Keep interpreter-backed isolation tests bounded without turning cold startup on a loaded CI
+// runner into a latency contract.
+const interpreterStartupTestTimeout = 5 * time.Second
+
 func TestCommandEnvironmentIsContextScoped(t *testing.T) {
 	ctx, err := WithCommandEnvironment(context.Background(), map[string]string{"FKF_SYNTHETIC_ACCOUNT": "isolated"})
 	if err != nil {
@@ -118,7 +122,7 @@ func TestRunCLIDoesNotImportPythonFromTheCommandDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PYTHONPATH", "wiki")
-	output, err := RunCLI(t.Context(), []string{python, "-c", "print('declared')"}, root, time.Second)
+	output, err := RunCLI(t.Context(), []string{python, "-c", "print('declared')"}, root, interpreterStartupTestTimeout)
 	if err != nil {
 		t.Fatal(err)
 	}
