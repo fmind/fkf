@@ -2,6 +2,23 @@
 
 All notable changes to `fkf` are documented here. This project follows [Semantic Versioning](https://semver.org/) from its first public release.
 
+## [v2.1.0](https://github.com/fmind/fkf/releases/tag/v2.1.0) - 2026-08-30
+
+### Highlights
+
+- Add a dedicated base `tests/` execution tree for source verification hooks, recursively covered by trust and prepended to `PATH` only for `fkf test`; collection and body commands cannot see test fixtures or shadows.
+- Report source-hook readiness separately from ordinary `requires:`, disclose `bin/` and `tests/` as distinct trust items, and carry the new layout through init, permissions, schemas, documentation, and bundled skills.
+- Preserve v2 compatibility: bases without `tests/` keep their existing trust digest, hooks can still resolve from `bin/`, and an empty optional selection remains a successful 0/0 report. Completion gates should name mandatory sources.
+
+### Fixed
+
+- Restrict repository metadata projected by bundled session, Git, and agent-hook helpers to GitHub remotes, while continuing to strip credentials and reject malformed paths.
+- Open Atuin history read-only in batch mode, omit deleted rows and command text, and declare the Git dependency used by the agent-sessions preset.
+
+### Upgrade notes
+
+- A pre-existing base `tests/` directory is now reserved, recursively trust-covered execution material and must contain no symlinks. Move source hooks and their support files there, keep generic repository tests elsewhere, then review and renew trust.
+
 ## [v2.0.1](https://github.com/fmind/fkf/releases/tag/v2.0.1) - 2026-08-29
 
 ### Fixed
