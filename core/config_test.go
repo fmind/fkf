@@ -687,9 +687,18 @@ func TestLoadConfigRejectsArgvExecutableInsideTheBase(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, err := LoadConfig(root)
-		if err == nil || !strings.Contains(err.Error(), "put base-controlled helpers in bin/") {
+		if err == nil || !strings.Contains(err.Error(), "put base-controlled code in bin/") {
 			t.Fatalf("LoadConfig() with body executable %q error = %v, want base-controlled argv executable rejected", executable, err)
 		}
+	}
+	config := "name: brain\nlayers: {events: true}\nsources:\n  s:\n" +
+		"    enabled: true\n    run: [cli]\n    test: [" + helper + "]\n" +
+		"    fields:\n      id: .id\n      time: .t\n"
+	if err := os.WriteFile(filepath.Join(root, ConfigFileName), []byte(withTestContract(config)), BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(root); err == nil || !strings.Contains(err.Error(), "put base-controlled code in tests/") {
+		t.Fatalf("LoadConfig() test executable error = %v, want the dedicated tests/ guidance", err)
 	}
 }
 

@@ -68,7 +68,7 @@ Four consequences follow from the same construction:
 
 - **A disabled layer is unreachable.** Every read in `fkf` resolves its path through one function that applies path confinement and layer activation, so a `wiki/` request against a base with `wiki: false` fails in the resolver rather than in each tool.
 - **An untrusted base still serves.** Trust gates execution, and the server executes nothing. Exit code 3 cannot come from `mcp serve`.
-- **The `status` resource looks every explicitly declared `requires:` executable up on `PATH`; it never runs one.** The CLI-only Git tracking audit is absent from this resource.
+- **The `status` resource checks every explicitly declared `requires:` executable on the ordinary collection/body PATH and checks `test[0]` separately on the test-only PATH; it never runs one.** Its JSON keeps `missing_requirements` and `missing_test_hooks` distinct. The CLI-only Git tracking audit is absent from this resource.
 - **Logs go to stderr.** Standard output is the protocol. Anything written there would corrupt the JSON-RPC stream, so the process treats stdout as belonging to the client alone.
 
 Collection can continue while a base is served. Documents are written atomically, so a reader in the middle of a session sees the previous day's file or the new one, never half of one.

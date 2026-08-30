@@ -60,6 +60,7 @@ type SourceStatus struct {
 	Kind            core.Layer          `json:"kind"`
 	Requires        []RequirementStatus `json:"requires,omitempty"`
 	Install         string              `json:"install,omitempty"`
+	Test            *RequirementStatus  `json:"test,omitempty"`
 	Body            bool                `json:"body"`
 	Undeclared      bool                `json:"undeclared,omitempty"`
 	LastDate        string              `json:"last_date,omitempty"`
@@ -91,6 +92,7 @@ type Status struct {
 	Unharvested    int             `json:"unharvested,omitempty"`
 	Enabled        int             `json:"enabled"`
 	Missing        int             `json:"missing_requirements"`
+	MissingTests   int             `json:"missing_test_hooks"`
 	Quiet          int             `json:"quiet"`
 	Errors         int             `json:"errors"`
 	Warnings       int             `json:"warnings"`
@@ -240,6 +242,9 @@ func populateDeclaredSourceStatuses(
 		}
 		if source.Enabled {
 			status.Enabled++
+			if entry.Test != nil && !entry.Test.OnPath {
+				status.MissingTests++
+			}
 			for _, requirement := range entry.Requires {
 				if !requirement.OnPath {
 					missing[requirement.Name] = struct{}{}
@@ -496,6 +501,10 @@ func sourceStatusOf(ctx context.Context, base *Base, source *core.Source, days [
 	entry := SourceStatus{
 		Name: source.Name, Enabled: source.Enabled, Kind: source.Layer,
 		Install: source.Install, Body: source.HasBody(), Requires: []RequirementStatus{},
+	}
+	if len(source.Test) > 0 {
+		_, found := base.Env.LookTestPath(source.Test[0])
+		entry.Test = &RequirementStatus{Name: source.Test[0], OnPath: found}
 	}
 	for _, name := range source.Requires {
 		_, found := base.Env.LookPath(name)
@@ -866,7 +875,10 @@ func checkPermissions(ctx context.Context, base *Base, status *Status) error {
 	if err != nil {
 		return fmt.Errorf("resolve base for permission audit: %w", err)
 	}
-	binDir := filepath.Join(walkRoot, core.BaseBinDir)
+	executionDirs := []string{
+		filepath.Join(walkRoot, core.BaseBinDir),
+		filepath.Join(walkRoot, core.BaseTestsDir),
+	}
 	var wrongMode []string
 	err = filepath.WalkDir(walkRoot, func(current string, entry fs.DirEntry, walkErr error) error {
 		if err := checkContext(ctx); err != nil {
@@ -888,7 +900,7 @@ func checkPermissions(ctx context.Context, base *Base, status *Status) error {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return nil
 		}
-		want := wantFileMode(current, binDir, entry.IsDir(), info.Mode())
+		want := wantFileMode(current, executionDirs, entry.IsDir(), info.Mode())
 		if info.Mode().Perm() != want {
 			relative, err := filepath.Rel(walkRoot, current)
 			if err != nil {
@@ -916,11 +928,16 @@ func permissionRepairCommand(root string) string {
 	quotedRoot := shellArg(root)
 	quotedGit := shellArg(filepath.Join(root, ".git"))
 	quotedBin := shellArg(filepath.Join(root, core.BaseBinDir))
+	quotedTests := shellArg(filepath.Join(root, core.BaseTestsDir))
 	return "chmod 700 " + quotedRoot +
 		" && find " + quotedRoot + " -path " + quotedGit + " -prune -o -type d -exec chmod 700 {} +" +
 		" && find " + quotedRoot + " -path " + quotedGit + " -prune -o -path " + quotedBin +
+		" -prune -o -path " + quotedTests +
 		" -prune -o -type f -exec chmod 600 {} +" +
 		" && if [ -d " + quotedBin + " ]; then find " + quotedBin +
+		` -type f -exec sh -c 'for file do if [ -x "$file" ]; then chmod 700 "$file"; ` +
+		`else chmod 600 "$file"; fi; done' sh {} +; fi` +
+		" && if [ -d " + quotedTests + " ]; then find " + quotedTests +
 		` -type f -exec sh -c 'for file do if [ -x "$file" ]; then chmod 700 "$file"; ` +
 		`else chmod 600 "$file"; fi; done' sh {} +; fi`
 }
@@ -929,15 +946,17 @@ func shellArg(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
 
-func wantFileMode(current, binDir string, isDir bool, currentMode fs.FileMode) fs.FileMode {
+func wantFileMode(current string, executionDirs []string, isDir bool, currentMode fs.FileMode) fs.FileMode {
 	if isDir {
 		return core.BaseDirMode
 	}
-	// bin/ may hold both invoked helpers and non-executable sourced/data files at any depth.
-	// Keep that intent while removing every group/other permission; trust separately records the
-	// executable bit, so changing it here would also change what the owner approved.
-	if pathBelow(current, binDir) && currentMode.Perm()&0o111 != 0 {
-		return 0o700
+	// Execution trees may hold invoked helpers and non-executable sourced/data files at any
+	// depth. Keep that intent while removing every group/other permission; trust separately
+	// records the executable bit, so changing it here would also change what the owner approved.
+	for _, directory := range executionDirs {
+		if pathBelow(current, directory) && currentMode.Perm()&0o111 != 0 {
+			return 0o700
+		}
 	}
 	return core.BaseFileMode
 }

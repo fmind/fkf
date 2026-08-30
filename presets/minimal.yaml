@@ -12,6 +12,6 @@ sources: {}
 #         time: .updated_at             # required for an events source
 #         title: .title                 # every mapped scalar is indexed lexically
 #
-# Keep direct provider argv in `run:`; move pipelines or expansion into a helper under bin/.
+# Keep direct provider argv in `run:`; put collection helpers in bin/ and source test hooks in tests/.
 # fkf substitutes only {{date}}, {{next_date}}, {{start}}, {{end}}, {{base}}, and
 # {{home}} — never collected data. Run `fkf config schema` for the complete grammar.

@@ -333,6 +333,67 @@ func TestStatusChecksExplicitRequirementsAgainstTheRunnersPath(t *testing.T) {
 	}
 }
 
+func TestStatusLimitsTheTestTreeToTheDeclaredHookExecutable(t *testing.T) {
+	config := strings.Replace(baseConfig, "    run: [cli",
+		"    requires: [collection-helper]\n    test: [source-check]\n    run: [cli", 1)
+	base := newBase(t, config, nil)
+	tests := filepath.Join(base.Root(), core.BaseTestsDir)
+	if err := os.MkdirAll(tests, core.BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"source-check", "collection-helper"} {
+		if err := os.WriteFile(filepath.Join(tests, name), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	status, err := services.Report(t.Context(), base, services.StatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requires := status.Sources[0].Requires
+	if status.Sources[0].Test == nil || !status.Sources[0].Test.OnPath ||
+		len(requires) != 1 || requires[0].OnPath || status.Missing != 1 || status.MissingTests != 0 {
+		t.Fatalf("source = %+v, missing = %d; want hook ready but collection requirement missing", status.Sources[0], status.Missing)
+	}
+}
+
+func TestStatusDoesNotLetATestFixtureSatisfyASharedRunRequirement(t *testing.T) {
+	config := strings.Replace(baseConfig, "    run: [cli",
+		"    requires: [tool]\n    test: [tool, --self-test]\n    run: [tool", 1)
+	base := newBase(t, config, nil)
+	tests := filepath.Join(base.Root(), core.BaseTestsDir)
+	if err := os.MkdirAll(tests, core.BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tests, "tool"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := services.Report(t.Context(), base, services.StatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := status.Sources[0]
+	if source.Test == nil || !source.Test.OnPath || len(source.Requires) != 1 ||
+		source.Requires[0].OnPath || status.Missing != 1 || status.MissingTests != 0 {
+		t.Fatalf("source = %+v, missing = %d; tests/tool must not make run:[tool] ready", source, status.Missing)
+	}
+}
+
+func TestStatusCountsMissingEnabledSourceTestHooksSeparately(t *testing.T) {
+	config := strings.Replace(baseConfig, "    run: [cli", "    test: [missing-check]\n    run: [cli", 1)
+	base := newBase(t, config, nil)
+	status, err := services.Report(t.Context(), base, services.StatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Missing != 0 || status.MissingTests != 1 || status.Sources[0].Test == nil ||
+		status.Sources[0].Test.OnPath {
+		t.Fatalf("status = %+v, want one separate missing source test hook", status)
+	}
+}
+
 func TestStatusReadsIndexSources(t *testing.T) {
 	const config = `name: brain
 layers: {events: true, index: true, tasks: true, projects: true, wiki: true}
@@ -468,20 +529,26 @@ func TestStatusAuditsPermissionsWithoutMutating(t *testing.T) {
 	}
 }
 
-func TestStatusPermissionRemedyPreservesNestedBinExecutableIntent(t *testing.T) {
+func TestStatusPermissionRemedyPreservesNestedExecutionTreeIntent(t *testing.T) {
 	base := newBase(t, baseConfig, nil)
-	nested := filepath.Join(base.Root(), core.BaseBinDir, "lib")
-	if err := os.MkdirAll(nested, core.BaseDirMode); err != nil {
-		t.Fatal(err)
-	}
-	executable := filepath.Join(nested, "helper")
-	plain := filepath.Join(nested, "data")
-	for path, mode := range map[string]os.FileMode{executable: 0o755, plain: 0o644} {
-		if err := os.WriteFile(path, []byte("fixture\n"), mode); err != nil {
+	wantModes := map[string]os.FileMode{}
+	for _, tree := range []string{core.BaseBinDir, core.BaseTestsDir} {
+		nested := filepath.Join(base.Root(), tree, "lib")
+		if err := os.MkdirAll(nested, core.BaseDirMode); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chmod(path, mode); err != nil {
-			t.Fatal(err)
+		for name, modes := range map[string][2]os.FileMode{
+			"helper": {0o755, 0o700},
+			"data":   {0o644, 0o600},
+		} {
+			path := filepath.Join(nested, name)
+			if err := os.WriteFile(path, []byte("fixture\n"), modes[0]); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, modes[0]); err != nil {
+				t.Fatal(err)
+			}
+			wantModes[path] = modes[1]
 		}
 	}
 
@@ -490,15 +557,16 @@ func TestStatusPermissionRemedyPreservesNestedBinExecutableIntent(t *testing.T) 
 		t.Fatal(err)
 	}
 	finding := findFinding(status, "permissions")
-	if finding == nil || !slices.Contains(finding.Paths, "bin/lib/helper") ||
-		!slices.Contains(finding.Paths, "bin/lib/data") {
-		t.Fatalf("finding = %+v, want both nested helper modes named", finding)
+	for _, path := range []string{"bin/lib/helper", "bin/lib/data", "tests/lib/helper", "tests/lib/data"} {
+		if finding == nil || !slices.Contains(finding.Paths, path) {
+			t.Fatalf("finding = %+v, want %s named", finding, path)
+		}
 	}
 	command := exec.CommandContext(t.Context(), "bash", "-c", finding.Fix)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("permission remedy failed: %v\n%s", err, output)
 	}
-	for path, want := range map[string]os.FileMode{executable: 0o700, plain: 0o600} {
+	for path, want := range wantModes {
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
@@ -517,6 +585,14 @@ func TestStatusPermissionRemedyWorksThroughASymlinkedBaseRoot(t *testing.T) {
 		t.Skipf("symlinks are unavailable here: %v", err)
 	}
 	configPath := filepath.Join(realRoot, core.ConfigFileName)
+	tests := filepath.Join(realRoot, core.BaseTestsDir)
+	if err := os.MkdirAll(tests, core.BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(tests, "source-check")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Chmod(realRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -537,14 +613,17 @@ func TestStatusPermissionRemedyWorksThroughASymlinkedBaseRoot(t *testing.T) {
 	}
 	finding := findFinding(status, "permissions")
 	if finding == nil ||
-		!slices.Contains(finding.Paths, ".") || !slices.Contains(finding.Paths, core.ConfigFileName) {
+		!slices.Contains(finding.Paths, ".") || !slices.Contains(finding.Paths, core.ConfigFileName) ||
+		!slices.Contains(finding.Paths, "tests/source-check") {
 		t.Fatalf("findings = %+v, want the real root and config audited through the alias", status.Findings)
 	}
 	command := exec.CommandContext(t.Context(), "bash", "-c", finding.Fix)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("permission remedy failed: %v\n%s", err, output)
 	}
-	for path, want := range map[string]os.FileMode{realRoot: core.BaseDirMode, configPath: core.BaseFileMode} {
+	for path, want := range map[string]os.FileMode{
+		realRoot: core.BaseDirMode, configPath: core.BaseFileMode, hook: 0o700,
+	} {
 		info, err := os.Stat(path)
 		if err != nil {
 			t.Fatal(err)
@@ -578,6 +657,13 @@ func TestStatusVersionedPermissionRemedyPreservesExecutableHelpers(t *testing.T)
 	if err := os.WriteFile(helper, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	testNested := filepath.Join(root, core.BaseTestsDir, "fixtures")
+	if err := os.MkdirAll(testNested, core.BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(testNested, "source-check"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	status, err := services.Report(t.Context(), base, services.StatusRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -590,9 +676,10 @@ func TestStatusVersionedPermissionRemedyPreservesExecutableHelpers(t *testing.T)
 		!strings.Contains(finding.Fix, "-prune") {
 		t.Fatalf("permission remedy walks repository internals: %q", finding.Fix)
 	}
-	if !strings.Contains(finding.Fix, bin) || strings.Contains(finding.Fix, "-maxdepth") ||
+	if !strings.Contains(finding.Fix, bin) || !strings.Contains(finding.Fix, filepath.Join(root, core.BaseTestsDir)) ||
+		strings.Contains(finding.Fix, "-maxdepth") ||
 		!strings.Contains(finding.Fix, `if [ -x "$file" ]`) {
-		t.Fatalf("permission remedy does not preserve executable intent recursively under bin/: %q", finding.Fix)
+		t.Fatalf("permission remedy does not preserve executable intent recursively under both execution trees: %q", finding.Fix)
 	}
 }
 

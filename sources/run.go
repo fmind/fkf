@@ -208,6 +208,20 @@ func (e Environment) LookPath(name string) (string, bool) {
 	return core.LookPathIn(name, e.Env["PATH"])
 }
 
+// LookTestPath resolves one verification dependency against the test-only PATH. Source hooks
+// may live under tests/, but collection and body commands never search that directory.
+func (e Environment) LookTestPath(name string) (string, bool) {
+	return core.LookPathIn(name, e.testPath())
+}
+
+func (e Environment) testPath() string {
+	tests := filepath.Join(e.Root, core.BaseTestsDir)
+	if e.Env["PATH"] == "" {
+		return tests
+	}
+	return tests + string(os.PathListSeparator) + e.Env["PATH"]
+}
+
 // BuildRunCommand substitutes fkf-owned placeholders in each declared argument and returns
 // exactly what exec receives. No shell parses the result.
 func BuildRunCommand(source *core.Source, env Environment, window Window, timeout time.Duration) Command {
@@ -242,10 +256,15 @@ func BuildTestCommand(source *core.Source, env Environment, timeout time.Duratio
 	if source.Timeout > 0 {
 		timeout = source.Timeout
 	}
+	commandEnv := maps.Clone(env.Env)
+	if commandEnv == nil {
+		commandEnv = make(map[string]string, 1)
+	}
+	commandEnv["PATH"] = env.testPath()
 	return Command{
 		Argv: argv,
 		Dir:  core.DeclaredCommandDirectory, ForbiddenRoot: env.Root,
-		Env: maps.Clone(env.Env), Timeout: timeout, Source: source.Name,
+		Env: commandEnv, Timeout: timeout, Source: source.Name,
 	}
 }
 

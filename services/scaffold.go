@@ -527,6 +527,7 @@ This directory is the **%s** fkf base.
 - Use [fkf-use](.agents/skills/fkf-use/SKILL.md) to read, collect, address, and serve the base.
 - Use [fkf-learn](.agents/skills/fkf-learn/SKILL.md) for task traces and durable knowledge.
 - `+"`fkf.yaml`"+` is the shared configuration and disclosure boundary; review changed execution definitions with `+"`fkf trust`"+`.
+- Keep collection and body helpers under `+"`bin/`"+`; keep source `+"`test:`"+` hooks under `+"`tests/`"+`. Both trees are trust-digested, but only tests prepend the latter to PATH.
 - `+"`fkf init`"+` refreshes those two skills but never this file. Put shared base-specific workflows in another skill and prefix machine-local skills with `+"`local-`"+`.
 
 ## Base-specific instructions

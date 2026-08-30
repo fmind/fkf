@@ -22,7 +22,7 @@ const (
 	// MaxCLIOutputBytes bounds each captured subprocess stream.
 	MaxCLIOutputBytes = 64 << 20
 	// DeclaredCommandDirectory is the neutral cwd for every source command. Base-controlled
-	// executables and support files are reached only through the trust-digested bin/ PATH.
+	// code is reached only through the trust-digested bin/ PATH, plus tests/ for source hooks.
 	DeclaredCommandDirectory = "/"
 	// DeclaredCommandEnvironmentPolicy is both the trust disclosure and the digest input for
 	// the fixed child-environment boundary implemented below.

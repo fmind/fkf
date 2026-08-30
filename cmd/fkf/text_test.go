@@ -166,6 +166,27 @@ func TestTrustTextQuotesExecutionDefinitionsWithoutLosingBoundaries(t *testing.T
 	}
 }
 
+func TestTrustTextDisclosesSeparateExecutionTrees(t *testing.T) {
+	report := &services.TrustReport{
+		Scripts: []core.BinScript{{Name: "collect.sh", Kind: "script", Digest: "111111111111"}},
+		Tests:   []core.BinScript{{Name: "source-check.sh", Kind: "script", Digest: "222222222222"}},
+		All:     true,
+	}
+	var output bytes.Buffer
+	writeTrustText(&textWriter{out: &output}, report)
+	text := output.String()
+	for _, want := range []string{
+		"bin/ (on PATH for every command; first for run: and body:)",
+		"collect.sh",
+		"tests/ (first on PATH for test: hooks only)",
+		"source-check.sh",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("trust output = %q, want %q", text, want)
+		}
+	}
+}
+
 func TestInitTextShowsWhatChangedAndWhatIsNext(t *testing.T) {
 	isolate(t)
 	root := filepath.Join(t.TempDir(), "brain")

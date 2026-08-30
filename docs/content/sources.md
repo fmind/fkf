@@ -80,7 +80,7 @@ FKF neither assigns those names nor infers equivalence. It validates cardinality
 | `retry`        | Bounded attempts, backoff, and named retryable failures       |
 | `min_interval` | Minimum interval between calls to this source                 |
 
-`requires:` is the readiness contract. Each item is a unique bare executable name such as `gh`, `jq`, `github-search-json.sh`, or `fish`; paths and inferred names are rejected. `status` checks all requirements for enabled sources without running them. FKF deliberately does not infer dependencies from argv or helper contents.
+`requires:` is the ordinary collection/body readiness contract. Each item is a unique bare executable name such as `gh`, `jq`, `github-search-json.sh`, or `fish`; paths and inferred names are rejected. `status` checks all requirements for enabled sources without running them. It reports the `test[0]` entrypoint separately on the test-only PATH, so a base-owned hook need not duplicate its own name in `requires:`. External tools that the hook invokes still belong in `requires:`. FKF deliberately does not infer dependencies from argv or helper contents.
 
 Mapped event times accept a date, a Unix epoch, or a timestamp with an explicit `Z` or numeric UTC offset. A timezone-less date-time is rejected because the same provider value would otherwise move between civil days when a base runs on another machine.
 
@@ -96,7 +96,7 @@ Presets provide curated shell helpers for provider boundaries where pagination, 
 
 This is the middle ground: FKF remains one static core and a set of helpers, while users can compose any executable without writing a new Go adapter.
 
-Declared commands run with `/` as their working directory, never the base root. Use `{{base}}` when a command needs an explicit data path. Executable or interpreted support belongs under trust-digested `bin/` and is invoked by its bare PATH name; a relative argument such as `wiki/helper.py` therefore cannot turn mutable authored content into code.
+Declared commands run with `/` as their working directory, never the base root. Use `{{base}}` when a command needs an explicit data path. Collection and body support belongs under trust-digested `bin/`; source verification hooks belong under trust-digested `tests/`. Both are invoked by bare PATH names. A relative argument such as `wiki/helper.py` therefore cannot turn mutable authored content into code.
 
 Shell helpers use `.sh`; Python helpers use `.py`. The extension makes the interpreter contract visible without executing the file. `fkf new helper` requires one of those extensions, creates an owner-only fail-closed template, and prints its `run:` and `requires:` entries:
 
@@ -117,7 +117,7 @@ The generated scaffold is deliberately portable and does not select a runtime wi
 
 The exact lowercase spelling is mandatory. Whitespace inside braces, unknown names, uppercase names, malformed braces, placeholders in the executable position, and date placeholders on an index source fail configuration loading. Each YAML item remains exactly one argument after substitution; FKF never invokes a shell or performs expansion.
 
-`test:` is also one direct argv array. It may use only `{{base}}` and `{{home}}`, because a verification hook is independent of collection windows and stored values. With no names, `fkf test` selects enabled sources that declare a hook; explicit names also select disabled sources, and `--all` selects every declared hook. Hooks use the source timeout, run sequentially, discard stdout, expose no provider stderr, and never write evidence.
+`test:` is also one direct argv array. It may use only `{{base}}` and `{{home}}`, because a verification hook is independent of collection windows and stored values. Put a base-owned hook and its fixtures or support files under `tests/`; FKF hashes the complete tree and prepends it only for `test:` execution, so a fixture cannot shadow collection or body commands. With no names, `fkf test` selects enabled sources that declare a hook; explicit names also select disabled sources, and `--all` selects every declared hook. An empty selection preserves the compatible successful 0/0 report. Name every mandatory source in a project completion task so the gate also detects one accidentally removed hook. Hooks use the source timeout, run sequentially, discard stdout, expose no provider stderr, and never write evidence.
 
 Collected data never enters `run:`. `body:` is an argv array because its field placeholders come from a record. Every record-derived substituted value is valid Unicode, contains no invisible control or format character, cannot begin with an option marker, and stays one opaque argument even when it contains spaces or punctuation; FKF supplies trusted base and home paths separately. A body fetch runs the current trusted `body:` argv but evaluates its field placeholders through the map stored with that historical document. A newly added placeholder absent from the document is refused until the record is re-collected.
 
@@ -194,7 +194,7 @@ This executes the record source's current trusted `body:` argv, prints the resul
 
 When a declared `run:` exits unsuccessfully, the diagnostic names the source, date or window, safely rendered argv, neutral working directory, timeout, and process status. The substituted command is also repeated in the failed unit summary. Provider stderr remains private: it may contain response bodies, account identifiers, or credentials, so FKF uses it only as an in-memory retry oracle. A `body:` argv is never logged because it may contain a value copied from collected evidence.
 
-`fkf trust` prints the commands and their execution policy. Its canonical digest changes only when execution changes: command, body-bound path, enabled state, timeout, retry, pacing, extra path, or `bin/` content and mode. Editing `requires:`, a description, example, YAML comment, retrieval-only mapping, or the inherited process environment does not demand approval for an unchanged executable plan.
+`fkf trust` prints the commands and their execution policy. Its canonical digest changes only when execution changes: command, body-bound path, enabled state, timeout, retry, pacing, extra path, or `bin/`/`tests/` content and mode. Editing `requires:`, a description, example, YAML comment, retrieval-only mapping, or the inherited process environment does not demand approval for an unchanged executable plan.
 
 ## Presets and custom sources
 

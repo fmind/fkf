@@ -64,8 +64,9 @@ func ValidateSourceName(name string) error {
 	return nil
 }
 
-// A requirement names an executable resolved through PATH. Paths belong in bin:, while
-// base-controlled helpers stay in <base>/bin/ and are named like any other executable.
+// A requirement names an ordinary collection/body executable or external test dependency
+// resolved through PATH. Base-controlled collection helpers stay in <base>/bin/; the test[0]
+// entrypoint has its own readiness check against <base>/tests/.
 var requirementPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 
 // MaxSourceNameLength keeps `<source>.json` within the 255-byte filename-component limit
@@ -950,7 +951,11 @@ func validateArgvExecutable(
 		return fail("%s[0] cannot be validated: %v", label, err)
 	}
 	if problem != "" {
-		return fail("%s[0] must resolve outside the base; put base-controlled helpers in bin/ and name them without a path", label)
+		tree := BaseBinDir
+		if label == "test" {
+			tree = BaseTestsDir
+		}
+		return fail("%s[0] must resolve outside the base; put base-controlled code in %s/ and name it without a path", label, tree)
 	}
 	return nil
 }

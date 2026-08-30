@@ -20,8 +20,9 @@ import (
 
 // A base's configuration holds executable argv and helper scripts, so a base you did not create on this machine
 // is untrusted until you say otherwise — the model `mise trust` and `direnv allow` use. The
-// digest covers the resolved execution plan and the base's bin/ together. Comments, YAML key
-// order, semantic descriptions, and retrieval-only paths do not re-arm execution trust.
+// digest covers the resolved execution plan and the base's bin/ and tests/ trees together.
+// Comments, YAML key order, semantic descriptions, and retrieval-only paths do not re-arm
+// execution trust.
 //
 // Trust state lives outside the base on purpose. Recording it inside would make it clonable,
 // which is precisely the thing the gate exists to prevent, and machine-local state has no
@@ -50,8 +51,8 @@ type TrustRecord struct {
 	Items     []TrustItem `json:"items,omitempty"`
 }
 
-// TrustItemKind names what a trusted item is, so a diff can say "source" or "script" rather
-// than showing a path and leaving the reader to infer which review it belonged to.
+// TrustItemKind names what a trusted item is, so a diff can say "source", "script", or
+// "test" rather than showing a path and leaving the reader to infer which review it belonged to.
 type TrustItemKind string
 
 const (
@@ -61,6 +62,8 @@ const (
 	TrustItemSource TrustItemKind = "source"
 	// TrustItemScript is one entry under <base>/bin.
 	TrustItemScript TrustItemKind = "script"
+	// TrustItemTest is one entry under <base>/tests.
+	TrustItemTest TrustItemKind = "test"
 )
 
 // TrustItem is one reviewable unit of what a base can execute, reduced to a digest. Detail
@@ -225,10 +228,9 @@ func trustRecordPath(root string) string {
 // local overlay that changes what runs still does.
 //
 // bin/ belongs in the plan because it is committed with the base and sits first on the PATH
-// every declared command gets. Without it, a base whose `run: git log …` had been read and
-// approved could ship or later receive a bin/git, and `fkf sync` would run it with no prompt:
-// the digest would still match, because only the YAML had been hashed. For a shared team base
-// that is a `git pull` away from code execution on every teammate's machine.
+// every declared command gets. tests/ is equally executable but is prepended only for source
+// verification hooks. Without both trees, a later pull could replace what a reviewed argv
+// actually executes while the aggregate digest still matched.
 func ConfigDigest(ctx context.Context, root string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -262,11 +264,12 @@ func digestTrustItems(ctx context.Context, items []TrustItem) (string, error) {
 	return digest.sum(), nil
 }
 
-// BinScript is one accepted entry of a base's bin/, reduced to what a reviewer has to agree
-// to: its name, kind, executable state, and content digest when it is a regular file.
+// BinScript is one accepted entry of a base-controlled execution tree, reduced to what a
+// reviewer has to agree to: its name, kind, executable state, and content digest when it is a
+// regular file. BinScripts and TestScripts name the tree that gives the relative Name meaning.
 type BinScript struct {
-	// Name is the entry's path relative to bin/, so a helper under bin/lib/ is named
-	// "lib/impl.sh" and stays distinct from a sibling of the same base name.
+	// Name is the entry's path relative to its tree, so a helper under bin/lib/ is named
+	// "lib/impl.sh" within bin/ and stays distinct from a sibling of the same base name.
 	Name string `json:"name"`
 	// Kind is "script" for a regular file or the filesystem mode type for another accepted
 	// entry. Symlinks are refused before a BinScript can be returned.
@@ -287,10 +290,20 @@ type BinScript struct {
 // is trusted silently. Every entry kind is recorded, so a directory, FIFO, or device under
 // bin/ contributes to the hash instead of vanishing from it.
 func BinScripts(ctx context.Context, root string) ([]BinScript, error) {
+	return executionTreeScripts(ctx, root, BaseBinDir)
+}
+
+// TestScripts lists a base's tests/ in name order. FKF prepends this tree only while executing
+// source verification hooks; collection and body commands retain the ordinary bin/ PATH.
+func TestScripts(ctx context.Context, root string) ([]BinScript, error) {
+	return executionTreeScripts(ctx, root, BaseTestsDir)
+}
+
+func executionTreeScripts(ctx context.Context, root, tree string) ([]BinScript, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	directory := filepath.Join(filepath.Clean(ExpandHome(root)), BaseBinDir)
+	directory := filepath.Join(filepath.Clean(ExpandHome(root)), tree)
 	info, err := os.Lstat(directory)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -298,7 +311,7 @@ func BinScripts(ctx context.Context, root string) ([]BinScript, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inspect %s: %w", directory, err)
 	}
-	// A symlinked bin/ is refused rather than walked. WalkDir stops at a symlinked root and the
+	// A symlinked execution tree is refused rather than walked. WalkDir stops at a symlinked root and the
 	// loop below skips the root entry itself, so every script behind the link stayed out of the
 	// digest AND out of the `fkf trust` listing, while the directory it points at was still
 	// first on the PATH of every declared command: a shadow `git` there ran, its output was
@@ -309,10 +322,10 @@ func BinScripts(ctx context.Context, root string) ([]BinScript, error) {
 	// applies to every addressable path: a base addresses only its own files.
 	if info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("%w: %s/ is a symlink; a base runs only its own scripts, and a link "+
-			"leaves what fkf trusted outside the base", ErrUnsafePath, BaseBinDir)
+			"leaves what fkf trusted outside the base", ErrUnsafePath, tree)
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("%w: %s/ is not a directory", ErrUnsafePath, BaseBinDir)
+		return nil, fmt.Errorf("%w: %s/ is not a directory", ErrUnsafePath, tree)
 	}
 	var scripts []BinScript
 	// WalkDir uses lstat semantics, so links are visible without ever following them.
@@ -338,7 +351,7 @@ func BinScripts(ctx context.Context, root string) ([]BinScript, error) {
 		switch {
 		case info.Mode()&os.ModeSymlink != 0:
 			return fmt.Errorf("%w: %s is a symlink; a base runs only files whose contents are "+
-				"inside the trusted bin tree", ErrUnsafePath, filepath.ToSlash(filepath.Join(BaseBinDir, relative)))
+				"inside the trusted %s tree", ErrUnsafePath, filepath.ToSlash(filepath.Join(tree, relative)), tree)
 		case info.Mode().IsRegular():
 			data, err := ReadFileLimit(path, MaxControlFileBytes)
 			if err != nil {
@@ -367,8 +380,8 @@ func BinScripts(ctx context.Context, root string) ([]BinScript, error) {
 }
 
 // TrustItems reduces everything a base can execute to reviewable canonical units: one
-// base-wide policy, every declared source, and every entry under bin/. Invalid configuration
-// cannot be trusted because there is no execution plan to review.
+// base-wide policy, every declared source, and every entry under bin/ and tests/. Invalid
+// configuration cannot be trusted because there is no execution plan to review.
 func TrustItems(ctx context.Context, root string) ([]TrustItem, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -392,15 +405,27 @@ func trustItems(ctx context.Context, config *Config) ([]TrustItem, error) {
 			Kind: TrustItemSource, Name: source.Name, Digest: sourceDigest(source),
 		})
 	}
-	scripts, err := BinScripts(ctx, config.Store().Root())
+	binScripts, err := BinScripts(ctx, config.Store().Root())
 	if err != nil {
 		return nil, err
 	}
-	for _, script := range scripts {
-		items = append(items, TrustItem{
-			Kind: TrustItemScript, Name: script.Name,
-			Digest: scriptTrustDigest(script), Executable: script.Executable,
-		})
+	testScripts, err := TestScripts(ctx, config.Store().Root())
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range []struct {
+		kind    TrustItemKind
+		scripts []BinScript
+	}{
+		{kind: TrustItemScript, scripts: binScripts},
+		{kind: TrustItemTest, scripts: testScripts},
+	} {
+		for _, script := range entry.scripts {
+			items = append(items, TrustItem{
+				Kind: entry.kind, Name: script.Name,
+				Digest: scriptTrustDigest(script), Executable: script.Executable,
+			})
+		}
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].Kind != items[j].Kind {

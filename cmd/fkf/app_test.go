@@ -115,8 +115,8 @@ func TestCLIErrorOutputNeverRendersProviderStderr(t *testing.T) {
 func TestSourceTestCommandSelectsHooksTimesOutAndKeepsStderrPrivate(t *testing.T) {
 	isolate(t)
 	root := t.TempDir()
-	bin := filepath.Join(root, core.BaseBinDir)
-	if err := os.MkdirAll(bin, core.BaseDirMode); err != nil {
+	tests := filepath.Join(root, core.BaseTestsDir)
+	if err := os.MkdirAll(tests, core.BaseDirMode); err != nil {
 		t.Fatal(err)
 	}
 	for name, script := range map[string]string{
@@ -124,7 +124,7 @@ func TestSourceTestCommandSelectsHooksTimesOutAndKeepsStderrPrivate(t *testing.T
 		"dormant-check.sh": "#!/bin/sh\nset -eu\necho private-provider-response >&2\nexit 7\n",
 		"slow-check.sh":    "#!/bin/sh\nset -eu\nsleep 2\n",
 	} {
-		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o700); err != nil {
+		if err := os.WriteFile(filepath.Join(tests, name), []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1206,6 +1206,85 @@ func TestReTrustKeepsAScriptOnlyChangeConcise(t *testing.T) {
 	}
 	if strings.Contains(changed.stdout, "quiet") || strings.Contains(changed.stdout, "echo '[]'") {
 		t.Fatalf("script-only review expanded to the full source listing:\n%s", changed.stdout)
+	}
+}
+
+func TestTrustDigestIsStableWhenTestsTreeIsAbsent(t *testing.T) {
+	isolate(t)
+	root := filepath.Join(t.TempDir(), "base")
+	if got := invoke(t, "init", root, "--preset", "minimal", "--name", "compat"); got.code != ExitSuccess {
+		t.Fatalf("init exited %d: %s%s", got.code, got.stdout, got.stderr)
+	}
+	if err := os.Remove(filepath.Join(root, core.BaseBinDir, "fkf-hook.sh")); err != nil {
+		t.Fatal(err)
+	}
+	got := invoke(t, "--format", "json", "trust", "--base", root)
+	if got.code != ExitSuccess {
+		t.Fatalf("trust exited %d: %s%s", got.code, got.stdout, got.stderr)
+	}
+	var report services.TrustReport
+	if err := json.Unmarshal([]byte(got.stdout), &report); err != nil {
+		t.Fatalf("decode trust report: %v\n%s", err, got.stdout)
+	}
+	const establishedDigestWithoutScripts = "7f97c8781a3d7697f7e96674d8b38cd768871b69aae907d79ceb9de7485b9716"
+	if report.State.Digest != establishedDigestWithoutScripts {
+		t.Fatalf("digest = %s, want the established digest %s for an unchanged base without tests/", report.State.Digest, establishedDigestWithoutScripts)
+	}
+}
+
+func TestReTrustKeepsASourceTestOnlyChangeConcise(t *testing.T) {
+	isolate(t)
+	root := filepath.Join(t.TempDir(), "base")
+	if got := invoke(t, "init", root, "--preset", "minimal"); got.code != ExitSuccess {
+		t.Fatalf("init exited %d: %s%s", got.code, got.stdout, got.stderr)
+	}
+	config := "name: t\nlayers: {events: true, index: true, tasks: true, projects: true, wiki: true}\n" +
+		"sources:\n  quiet:\n    enabled: true\n    layer: events\n    run: [echo, \"[]\"]\n" +
+		"    test: [source-check.sh]\n    fields:\n      id: .id\n      time: .time\n"
+	if err := os.WriteFile(filepath.Join(root, core.ConfigFileName), []byte(withCLITestContract(config)), core.BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	tests := filepath.Join(root, core.BaseTestsDir)
+	if err := os.MkdirAll(tests, core.BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(tests, "source-check.sh")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := invoke(t, "trust", "--base", root); got.code != ExitSuccess {
+		t.Fatalf("trust test hook exited %d: %s%s", got.code, got.stdout, got.stderr)
+	}
+	current := invoke(t, "trust", "--base", root, "--check", "--format", "json")
+	var report services.TrustReport
+	if current.code != ExitSuccess {
+		t.Fatalf("trust JSON exited %d: %s%s", current.code, current.stdout, current.stderr)
+	}
+	if err := json.Unmarshal([]byte(current.stdout), &report); err != nil {
+		t.Fatalf("decode trust JSON: %v\n%s", err, current.stdout)
+	}
+	if len(report.Scripts) == 0 || len(report.Tests) != 1 || report.Tests[0].Name != "source-check.sh" {
+		t.Fatalf("trust JSON scripts/tests = %+v / %+v, want additive separate trees", report.Scripts, report.Tests)
+	}
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	changed := invoke(t, "trust", "--base", root, "--check", "--format", "text")
+	if !strings.Contains(changed.stdout, "modified test source-check.sh") ||
+		!strings.Contains(changed.stdout, "tests/source-check.sh") {
+		t.Fatalf("test-only review did not show the changed hook:\n%s", changed.stdout)
+	}
+	if strings.Contains(changed.stdout, "quiet") || strings.Contains(changed.stdout, "echo '[]'") {
+		t.Fatalf("test-only review expanded to the full source listing:\n%s", changed.stdout)
+	}
+}
+
+func TestSourceTestCommandKeepsAnEmptySelectionSuccessful(t *testing.T) {
+	root := demoBase(t)
+	got := invoke(t, "--format", "text", "--base", root, "test")
+	if got.code != ExitSuccess || !strings.Contains(got.stdout, "0 passed") || !strings.Contains(got.stdout, "0 failed") {
+		t.Fatalf("empty source test result = exit %d stdout %q stderr %q", got.code, got.stdout, got.stderr)
 	}
 }
 

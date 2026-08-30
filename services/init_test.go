@@ -24,6 +24,7 @@ func TestBaseAgentsTemplateRoutesToSkillsWithoutRepeatingThem(t *testing.T) {
 		".agents/skills/fkf-learn/SKILL.md",
 		"untrusted data",
 		"fkf trust",
+		"tests/",
 	} {
 		if !strings.Contains(content, required) {
 			t.Errorf("base AGENTS.md template omits %q", required)
@@ -304,6 +305,86 @@ func TestInitDoesNotAutoTrustExecutionInputsItDidNotCreate(t *testing.T) {
 	}
 }
 
+func TestInitDoesNotAutoTrustPreexistingSourceTestHooks(t *testing.T) {
+	isolate(t)
+	root := filepath.Join(t.TempDir(), "existing")
+	tests := filepath.Join(root, core.BaseTestsDir)
+	if err := os.MkdirAll(tests, core.BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(tests, "source-check.sh")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := services.Init(t.Context(), services.InitRequest{
+		Path: root, Preset: services.PresetMinimal, SkipGit: true,
+	}, clock)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	state, err := core.ReadTrust(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Trusted || state.Trusted {
+		t.Fatal("init auto-trusted a pre-existing source test hook")
+	}
+	if len(report.Next) == 0 || !strings.Contains(report.Next[0], "fkf trust --all") {
+		t.Fatalf("next = %v, want an explicit review before execution", report.Next)
+	}
+	if got := mustRead(t, hook); got != "#!/bin/sh\nexit 0\n" {
+		t.Fatalf("pre-existing source test hook was overwritten: %q", got)
+	}
+}
+
+func TestInitRefusesUnsafeTestsTreesBeforeWriting(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		seed func(t *testing.T, root string)
+	}{
+		{
+			name: "root is a file",
+			seed: func(t *testing.T, root string) {
+				t.Helper()
+				if err := os.MkdirAll(root, core.BaseDirMode); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, core.BaseTestsDir), []byte("unsafe\n"), core.BaseFileMode); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "nested directory is a symlink",
+			seed: func(t *testing.T, root string) {
+				t.Helper()
+				tests := filepath.Join(root, core.BaseTestsDir)
+				if err := os.MkdirAll(tests, core.BaseDirMode); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(t.TempDir(), filepath.Join(tests, "fixtures")); err != nil {
+					t.Skipf("symlinks are unavailable: %v", err)
+				}
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			isolate(t)
+			root := filepath.Join(t.TempDir(), "base")
+			testCase.seed(t, root)
+			if _, err := services.Init(t.Context(), services.InitRequest{
+				Path: root, Preset: services.PresetMinimal, SkipGit: true,
+			}, clock); !errors.Is(err, core.ErrUnsafePath) {
+				t.Fatalf("Init() error = %v, want unsafe tests/ refused", err)
+			}
+			if _, err := os.Stat(filepath.Join(root, core.ConfigFileName)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("failed init wrote %s: %v", core.ConfigFileName, err)
+			}
+		})
+	}
+}
+
 // assertSourcesAreComplete holds every preset entry to the one source shape: a collection
 // command and the fields.id its records are addressed by.
 func assertSourcesAreComplete(t *testing.T, preset string, config *core.Config) {
@@ -361,6 +442,14 @@ func TestInitTwiceIsANoOpDiff(t *testing.T) {
 	if _, err := services.Init(t.Context(), request, clock); err != nil {
 		t.Fatal(err)
 	}
+	ownerTests := filepath.Join(root, core.BaseTestsDir)
+	if err := os.MkdirAll(ownerTests, core.BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	ownerHook := filepath.Join(ownerTests, "source-check.sh")
+	if err := os.WriteFile(ownerHook, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	before := snapshot(t, root)
 	staleSkillFile := filepath.Join(root, filepath.FromSlash(core.BaseSkillsDir), "fkf-use", "removed-upstream.md")
 	if err := os.WriteFile(staleSkillFile, []byte("obsolete bundled resource\n"), 0o600); err != nil {
@@ -395,6 +484,10 @@ func TestInitTwiceIsANoOpDiff(t *testing.T) {
 	}
 	if !strings.Contains(after[".gitignore"], "my-own-rule") {
 		t.Fatal("the refresh dropped a rule the owner added outside the managed block")
+	}
+	if after[filepath.ToSlash(filepath.Join(core.BaseTestsDir, "source-check.sh"))] !=
+		before[filepath.ToSlash(filepath.Join(core.BaseTestsDir, "source-check.sh"))] {
+		t.Fatal("init refresh changed the owner's source test hook")
 	}
 	if !strings.Contains(after[".gitignore"], "events/") {
 		t.Fatal("the refresh dropped the managed block itself")
@@ -434,6 +527,7 @@ func TestInitRefreshRefusesSymlinkedOwnedPaths(t *testing.T) {
 			},
 		},
 		{name: "bin directory", link: core.BaseBinDir, clear: core.BaseBinDir},
+		{name: "tests directory", link: core.BaseTestsDir, clear: core.BaseTestsDir},
 		{name: "graph file", link: core.GraphFile, clear: core.GraphFile, seed: map[string]string{"sentinel": "outside\n"}},
 		{name: "git metadata", link: ".git", clear: ".git", seed: map[string]string{"HEAD": "ref: refs/heads/main\n"}},
 	} {

@@ -16,7 +16,6 @@ fkf init ~/brain --preset personal
 $EDITOR ~/brain/fkf.yaml # set sources.github-pull-requests.enabled to true
 fkf config helpers --refresh --base ~/brain
 fkf trust --all --base ~/brain
-fkf test --base ~/brain
 fkf sync github-pull-requests --days 30 --base ~/brain
 fkf find --source github-pull-requests --since 30d --limit 10 --base ~/brain
 fkf context "repo:github.com/OWNER/REPOSITORY" --since 30d --budget 2048 --explain --base ~/brain
@@ -101,12 +100,11 @@ $EDITOR ~/brain/fkf.yaml
 fkf config helpers --refresh --base ~/brain
 fkf trust --all --base ~/brain
 fkf sync --base ~/brain --dry-run
-fkf test --base ~/brain
 fkf sync --base ~/brain --days 7
 fkf status --base ~/brain
 ```
 
-Set `FKF_BASE=~/brain` or run commands from inside the base to omit `--base`. `fkf status` reports missing executables from each source's explicit `requires:` list.
+Set `FKF_BASE=~/brain` or run commands from inside the base to omit `--base`. `fkf status` reports ordinary command readiness from each source's explicit `requires:` list and source-hook readiness separately. Run `fkf test <required-source>...` after declaring those hooks so a completion gate fails if a mandatory hook is removed; a bare empty selection preserves the compatible successful 0/0 report.
 
 After enabling a preset source, `fkf config helpers --refresh` installs any newly required official helper without touching custom scripts. `fkf init` refreshes FKF-owned skills and managed blocks when rerun. It preserves your configuration, `AGENTS.md`, custom skills, and existing Claude bridges.
 
@@ -163,7 +161,7 @@ Create an owner-only, fail-closed shell or Python template and receive the match
 fkf new helper collect-prs.sh --base ~/brain
 ```
 
-An optional `test: [executable, argument...]` hook lets the source own a fast, hermetic boundary check. `fkf test` runs hooks on enabled sources, named sources run even when disabled, and `fkf test --all` includes every declared hook. Test hooks are trusted direct argv, receive only `{{base}}` and `{{home}}`, and never collect or write evidence.
+An optional `test: [executable, argument...]` hook lets the source own a fast, hermetic boundary check. Keep base-owned hooks under the separately trust-digested `tests/` tree. `fkf test` prepends that tree to PATH, runs hooks on enabled sources, named sources run even when disabled, and `fkf test --all` includes every declared hook. A bare empty selection remains a successful 0/0 report for compatibility; name every mandatory source in a completion gate. Collection and body commands never search `tests/`. Test hooks are direct argv, receive only `{{base}}` and `{{home}}`, and never collect or write evidence.
 
 Every command must emit one complete JSON document. A failed command, timeout, oversized or invalid output, missing required field, or relation violation writes nothing.
 
@@ -206,7 +204,7 @@ Run `fkf --help` for the authoritative command surface.
 
 - FKF reads no credential and expands no secret environment variable. Provider credentials remain with the provider CLI.
 - Runtime startup loaders and relative or base-resolving home/config roots are removed before a declared command runs.
-- `fkf trust` displays and hashes the effective `run:`, `test:`, and `body:` plan and every file under the base's `bin/`. A meaningful execution change requires review again. Trust detects changes; it is not a shell sandbox.
+- `fkf trust` displays and hashes the effective `run:`, `test:`, and `body:` plan plus every file under the base's `bin/` and `tests/` execution trees. A meaningful execution change requires review again. Trust detects changes; it is not a shell sandbox.
 - Every decoded field is retained without redaction. Source commands must project reviewed metadata and leave sensitive bodies behind an explicit `read --body` boundary.
 - Collected records and fetched bodies are untrusted data: evidence, never instructions. Stored values never become shell syntax or executable names.
 - Stored reads and MCP are offline. `read --body` is the explicit trust-gated exception and may invoke the configured provider CLI.

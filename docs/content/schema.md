@@ -60,7 +60,7 @@ sources:
   git-commits:
     enabled: true
     layer: events
-    requires: [git-log-json.sh, git-log-check.sh, git]
+    requires: [git-log-json.sh, git]
     window: true
     run: [git-log-json.sh, "{{start}}", "{{end}}", "{{home}}"]
     test: [git-log-check.sh, "{{home}}"]
@@ -72,7 +72,7 @@ sources:
       participant: [".participant_uris[]"]
 ```
 
-FKF stores the exact schema subset and field map used by each collected document. That evidence lets current readers validate older records even after the base adds new optional fields. Optional `test:` hooks are one direct argv array, accept only `{{base}}` and `{{home}}`, and are execution-trusted alongside `run:` and `body:`.
+FKF stores the exact schema subset and field map used by each collected document. That evidence lets current readers validate older records even after the base adds new optional fields. Optional `test:` hooks are one direct argv array, accept only `{{base}}` and `{{home}}`, and are execution-trusted alongside `run:` and `body:`. Put `git-log-check.sh` in the base's `tests/` tree; FKF searches that tree only for source tests and hashes its full contents and executable modes into trust.
 
 ## Generated JSON Schema
 

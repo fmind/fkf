@@ -500,7 +500,8 @@ func writeStatusText(w *textWriter, status *services.Status) {
 		for _, source := range status.Sources {
 			writeSourceStatusText(w, source)
 		}
-		w.printf("\n%d enabled, %d missing requirement(s), %d quiet\n", status.Enabled, status.Missing, status.Quiet)
+		w.printf("\n%d enabled, %d missing requirement(s), %d missing source test hook(s), %d quiet\n",
+			status.Enabled, status.Missing, status.MissingTests, status.Quiet)
 	}
 
 	// 3. Health & Integrity Findings
@@ -542,6 +543,13 @@ func writeSourceStatusText(w *textWriter, source services.SourceStatus) {
 		if !requirement.OnPath {
 			name += " (missing)"
 			missing = true
+		}
+		requirements = append(requirements, name)
+	}
+	if source.Test != nil {
+		name := "test:" + source.Test.Name
+		if !source.Test.OnPath {
+			name += " (missing)"
 		}
 		requirements = append(requirements, name)
 	}
@@ -660,21 +668,10 @@ func writeTrustText(w *textWriter, report *services.TrustReport) {
 		w.printf("%s\n", source.Name)
 		writeTrustedSourceText(w, source)
 	}
-	// The scripts are part of what is being approved: bin/ is prepended to PATH, so a bin/git
-	// here is what `run: git log …` above would actually execute.
-	if len(report.Scripts) > 0 {
-		w.printf("\nbin/ (first on PATH for every command above)\n")
-		for _, script := range report.Scripts {
-			switch {
-			case script.Kind == "symlink":
-				w.printf("  %-24s symlink -> %s\n", script.Name, script.Target)
-			case !script.Executable:
-				w.printf("  %-24s %s (not executable)\n", script.Name, short(script.Digest))
-			default:
-				w.printf("  %-24s %s\n", script.Name, short(script.Digest))
-			}
-		}
-	}
+	// Both executable trees are part of what is being approved. Their headings disclose the
+	// narrower lookup scope that keeps a tests/git fixture from shadowing collection's real Git.
+	writeTrustScriptTree(w, "bin/ (on PATH for every command; first for run: and body:)", report.Scripts)
+	writeTrustScriptTree(w, "tests/ (first on PATH for test: hooks only)", report.Tests)
 	if report.Recorded {
 		w.printf("\ntrusted %s (digest %s)\n", report.Base, short(report.State.Digest))
 		return
@@ -684,6 +681,23 @@ func writeTrustText(w *textWriter, report *services.TrustReport) {
 		state = "trusted since " + report.State.Since
 	}
 	w.printf("\n%s: %s\n", report.Base, state)
+}
+
+func writeTrustScriptTree(w *textWriter, heading string, scripts []core.BinScript) {
+	if len(scripts) == 0 {
+		return
+	}
+	w.printf("\n%s\n", heading)
+	for _, script := range scripts {
+		switch {
+		case script.Kind == "symlink":
+			w.printf("  %-24s symlink -> %s\n", script.Name, script.Target)
+		case !script.Executable:
+			w.printf("  %-24s %s (not executable)\n", script.Name, short(script.Digest))
+		default:
+			w.printf("  %-24s %s\n", script.Name, short(script.Digest))
+		}
+	}
 }
 
 func writeHelpersText(w *textWriter, report *services.HelperReport) {
@@ -960,7 +974,7 @@ func summarizesEverythingThatChanged(changes []core.TrustChange) bool {
 	}
 	for _, change := range changes {
 		switch change.Item {
-		case core.TrustItemSource, core.TrustItemScript:
+		case core.TrustItemSource, core.TrustItemScript, core.TrustItemTest:
 			// The compact renderer prints the complete current disclosure for these items.
 		default:
 			return false
@@ -985,9 +999,15 @@ func writeTrustChangesText(w *textWriter, report *services.TrustReport) {
 	for _, source := range report.Commands {
 		sources[source.Name] = source
 	}
-	scripts := map[string]core.BinScript{}
+	scripts := map[core.TrustItemKind]map[string]core.BinScript{
+		core.TrustItemScript: {},
+		core.TrustItemTest:   {},
+	}
 	for _, script := range report.Scripts {
-		scripts[script.Name] = script
+		scripts[core.TrustItemScript][script.Name] = script
+	}
+	for _, script := range report.Tests {
+		scripts[core.TrustItemTest][script.Name] = script
 	}
 	for _, change := range report.State.Changes {
 		if change.Item == core.TrustItemConfig {
@@ -997,8 +1017,12 @@ func writeTrustChangesText(w *textWriter, report *services.TrustReport) {
 		if source, ok := sources[change.Name]; ok && change.Item == core.TrustItemSource {
 			writeTrustedSourceText(w, source)
 		}
-		if script, ok := scripts[change.Name]; ok && change.Item == core.TrustItemScript {
-			w.printf("  bin/%s  %s\n", script.Name, short(script.Digest))
+		if script, ok := scripts[change.Item][change.Name]; ok {
+			directory := core.BaseBinDir
+			if change.Item == core.TrustItemTest {
+				directory = core.BaseTestsDir
+			}
+			w.printf("  %s/%s  %s\n", directory, change.Name, short(script.Digest))
 		}
 	}
 	if report.Recorded {

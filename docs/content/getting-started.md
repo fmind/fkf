@@ -133,7 +133,7 @@ The field name states the role; the URI states the identity namespace. `particip
 
 Keep direct provider argv in `run:`. Move pipelines and expansion to a `.sh` or `.py` helper under `bin/`; use Python when structured or stateful logic would be clearer. The helper's shebang selects its interpreter, so the same base works on a Mac whose interactive shell is Zsh and on a Linux host using Bash or Fish.
 
-Declare each executable dependency explicitly in `requires:`. `status` locates those bare names without parsing the run line or executing a version probe.
+Declare each ordinary collection/body dependency and every external tool a hook invokes explicitly in `requires:`. `status` locates those bare names without parsing command text or executing a version probe. Put the base-owned `test[0]` entrypoint under `tests/`; status reports it separately on the test-only PATH.
 
 ## Review execution, then collect
 
@@ -148,7 +148,7 @@ fkf trust --all
 fkf sync --days 7
 ```
 
-`trust` prints the executable plan before recording its canonical digest. Command, policy, body-bound path, executable path, and `bin/` changes re-arm trust. Comments, YAML order, descriptions, examples, `requires:`, retrieval-only mappings, and the inherited process environment do not.
+`trust` prints the executable plan before recording its canonical digest. Command, policy, body-bound path, executable path, and `bin/` or `tests/` changes re-arm trust. Comments, YAML order, descriptions, examples, `requires:`, retrieval-only mappings, and the inherited process environment do not.
 
 `--preview` performs one real trusted execution and every decode, projection, cardinality, relation, and completeness check for exactly one source, shows at most three projected records, and writes nothing. Normal sync never collects today. A completed day is complete or absent: failed commands, invalid or oversized output, missing identities or times, cardinality errors, and invalid relation URIs write nothing. Existing documents are skipped unless `--force` is used; a `window: true` source runs once per contiguous missing span instead of crossing an existing day. The graph cache is rebuilt unless `--no-graph` is supplied.
 

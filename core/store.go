@@ -80,6 +80,7 @@ const (
 	BaseAgentsFile    = "AGENTS.md"
 	BaseSkillsDir     = ".agents/skills"
 	BaseBinDir        = "bin"
+	BaseTestsDir      = "tests"
 	ConfigFileName    = "fkf.yaml"
 	LocalConfigName   = "fkf.local.yaml"
 	MarkdownExtension = ".md"
@@ -362,6 +363,9 @@ func readConfigLeaf(store Store, name string) ([]byte, bool, error) {
 
 // BinDir is the base's own script directory, prepended to PATH for every declared command.
 func (s Store) BinDir() string { return filepath.Join(s.root, BaseBinDir) }
+
+// TestsDir is the base's source-hook directory, prepended to PATH only by fkf test.
+func (s Store) TestsDir() string { return filepath.Join(s.root, BaseTestsDir) }
 
 // Versioned reports whether the base has recognizable, real git working-tree metadata.
 // Detecting this beats declaring it: a configuration key could claim a base is versioned when

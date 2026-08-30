@@ -133,7 +133,7 @@ fkf trust
 fkf trust --all
 ```
 
-Trust prints the base's executable plan and records its canonical digest. A changed base leads with per-item differences; `--all` prints the complete disclosure. `--check` records nothing. Comments, YAML order, descriptions, examples, and retrieval-only mappings do not re-arm an unchanged execution plan.
+Trust prints the base's executable plan, the ordinary `bin/` tree, and the test-only `tests/` tree, then records their canonical digest. A changed base leads with per-item differences; `--all` prints the complete disclosure. `--check` records nothing. Comments, YAML order, descriptions, examples, and retrieval-only mappings do not re-arm an unchanged execution plan.
 
 ### `test`
 
@@ -143,7 +143,7 @@ fkf test github-pull-requests
 fkf test --all
 ```
 
-With no arguments, test runs hooks declared by enabled sources in stable name order. Naming sources includes disabled ones; `--all` runs every declared hook and cannot be combined with names. Hooks run sequentially under the source timeout, capture no printable provider output, write no evidence, and continue after an ordinary failure so the report names every failed source. An untrusted base exits `3`; one or more hook failures exit `1`.
+With no arguments, test runs hooks declared by enabled sources in stable name order. Naming sources includes disabled ones; `--all` runs every declared hook and cannot be combined with names. An empty selection preserves the compatible successful 0/0 report, so completion gates should name every mandatory source. A base-owned hook lives under the fully trust-digested `tests/` tree, which is prepended only for source tests; collection and body commands keep `bin/` first and never search `tests/`. Hooks run sequentially under the source timeout, capture no printable provider output, write no evidence, and continue after an ordinary failure so the report names every failed source. An untrusted base exits `3`; one or more hook failures exit `1`.
 
 ### `sync`
 
@@ -166,7 +166,7 @@ fkf status --all
 fkf status --max-age-hours 48
 ```
 
-Status is the whole-base view: layers, evidence-envelope integrity, explicitly declared executable requirements, collector volume, trust, graph integrity, repository tracking policy, permissions, official-helper drift, managed skills, links, and unharvested task learning. It locates required executables but never runs a probe or declared source command. Findings include exact repair commands, but status never mutates the base. With `--max-age-hours`, every enabled source must have evidence within the requested age.
+Status is the whole-base view: layers, evidence-envelope integrity, explicitly declared ordinary command requirements, separately checked source-hook entrypoints, collector volume, trust, graph integrity, repository tracking policy, permissions, official-helper drift, managed skills, links, and unharvested task learning. It locates executables but never runs a probe or declared source command. The JSON summary keeps `missing_requirements` and `missing_test_hooks` distinct. Findings include exact repair commands, but status never mutates the base. With `--max-age-hours`, every enabled source must have evidence within the requested age.
 
 ### `build`
 
@@ -190,6 +190,8 @@ fkf new helper collect-prs.py
 ```
 
 The subcommands scaffold the strict write shape for task traces, projects, wiki concepts, and owner-only helpers without overwriting existing files. Project and wiki pages require at least one `--tag`; repeat the flag to add more. Helpers require an explicit `.sh` or `.py` extension; the generated `requires:` list includes `python3` for a Python helper.
+
+`new helper` creates collection or body support under `bin/`. Source verification hooks belong under the base's `tests/` tree and are declared directly in `test:`.
 
 ### `config`
 

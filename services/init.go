@@ -118,6 +118,7 @@ func validateScaffoldTargets(ctx context.Context, root string) error {
 		filepath.Join(root, ".agents"),
 		filepath.Join(root, filepath.FromSlash(core.BaseSkillsDir)),
 		filepath.Join(root, core.BaseBinDir),
+		filepath.Join(root, core.BaseTestsDir),
 		filepath.Join(root, ".claude"),
 	)
 	for _, layer := range core.Layers {
@@ -147,6 +148,9 @@ func validateScaffoldTargets(ctx context.Context, root string) error {
 		}
 	}
 	if _, err := core.BinScripts(ctx, root); err != nil {
+		return err
+	}
+	if _, err := core.TestScripts(ctx, root); err != nil {
 		return err
 	}
 	return nil
@@ -287,14 +291,14 @@ func writeBaseAgents(root, name string, report *InitReport) error {
 
 func recordInitialTrust(ctx context.Context, root string, preexisting bool, report *InitReport, now func() time.Time) error {
 	if preexisting {
-		report.step("trust", "review required: fkf.local.yaml or bin/ existed before init; run `fkf trust --all`", false)
+		report.step("trust", "review required: fkf.local.yaml, bin/, or tests/ existed before init; run `fkf trust --all`", false)
 		return nil
 	}
 	if _, err := core.WriteTrust(ctx, root, now()); err != nil {
 		return err
 	}
 	report.Trusted = true
-	report.step("trusted", "execution plan and "+core.BaseBinDir+"/ digest recorded for this machine", true)
+	report.step("trusted", "execution plan plus bin/ and tests/ digests recorded for this machine", true)
 	return nil
 }
 
@@ -365,7 +369,8 @@ func writeManagedBlocks(root string, trackCollected bool, report *InitReport) er
 
 // hasPreexistingExecutionInputs distinguishes a new base from a directory that already
 // controls execution. Auto-trust is safe only for the preset and scripts embedded in this
-// binary; a machine-local overlay or bin entry that predates init must be shown by `fkf trust`.
+// binary; a machine-local overlay, bin entry, or test hook that predates init must be shown by
+// `fkf trust`.
 func hasPreexistingExecutionInputs(ctx context.Context, root string) (bool, error) {
 	if _, err := os.Lstat(filepath.Join(root, core.LocalConfigName)); err == nil {
 		return true, nil
@@ -376,7 +381,11 @@ func hasPreexistingExecutionInputs(ctx context.Context, root string) (bool, erro
 	if err != nil {
 		return false, err
 	}
-	return len(scripts) > 0, nil
+	tests, err := core.TestScripts(ctx, root)
+	if err != nil {
+		return false, err
+	}
+	return len(scripts) > 0 || len(tests) > 0, nil
 }
 
 func writeSkillsAndHelpers(root string, config *core.Config, report *InitReport) error {
@@ -455,7 +464,7 @@ func renderConfig(name, preset string) (string, error) {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, `# yaml-language-server: $schema=%s
 # %s — this base's definition. Committed. No secrets, ever.
-# Sources stay open: add short commands directly or move reviewed helpers under bin/.
+# Sources stay open: put collection helpers in bin/ and source verification hooks in tests/.
 fkf: 1 # configuration contract; v1 accepts exactly this marker
 name: %s # MCP server name and resource URI authority; informational elsewhere
 
@@ -554,7 +563,9 @@ type TrustReport struct {
 	// It is listed because approving `run: git log …` means nothing if a bin/git the reviewer
 	// never saw is what actually runs.
 	Scripts []core.BinScript `json:"scripts,omitempty"`
-	State   core.TrustState  `json:"state"`
+	// Tests is the base's own tests/, which is prepended only while source verification hooks run.
+	Tests []core.BinScript `json:"tests,omitempty"`
+	State core.TrustState  `json:"state"`
 	// All asks for the full listing even when a diff is available. It is not carried in JSON
 	// because JSON always holds both — the listing AND State.Changes — and only the text
 	// rendering has to choose one.
@@ -624,6 +635,11 @@ func Trust(ctx context.Context, base *Base, record, all bool) (*TrustReport, err
 		return nil, err
 	}
 	report.Scripts = scripts
+	tests, err := core.TestScripts(ctx, base.Root())
+	if err != nil {
+		return nil, err
+	}
+	report.Tests = tests
 	if !record {
 		state, err := core.ReadTrustConfig(ctx, base.Config)
 		if err != nil {

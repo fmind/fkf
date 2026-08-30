@@ -84,6 +84,189 @@ func TestConfigDigestCoversTheBinScripts(t *testing.T) {
 	}
 }
 
+// Source verification hooks are repository-controlled code just like collection helpers. Keeping
+// them in a dedicated tests/ tree is safe only when every byte and executable-bit change re-arms
+// trust before `fkf test` may execute the new definition.
+func TestConfigDigestCoversTheSourceTestScripts(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ConfigFileName), []byte(withTestContract("name: t\n")), BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	before, err := ConfigDigest(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testsDir := filepath.Join(root, BaseTestsDir, "fixtures")
+	if err := os.MkdirAll(testsDir, BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(testsDir, "source-check.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	added, err := ConfigDigest(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added == before {
+		t.Fatal("adding tests/fixtures/source-check.sh left the digest unchanged; fkf test would run unreviewed bytes")
+	}
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	edited, err := ConfigDigest(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited == added {
+		t.Fatal("editing tests/source-check.sh left the digest unchanged")
+	}
+	if err := os.Chmod(script, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	armed, err := ConfigDigest(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if armed == edited {
+		t.Fatal("making tests/fixtures/source-check.sh executable left the digest unchanged")
+	}
+	items, err := TrustItems(t.Context(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.Kind == TrustItemTest && item.Name == "fixtures/source-check.sh" && item.Executable {
+			return
+		}
+	}
+	t.Fatalf("trust items = %+v, want an executable test/fixtures/source-check.sh item", items)
+}
+
+func TestTestScriptsRefusesSymlinksAtEveryDepth(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		link func(root, outside string) string
+	}{
+		{
+			name: "root",
+			link: func(root, outside string) string {
+				return filepath.Join(root, BaseTestsDir)
+			},
+		},
+		{
+			name: "nested file",
+			link: func(root, outside string) string {
+				directory := filepath.Join(root, BaseTestsDir, "fixtures")
+				if err := os.MkdirAll(directory, BaseDirMode); err != nil {
+					t.Fatal(err)
+				}
+				return filepath.Join(directory, "source-check.sh")
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.WriteFile(filepath.Join(root, ConfigFileName), []byte(withTestContract("name: t\n")), BaseFileMode); err != nil {
+				t.Fatal(err)
+			}
+			outside := filepath.Join(t.TempDir(), "source-check.sh")
+			if err := os.WriteFile(outside, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			link := testCase.link(root, outside)
+			if err := os.Symlink(outside, link); err != nil {
+				t.Skipf("symlinks are unavailable: %v", err)
+			}
+			if _, err := TestScripts(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
+				t.Fatalf("TestScripts() error = %v, want the symlink refused", err)
+			}
+			if _, err := ConfigDigest(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
+				t.Fatalf("ConfigDigest() error = %v, want the tests/ refusal to reach trust", err)
+			}
+			if err := RequireTrust(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
+				t.Fatalf("RequireTrust() error = %v, want the tests/ refusal to reach execution", err)
+			}
+		})
+	}
+}
+
+func TestTestScriptsRefusesASymlinkedNestedDirectory(t *testing.T) {
+	root := t.TempDir()
+	tests := filepath.Join(root, BaseTestsDir)
+	if err := os.MkdirAll(tests, BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "fixture.json"), []byte("{}\n"), BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(tests, "fixtures")); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	if _, err := TestScripts(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
+		t.Fatalf("TestScripts() error = %v, want the nested directory symlink refused", err)
+	}
+}
+
+func TestTestScriptsRefusesATestsRootThatIsNotADirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, BaseTestsDir), []byte("not a directory\n"), BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TestScripts(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
+		t.Fatalf("TestScripts() error = %v, want a non-directory tests root refused", err)
+	}
+}
+
+func TestTrustDiffKeepsBinAndTestsDistinctAcrossTestHookChanges(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ConfigFileName), []byte(withTestContract("name: t\n")), BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, BaseBinDir), BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, BaseBinDir, "shared.sh"), []byte("echo one\n"), BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteTrust(t.Context(), root, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, BaseTestsDir), BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(root, BaseTestsDir, "shared.sh")
+	assertChange := func(want TrustChangeKind, mutate func() error) {
+		t.Helper()
+		if err := mutate(); err != nil {
+			t.Fatal(err)
+		}
+		state, err := ReadTrust(t.Context(), root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(state.Changes) != 1 || state.Changes[0] != (TrustChange{
+			Kind: want, Item: TrustItemTest, Name: "shared.sh",
+		}) {
+			t.Fatalf("changes = %+v, want one %s test/shared.sh change", state.Changes, want)
+		}
+		if _, err := WriteTrust(t.Context(), root, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertChange(TrustAdded, func() error {
+		return os.WriteFile(hook, []byte("echo one\n"), BaseFileMode)
+	})
+	assertChange(TrustModified, func() error {
+		return os.WriteFile(hook, []byte("echo two\n"), BaseFileMode)
+	})
+	assertChange(TrustArmed, func() error { return os.Chmod(hook, 0o700) })
+	assertChange(TrustDisarmed, func() error { return os.Chmod(hook, BaseFileMode) })
+	assertChange(TrustRemoved, func() error { return os.Remove(hook) })
+}
+
 // TestBinScriptsRefusesASymlinkedFile closes the gap left by hashing only a link target: the
 // target text stays fixed while the file outside the base can change after trust.
 func TestBinScriptsRefusesASymlinkedFile(t *testing.T) {

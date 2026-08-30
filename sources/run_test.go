@@ -118,6 +118,100 @@ func TestBuildRunCommandDoesNotRequireAnInstalledShell(t *testing.T) {
 	}
 }
 
+func TestSourceTestPathCannotShadowCollectionCommands(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, core.BaseBinDir)
+	tests := filepath.Join(root, core.BaseTestsDir)
+	for _, directory := range []string{bin, tests} {
+		if err := os.MkdirAll(directory, core.BaseDirMode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, output := range map[string]string{
+		filepath.Join(bin, "helper"):   "bin",
+		filepath.Join(tests, "helper"): "tests",
+	} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s' '"+output+"'\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := sources.Environment{Root: root, Env: map[string]string{"PATH": bin}}
+	source := &core.Source{Run: []string{"helper"}, Test: []string{"helper"}}
+	run := sources.BuildRunCommand(source, env, sources.Window{}, time.Minute)
+	check := sources.BuildTestCommand(source, env, time.Minute)
+
+	if got := filepath.SplitList(run.Env["PATH"]); !slices.Equal(got, []string{bin}) {
+		t.Fatalf("run PATH = %q, want tests/ unreachable during collection", got)
+	}
+	runner := &fakeRunner{stdout: "body"}
+	if _, body, err := sources.FetchBody(t.Context(), runner,
+		&core.Source{Body: []string{"helper", "body"}}, sources.Fields{}, env, sources.Record{}, time.Minute,
+	); err != nil {
+		t.Fatal(err)
+	} else if got := filepath.SplitList(body.Env["PATH"]); !slices.Equal(got, []string{bin}) {
+		t.Fatalf("body PATH = %q, want tests/ unreachable during body fetching", got)
+	}
+	if got := filepath.SplitList(check.Env["PATH"]); !slices.Equal(got, []string{tests, bin}) {
+		t.Fatalf("test PATH = %q, want only tests/ prepended to the ordinary command path", got)
+	}
+	executor := sources.ExecRunner()
+	if output, err := executor.Run(t.Context(), run); err != nil || output != "bin" {
+		t.Fatalf("run helper = %q, %v; want bin/helper", output, err)
+	}
+	if output, err := executor.Run(t.Context(), check); err != nil || output != "tests" {
+		t.Fatalf("test helper = %q, %v; want tests/helper", output, err)
+	}
+	if err := os.Remove(filepath.Join(tests, "helper")); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := executor.Run(t.Context(), check); err != nil || output != "bin" {
+		t.Fatalf("test helper without tests/ entry = %q, %v; want normal bin/ fallback", output, err)
+	}
+	if env.Env["PATH"] != bin {
+		t.Fatalf("BuildTestCommand mutated the shared environment PATH to %q", env.Env["PATH"])
+	}
+}
+
+func TestSourceHookMayUseATrustedFixtureShadowOnlyInsideTests(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, core.BaseBinDir)
+	tests := filepath.Join(root, core.BaseTestsDir)
+	for _, directory := range []string{bin, tests} {
+		if err := os.MkdirAll(directory, core.BaseDirMode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, body := range map[string]string{
+		filepath.Join(bin, "git"):         "#!/bin/sh\nprintf real\n",
+		filepath.Join(tests, "git"):       "#!/bin/sh\nprintf fixture\n",
+		filepath.Join(tests, "git-check"): "#!/bin/sh\nexec git\n",
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := sources.Environment{Root: root, Env: map[string]string{"PATH": bin}}
+	run := sources.BuildRunCommand(&core.Source{Run: []string{"git"}}, env, sources.Window{}, time.Minute)
+	check := sources.BuildTestCommand(&core.Source{Test: []string{"git-check"}}, env, time.Minute)
+	executor := sources.ExecRunner()
+	if output, err := executor.Run(t.Context(), run); err != nil || output != "real" {
+		t.Fatalf("run git = %q, %v; tests/git shadowed collection", output, err)
+	}
+	if output, err := executor.Run(t.Context(), check); err != nil || output != "fixture" {
+		t.Fatalf("test fixture git = %q, %v; want trusted tests/git visible inside the hook", output, err)
+	}
+}
+
+func TestBuildTestCommandInitializesAnEmptyEnvironment(t *testing.T) {
+	root := t.TempDir()
+	command := sources.BuildTestCommand(
+		&core.Source{Test: []string{"check"}}, sources.Environment{Root: root}, time.Minute,
+	)
+	if got := filepath.SplitList(command.Env["PATH"]); !slices.Equal(got, []string{filepath.Join(root, core.BaseTestsDir)}) {
+		t.Fatalf("test PATH = %q, want the dedicated test tree even without inherited environment", got)
+	}
+}
+
 func TestBuildRunCommandUsesANeutralWorkingDirectory(t *testing.T) {
 	root := t.TempDir()
 	command := sources.BuildRunCommand(

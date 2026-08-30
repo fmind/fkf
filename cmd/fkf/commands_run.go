@@ -82,7 +82,7 @@ func newTrustCommand() *cli.Command {
 	return &cli.Command{
 		Name: "trust", Category: groupRun,
 		Usage: "Review every declared run:, test:, and body: command, body-bound field path, enabled state, " +
-			"invocation policy, bin: PATH directories, and helpers; " +
+			"invocation policy, bin: PATH directories, and every helper or hook under bin/ and tests/; " +
 			"then record trust." + markWrite,
 		Description: "Reading the commands is the act of trusting them, so the listing is part of " +
 			"this command rather than something you are told to do first. --check prints the state " +
@@ -90,7 +90,7 @@ func newTrustCommand() *cli.Command {
 			"changed, because a 300-line re-read is a review nobody performs; --all prints it all.",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "check", Usage: "Report the trust state without recording it."},
-			&cli.BoolFlag{Name: "all", Usage: "Print the complete disclosure: bin:, every source command, body-bound field path and policy, and every base helper, even when only a few changed."},
+			&cli.BoolFlag{Name: "all", Usage: "Print the complete disclosure: bin:, every source command, body-bound field path and policy, and every helper or hook in both execution trees, even when only a few changed."},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			base, err := openBase(cmd)
@@ -122,7 +122,8 @@ func newTestCommand() *cli.Command {
 		ArgsUsage: "[source...]",
 		Description: "With no arguments, runs hooks declared by enabled sources in stable name order. " +
 			"Named sources run even when disabled; --all includes every source that declares a hook. " +
-			"Hooks are direct argv, receive only {{base}} and {{home}}, and never collect or write evidence.",
+			"An empty selection is a successful 0/0 report. Hooks are direct argv, receive only {{base}} and {{home}}, " +
+			"search the trusted tests/ tree first, and never collect or write evidence.",
 		Flags: []cli.Flag{
 			&cli.BoolFlag{Name: "all", Usage: "Test every source that declares a hook, including disabled sources."},
 		},

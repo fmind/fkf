@@ -156,9 +156,9 @@ func sourceSchema() map[string]any {
 				"prefixItems": []any{map[string]any{
 					"type": "string", "minLength": 1,
 					"not":         map[string]any{"pattern": `\{\{`},
-					"description": "Literal executable: a bare name resolved on PATH or an absolute machine-local path outside the base.",
+					"description": "Literal executable: a bare name resolved on the test-only PATH (tests/ first), or an absolute machine-local path outside the base.",
 				}},
-				"description": "Optional direct argv run by `fkf test` to verify this source. It receives no record or collection window. Argument placeholders: " + placeholderList(TestPlaceholders) + ".",
+				"description": "Optional direct argv run by `fkf test` to verify this source. The trusted base tests/ tree is prepended only for this command; it receives no record or collection window. Argument placeholders: " + placeholderList(TestPlaceholders) + ".",
 			},
 			"format": map[string]any{
 				"type": "string", "enum": []string{string(FormatJSON), string(FormatNDJSON)}, "default": string(FormatJSON),
@@ -178,7 +178,7 @@ func sourceSchema() map[string]any {
 			"requires": map[string]any{
 				"type": "array", "uniqueItems": true,
 				"items":       map[string]any{"type": "string", "pattern": `^[A-Za-z0-9][A-Za-z0-9._+-]*$`},
-				"description": "Executable names fkf status checks on PATH, including helpers and non-standard interpreters. FKF never infers dependencies from argv or helper contents.",
+				"description": "Executable names fkf status checks on the ordinary collection/body PATH, including helpers and non-standard interpreters. FKF reports test[0] readiness separately on the test-only tests/ PATH and never infers dependencies from argv or helper contents.",
 			},
 			"install": map[string]any{"type": "string", "description": "Printed by `fkf status` when the binary is missing. Never executed."},
 			"timeout": duration("Per-command timeout; overrides sync.timeout."),
