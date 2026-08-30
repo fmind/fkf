@@ -34,6 +34,94 @@ func writeFakeSQLite(t *testing.T, directory string) {
 	}
 }
 
+func TestAtuinHistoryOpensSQLiteBatchReadonly(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "history.db")
+	createAtuinHistoryFixture(t, database)
+	realSQLite, err := exec.LookPath("sqlite3")
+	if err != nil {
+		t.Fatalf("find sqlite3: %v", err)
+	}
+	bin := t.TempDir()
+	arguments := filepath.Join(t.TempDir(), "sqlite-arguments")
+	if err := os.WriteFile(filepath.Join(bin, "sqlite3"), []byte(`#!/bin/sh
+printf '%s\n' "$@" > "$SQLITE_ARGUMENTS"
+exec "$REAL_SQLITE" "$@"
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	command := exec.CommandContext(t.Context(), filepath.Join(repositoryRoot(t), "presets", "bin", "atuin-history-json.sh"),
+		"2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z", database)
+	command.Env = append(os.Environ(),
+		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"REAL_SQLITE="+realSQLite,
+		"SQLITE_ARGUMENTS="+arguments,
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("atuin-history-json.sh error = %v; output=%q", err, output)
+	}
+	got, err := os.ReadFile(arguments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"-batch", "-readonly"} {
+		if !strings.Contains("\n"+string(got), "\n"+flag+"\n") {
+			t.Errorf("sqlite3 arguments omit %s:\n%s", flag, got)
+		}
+	}
+}
+
+func TestAtuinHistoryOmitsDeletedRowsAndCommandText(t *testing.T) {
+	database := filepath.Join(t.TempDir(), "history.db")
+	createAtuinHistoryFixture(t, database)
+	command := exec.CommandContext(t.Context(), filepath.Join(repositoryRoot(t), "presets", "bin", "atuin-history-json.sh"),
+		"2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z", database)
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("atuin-history-json.sh error = %v", err)
+	}
+	var records []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &records); err != nil {
+		t.Fatalf("decode atuin-history-json.sh output: %v\n%s", err, output)
+	}
+	if len(records) != 1 || records[0].ID != "active" {
+		t.Fatalf("atuin history records = %+v, want only the active row", records)
+	}
+	for _, private := range []string{"active-command-secret", "deleted-command-secret"} {
+		if strings.Contains(string(output), private) {
+			t.Fatalf("atuin history retained command text %q: %s", private, output)
+		}
+	}
+}
+
+func createAtuinHistoryFixture(t *testing.T, database string) {
+	t.Helper()
+	command := exec.CommandContext(t.Context(), "sqlite3", database, `
+CREATE TABLE history (
+  id TEXT PRIMARY KEY,
+  timestamp INTEGER NOT NULL,
+  duration INTEGER NOT NULL,
+  exit INTEGER NOT NULL,
+  command TEXT NOT NULL,
+  cwd TEXT NOT NULL,
+  deleted_at INTEGER
+);
+INSERT INTO history VALUES (
+  'active', strftime('%s','2026-05-04T08:00:00Z') * 1000000000,
+  10, 0, 'active-command-secret', '/workspace/active', NULL
+);
+INSERT INTO history VALUES (
+  'deleted', strftime('%s','2026-05-04T09:00:00Z') * 1000000000,
+  20, 1, 'deleted-command-secret', '/workspace/deleted', strftime('%s','2026-05-04T10:00:00Z') * 1000000000
+);
+`)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("create Atuin fixture: %v; output=%q", err, output)
+	}
+}
+
 func TestChromiumPagesCollectsEveryProfileWithAGlobalIdentity(t *testing.T) {
 	home := t.TempDir()
 	profiles := map[string]string{

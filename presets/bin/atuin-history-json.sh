@@ -1,6 +1,7 @@
 #!/bin/sh
-# atuin-history-json.sh <start> <end> <database> — collect shell activity metadata without
-# exposing the command column. SQLite and jq run as separate fail-fast stages.
+# atuin-history-json.sh <start> <end> <database> — collect undeleted shell activity metadata
+# without exposing the command column. SQLite opens read-only, and SQLite and jq run as separate
+# fail-fast stages.
 set -eu
 
 start=${1:?usage: atuin-history-json.sh <start> <end> <database>}
@@ -11,7 +12,7 @@ rows=$work_dir/rows.ndjson
 trap 'exit 1' HUP INT TERM
 trap 'rm -rf "$work_dir"' 0
 
-sqlite3 -init /dev/null -json "$database" \
-  "select id, cwd, exit, duration, strftime('%Y-%m-%dT%H:%M:%SZ', timestamp/1000000000, 'unixepoch') as time from history where timestamp >= strftime('%s','$start')*1000000000 and timestamp < strftime('%s','$end')*1000000000 order by timestamp" \
+sqlite3 -init /dev/null -batch -readonly -json "$database" \
+  "select id, cwd, exit, duration, strftime('%Y-%m-%dT%H:%M:%SZ', timestamp/1000000000, 'unixepoch') as time from history where deleted_at is null and timestamp >= strftime('%s','$start')*1000000000 and timestamp < strftime('%s','$end')*1000000000 order by timestamp" \
   > "$rows"
 jq -s -c 'add // []' "$rows"

@@ -105,6 +105,9 @@ func TestGitLogJSONProjectsOnlySafeTwoSegmentRepositoryNames(t *testing.T) {
 		want   string
 	}{
 		{name: "credential-url", remote: "https://secret-user:secret-password@github.com/example/credential.git", want: "example/credential"},
+		{name: "github-scp", remote: "git@github.com:example/scp.git", want: "example/scp"},
+		{name: "gitlab-url", remote: "https://gitlab.com/example/project.git", want: ""},
+		{name: "gitlab-scp", remote: "git@gitlab.com:example/project.git", want: ""},
 		{name: "single-segment", remote: "single", want: ""},
 		{name: "missing-path", remote: "https://leaky-user:leaky-password@github.com", want: ""},
 		{name: "extra-segment", remote: "https://github.com/example/project/extra.git", want: ""},

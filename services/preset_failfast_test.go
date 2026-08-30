@@ -153,7 +153,7 @@ func TestAgentSessionsQualifiesProviderIDsByHarness(t *testing.T) {
 	}
 }
 
-func TestAgentSessionsProjectsCopilotRepositoryWithoutUserinfo(t *testing.T) {
+func TestAgentSessionsProjectsOnlyGitHubCopilotRepositoriesWithoutUserinfo(t *testing.T) {
 	home := t.TempDir()
 	database := filepath.Join(home, ".copilot", "session-store.db")
 	if err := os.MkdirAll(filepath.Dir(database), 0o700); err != nil {
@@ -171,6 +171,15 @@ INSERT INTO sessions VALUES ('single', NULL, 'single', NULL, 'single',
 INSERT INTO sessions VALUES ('malformed', NULL,
   'https://leaky-user:leaky-password@github.com', NULL, 'malformed',
   '2026-05-04T10:00:00Z', '2026-05-04T10:00:00Z');
+INSERT INTO sessions VALUES ('github-scp', NULL,
+  'git@github.com:example/scp.git', NULL, 'github-scp',
+  '2026-05-04T11:00:00Z', '2026-05-04T11:00:00Z');
+INSERT INTO sessions VALUES ('gitlab-url', NULL,
+  'https://gitlab-user:gitlab-password@gitlab.com/example/project.git', NULL, 'gitlab-url',
+  '2026-05-04T12:00:00Z', '2026-05-04T12:00:00Z');
+INSERT INTO sessions VALUES ('gitlab-scp', NULL,
+  'git@gitlab.com:example/project.git', NULL, 'gitlab-scp',
+  '2026-05-04T13:00:00Z', '2026-05-04T13:00:00Z');
 `)
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("create Copilot fixture: %v; output=%q", err, output)
@@ -185,7 +194,9 @@ INSERT INTO sessions VALUES ('malformed', NULL,
 	if err != nil {
 		t.Fatalf("agent-sessions.sh failed: %v; stderr=%q", err, stderr)
 	}
-	for _, forbidden := range []string{"secret-user", "secret-password", "leaky-user", "leaky-password"} {
+	for _, forbidden := range []string{
+		"secret-user", "secret-password", "leaky-user", "leaky-password", "gitlab-user", "gitlab-password",
+	} {
 		if strings.Contains(stdout, forbidden) {
 			t.Fatalf("agent-sessions.sh leaked Copilot repository userinfo %q to stdout: %s", forbidden, stdout)
 		}
@@ -198,9 +209,12 @@ INSERT INTO sessions VALUES ('malformed', NULL,
 		t.Fatalf("decode agent-sessions.sh output: %v; stdout=%q", err, stdout)
 	}
 	want := map[string]string{
-		"copilot:safe":      "example/project",
-		"copilot:single":    "",
-		"copilot:malformed": "",
+		"copilot:safe":       "example/project",
+		"copilot:single":     "",
+		"copilot:malformed":  "",
+		"copilot:github-scp": "example/scp",
+		"copilot:gitlab-url": "",
+		"copilot:gitlab-scp": "",
 	}
 	if len(records) != len(want) {
 		t.Fatalf("agent-sessions.sh records = %+v, want one per Copilot fixture", records)
@@ -239,6 +253,9 @@ esac
 		want   string
 	}{
 		{name: "credential-url", remote: "https://secret-user:secret-password@github.com/example/project.git", want: "example/project main"},
+		{name: "github-scp", remote: "git@github.com:example/project.git", want: "example/project main"},
+		{name: "gitlab-url", remote: "https://gitlab.com/example/project.git", want: "main"},
+		{name: "gitlab-scp", remote: "git@gitlab.com:example/project.git", want: "main"},
 		{name: "single-segment", remote: "single", want: "main"},
 		{name: "malformed", remote: "https://leaky-user:leaky-password@github.com", want: "main"},
 	}

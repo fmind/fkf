@@ -45,7 +45,8 @@ sources:
     # window: true — one sqlite3 process for a year of history costs about what one costs for a
     # day; {{start}}/{{end}} are timestamps sqlite3's own strftime already accepts.
     window: true
-    # The helper disables ~/.sqliterc and makes SQLite and jq separate fail-fast stages.
+    # The helper disables ~/.sqliterc, opens SQLite read-only, excludes deleted rows, and makes
+    # SQLite and jq separate fail-fast stages.
     run: [atuin-history-json.sh, "{{start}}", "{{end}}", "{{home}}/.local/share/atuin/history.db"]
     fields:
       id: .id
@@ -61,10 +62,14 @@ sources:
     # Add a block to bin/agent-sessions.sh for another harness.
     enabled: true
     layer: events
-    requires: [agent-sessions.sh, find, jq, sqlite3, touch]
+    requires: [agent-sessions.sh, find, git, jq, sqlite3, touch]
     # Deliberately not windowed: one exact-day run proves a timestamped turn/message belongs to
     # that day. A multi-day session envelope cannot honestly be bucketed into its idle days.
-    run: [agent-sessions.sh, "{{start}}", "{{end}}"] # script written into bin/ by init; POSIX find, touch, and jq
+    run: [
+      agent-sessions.sh,
+      "{{start}}",
+      "{{end}}",
+    ] # script written into bin/ by init; POSIX find/touch plus git, jq, sqlite3
     fields:
       id: .id
       time: .time

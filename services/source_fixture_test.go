@@ -44,7 +44,7 @@ func TestAgentSessionsCollectorRunsOneExactDayAtATime(t *testing.T) {
 	if !slices.Equal(source.Run, []string{"agent-sessions.sh", "{{start}}", "{{end}}"}) {
 		t.Fatalf("agent-sessions run = %q, want exact RFC3339 day bounds", source.Run)
 	}
-	for _, requirement := range []string{"agent-sessions.sh", "find", "jq", "sqlite3", "touch"} {
+	for _, requirement := range []string{"agent-sessions.sh", "find", "git", "jq", "sqlite3", "touch"} {
 		if !slices.Contains(source.Requires, requirement) {
 			t.Errorf("agent-sessions requirements = %v, want %q for truthful readiness", source.Requires, requirement)
 		}

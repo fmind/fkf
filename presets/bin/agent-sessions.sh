@@ -14,8 +14,9 @@
 # at, and the harness's own title line when it keeps one. No prompt or response text is ever read
 # out, and subagent threads are skipped because they belong to a session already listed.
 #
-# Needs POSIX find, touch, jq, and sqlite3 for the two SQLite-backed harnesses. After init writes
-# it, it is yours: add a block for another harness, or delete the ones you do not use.
+# Needs POSIX find and touch, plus git, jq, and sqlite3 for the two SQLite-backed harnesses.
+# After init writes it, it is yours: add a block for another harness, or delete the ones you do
+# not use.
 set -eu
 
 start=${1:?usage: agent-sessions.sh <start> <end>}
@@ -80,8 +81,9 @@ origin_of() {
   [ -n "$1" ] && [ -d "$1" ] && git -C "$1" config --get remote.origin.url 2>/dev/null || true
 }
 
-# repo_name accepts only an exact owner/name from a plain identifier, a URL path, or an
-# SCP-style remote. Authority userinfo and malformed paths never cross the metadata boundary.
+# repo_name accepts only an exact GitHub owner/name from a plain identifier, a github.com URL,
+# or a github.com SCP-style remote. Authority userinfo, other hosts, and malformed paths never
+# cross the metadata boundary.
 repo_name() {
   candidate=$1
   case "$candidate" in
@@ -91,10 +93,15 @@ repo_name() {
       authority_and_path=${candidate#*://}
       authority=${authority_and_path%%/*}
       case "$authority_and_path" in */*) [ -n "$authority" ] || return 0; path=${authority_and_path#*/} ;; *) return 0 ;; esac
+      host=${authority##*@}
+      host=${host%%:*}
+      case "$host" in [Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]) ;; *) return 0 ;; esac
       ;;
     *:*/*)
       scp_host=${candidate%%:*}
       case "$scp_host" in "" | */*) return 0 ;; esac
+      host=${scp_host##*@}
+      case "$host" in [Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]) ;; *) return 0 ;; esac
       path=${candidate#*:}
       ;;
     *) path=$candidate ;;

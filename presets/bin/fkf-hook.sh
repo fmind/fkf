@@ -76,8 +76,9 @@ esac
 dir=$(field '.cwd // .workspace_roots[0] // .workspacePaths[0] // .workspaceRoots[0] // .workspaceInfo.rootPath')
 [ -n "$dir" ] || dir=${CLAUDE_PROJECT_DIR:-${GEMINI_PROJECT_DIR:-${DEVIN_PROJECT_DIR:-$PWD}}}
 
-# repo_name accepts only an exact owner/name from a plain identifier, a URL path, or an
-# SCP-style remote. Authority userinfo and malformed paths never reach an agent's context query.
+# repo_name accepts only an exact GitHub owner/name from a plain identifier, a github.com URL,
+# or a github.com SCP-style remote. Authority userinfo, other hosts, and malformed paths never
+# reach an agent's context query.
 repo_name() {
   candidate=$1
   case "$candidate" in
@@ -87,10 +88,15 @@ repo_name() {
       authority_and_path=${candidate#*://}
       authority=${authority_and_path%%/*}
       case "$authority_and_path" in */*) [ -n "$authority" ] || return 0; path=${authority_and_path#*/} ;; *) return 0 ;; esac
+      host=${authority##*@}
+      host=${host%%:*}
+      case "$host" in [Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]) ;; *) return 0 ;; esac
       ;;
     *:*/*)
       scp_host=${candidate%%:*}
       case "$scp_host" in "" | */*) return 0 ;; esac
+      host=${scp_host##*@}
+      case "$host" in [Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]) ;; *) return 0 ;; esac
       path=${candidate#*:}
       ;;
     *) path=$candidate ;;
