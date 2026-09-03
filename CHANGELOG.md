@@ -2,6 +2,12 @@
 
 All notable changes to `fkf` are documented here. This project follows [Semantic Versioning](https://semver.org/) from its first public release.
 
+## [v3.0.2](https://github.com/fmind/fkf/releases/tag/v3.0.2) - 2026-09-03
+
+### Fixed
+
+- Keep the cross-process writer-lock test helper alive without triggering Go's deadlock detector, removing a timing-dependent macOS CI failure without changing runtime behavior.
+
 ## [v3.0.1](https://github.com/fmind/fkf/releases/tag/v3.0.1) - 2026-09-03
 
 ### Fixed
