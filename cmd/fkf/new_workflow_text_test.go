@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -68,14 +69,14 @@ func TestHarnessCLIPrintsPlansChangesBackupsAndCurrentState(t *testing.T) {
 
 func TestScheduleCLITextDistinguishesMissingDryRunCurrentAndDrift(t *testing.T) {
 	root := demoBase(t)
-	installFakeSystemctl(t)
+	installFakeScheduleManager(t)
 
 	missing := invoke(t, "--format", "text", "--base", root, "schedule", "status")
 	if missing.code != ExitSuccess || !strings.Contains(missing.stdout, ": missing\n") {
 		t.Fatalf("missing schedule = exit %d stdout %q stderr %q", missing.code, missing.stdout, missing.stderr)
 	}
 	dryRun := invoke(t, "--format", "text", "--base", root, "schedule", "install", "--dry-run")
-	if dryRun.code != ExitSuccess || !strings.Contains(dryRun.stdout, "schedule dry-run linux") ||
+	if dryRun.code != ExitSuccess || !strings.Contains(dryRun.stdout, "schedule dry-run "+runtime.GOOS) ||
 		!strings.Contains(dryRun.stdout, "missing:") {
 		t.Fatalf("schedule dry-run = exit %d stdout %q stderr %q", dryRun.code, dryRun.stdout, dryRun.stderr)
 	}
@@ -88,13 +89,13 @@ func TestScheduleCLITextDistinguishesMissingDryRunCurrentAndDrift(t *testing.T) 
 		t.Fatalf("current schedule = exit %d stdout %q stderr %q", current.code, current.stdout, current.stderr)
 	}
 
-	unitDirectory := filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user")
+	unitDirectory := scheduleTestDirectory()
 	entries, err := os.ReadDir(unitDirectory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("schedule installed %d files, want service and timer", len(entries))
+	if len(entries) != scheduleTestFileCount() {
+		t.Fatalf("schedule installed %d files, want %d on %s", len(entries), scheduleTestFileCount(), runtime.GOOS)
 	}
 	if err := os.WriteFile(filepath.Join(unitDirectory, entries[0].Name()), []byte("drifted\n"), core.BaseFileMode); err != nil {
 		t.Fatal(err)

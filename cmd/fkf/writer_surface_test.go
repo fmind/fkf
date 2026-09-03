@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -58,7 +59,7 @@ func TestCLIHarnessMutationsTakeTheBaseWriterLockButChecksDoNot(t *testing.T) {
 
 func TestCLIScheduleInstallTakesTheBaseWriterLockButStatusAndDryRunDoNot(t *testing.T) {
 	root := demoBase(t)
-	installFakeSystemctl(t)
+	installFakeScheduleManager(t)
 	lock, err := core.AcquireWriterLock(t.Context(), root)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +75,7 @@ func TestCLIScheduleInstallTakesTheBaseWriterLockButStatusAndDryRunDoNot(t *test
 		}
 	}
 	assertCLIWriterBusy(t, invoke(t, "--base", root, "schedule", "install"))
-	directory := filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user")
+	directory := scheduleTestDirectory()
 	if _, err := os.Stat(directory); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("busy schedule install changed user config: %v", err)
 	}
@@ -84,21 +85,21 @@ func TestCLIScheduleInstallTakesTheBaseWriterLockButStatusAndDryRunDoNot(t *test
 	if got := invoke(t, "--base", root, "schedule", "install"); got.code != ExitSuccess {
 		t.Fatalf("unlocked schedule install = exit %d, stdout %q, stderr %q", got.code, got.stdout, got.stderr)
 	}
-	if entries, err := os.ReadDir(directory); err != nil || len(entries) != 2 {
-		t.Fatalf("unlocked schedule install files = %v, err %v; want service and timer", entries, err)
+	if entries, err := os.ReadDir(directory); err != nil || len(entries) != scheduleTestFileCount() {
+		t.Fatalf("unlocked schedule install files = %v, err %v; want %d on %s", entries, err, scheduleTestFileCount(), runtime.GOOS)
 	}
 }
 
 func TestCLIScheduleRemoveTakesTheBaseWriterLockButStatusAndDryRunDoNot(t *testing.T) {
 	root := demoBase(t)
-	installFakeSystemctl(t)
+	installFakeScheduleManager(t)
 	if got := invoke(t, "--base", root, "schedule", "install"); got.code != ExitSuccess {
 		t.Fatalf("schedule fixture install = exit %d, stdout %q, stderr %q", got.code, got.stdout, got.stderr)
 	}
-	directory := filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user")
+	directory := scheduleTestDirectory()
 	before, err := os.ReadDir(directory)
-	if err != nil || len(before) != 2 {
-		t.Fatalf("schedule fixture files = %v, err %v; want service and timer", before, err)
+	if err != nil || len(before) != scheduleTestFileCount() {
+		t.Fatalf("schedule fixture files = %v, err %v; want %d on %s", before, err, scheduleTestFileCount(), runtime.GOOS)
 	}
 
 	lock, err := core.AcquireWriterLock(t.Context(), root)
@@ -137,10 +138,11 @@ func assertCLIWriterBusy(t *testing.T, got result) {
 	}
 }
 
-func installFakeSystemctl(t *testing.T) {
+func installFakeScheduleManager(t *testing.T) {
 	t.Helper()
 	directory := t.TempDir()
-	const script = `#!/bin/sh
+	name := "systemctl"
+	script := `#!/bin/sh
 state=$HOME/.fkf-test-systemctl-active
 case " $* " in
   *" enable --now "*) : >"$state" ;;
@@ -149,8 +151,34 @@ case " $* " in
 esac
 exit 0
 `
-	if err := os.WriteFile(filepath.Join(directory, "systemctl"), []byte(script), 0o700); err != nil {
+	if runtime.GOOS == "darwin" {
+		name = "launchctl"
+		script = `#!/bin/sh
+state=$HOME/.fkf-test-launchctl-active
+case " $* " in
+  *" bootstrap "*) : >"$state" ;;
+  *" bootout "*) rm -f "$state" ;;
+  *" print "*) test -f "$state" || exit 1 ;;
+esac
+exit 0
+`
+	}
+	if err := os.WriteFile(filepath.Join(directory, name), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", directory)
+}
+
+func scheduleTestDirectory() string {
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(os.Getenv("HOME"), "Library", "LaunchAgents")
+	}
+	return filepath.Join(os.Getenv("HOME"), ".config", "systemd", "user")
+}
+
+func scheduleTestFileCount() int {
+	if runtime.GOOS == "darwin" {
+		return 1
+	}
+	return 2
 }
