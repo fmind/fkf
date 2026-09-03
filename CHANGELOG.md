@@ -2,6 +2,27 @@
 
 All notable changes to `fkf` are documented here. This project follows [Semantic Versioning](https://semver.org/) from its first public release.
 
+## [v3.0.0](https://github.com/fmind/fkf/releases/tag/v3.0.0) - 2026-09-03
+
+### Highlights
+
+- Add deterministic `brief`, `day`, `timeline`, `who`, and `eval` workflows, temporal query grammar, declared identity aliases, and compact text and structured retrieval receipts.
+- Add digest-bound lexical and constant-time graph caches while keeping durable evidence authoritative, offline reads reproducible, and indexed and fallback retrieval semantically identical.
+- Add login-aware opportunistic sync, hourly systemd and launchd scheduling, and idempotent harness integration for Claude Code, Codex, Gemini CLI, Copilot CLI, Antigravity, OpenCode, Grok, Cursor, Kiro, and Cline.
+- Add bounded, ignored, manifest-verified body caching with per-source `none`, `cache`, and `sync` policies; first-class meeting-note and local agent-memory sources can prefetch searchable text without copying it into durable evidence.
+- Expand and harden the reviewed personal presets, session traces, staged learning workflow, MCP surface, provider pagination, process isolation, trust revalidation, and graph generation consistency.
+
+### Breaking changes
+
+- Every collected record must now project one meaningful, control-free `title`; update custom source schemas and field mappings before the next sync.
+- Structured `find` and `context` results omit raw provider records and internal day selections by default; pass `--raw` only when those diagnostic fields are required.
+
+### Upgrade notes
+
+- Existing evidence remains valid and requires no re-collection. Run `fkf build all --base <base>` to create the new derived graph and lexical caches.
+- Refresh FKF-owned helpers and harness integrations, review the resulting execution plan, and renew trust before running changed collectors: `fkf config helpers --refresh`, `fkf harness install --all`, then `fkf trust --all`.
+- Body caching stays opt-in per source. The default `bodies: none` fetches only on an explicit `read --body`; `cache` retains an explicitly fetched body and `sync` prefetches it after evidence is written.
+
 ## [v2.1.0](https://github.com/fmind/fkf/releases/tag/v2.1.0) - 2026-08-30
 
 ### Highlights
