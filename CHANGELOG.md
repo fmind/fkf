@@ -2,6 +2,12 @@
 
 All notable changes to `fkf` are documented here. This project follows [Semantic Versioning](https://semver.org/) from its first public release.
 
+## [v3.0.1](https://github.com/fmind/fkf/releases/tag/v3.0.1) - 2026-09-03
+
+### Fixed
+
+- Make schedule CLI tests select the native fake scheduler and managed-file layout, restoring the hermetic CI contract on macOS without changing runtime behavior.
+
 ## [v3.0.0](https://github.com/fmind/fkf/releases/tag/v3.0.0) - 2026-09-03
 
 ### Highlights

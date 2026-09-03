@@ -22,7 +22,7 @@ For cryptographic release-provenance verification, authenticate the GitHub CLI a
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/fmind/fkf/main/install.sh | FKF_VERIFY_ATTESTATION=1 sh
 ```
 
-Set `FKF_INSTALL_DIR` to an absolute directory to change the destination, or `FKF_VERSION=v3.0.0` to pin a release. You can also download an archive and `checksums.txt` directly from the [latest release](https://github.com/fmind/fkf/releases/latest). Each archive contains the binary, project license, README, and checked-in notices for the linked Go runtime and dependencies.
+Set `FKF_INSTALL_DIR` to an absolute directory to change the destination, or `FKF_VERSION=v3.0.1` to pin a release. You can also download an archive and `checksums.txt` directly from the [latest release](https://github.com/fmind/fkf/releases/latest). Each archive contains the binary, project license, README, and checked-in notices for the linked Go runtime and dependencies.
 
 The module intentionally remains `github.com/fmind/fkf`. Go's major-version import rules therefore keep `go install github.com/fmind/fkf/cmd/fkf@latest` on the v1 line; use a release archive for v2 and later. Source builds remain available from a tagged checkout.
 
