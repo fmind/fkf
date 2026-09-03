@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const writerLockHelperEnv = "FKF_WRITER_LOCK_HELPER"
@@ -42,7 +43,11 @@ func TestWriterLockExcludesAnotherProcessAndReleasesOnExit(t *testing.T) {
 		}
 		defer func() { _ = lock.Close() }()
 		fmt.Println("locked")
-		select {}
+		// A bare select can make the standalone helper look deadlocked and let the runtime
+		// exit before the parent probes the lock, especially on slower hosted runners.
+		for {
+			time.Sleep(time.Hour)
+		}
 	}
 
 	// Set the parent before copying its environment so the child receives exactly one
