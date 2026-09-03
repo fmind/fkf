@@ -48,3 +48,24 @@ func TestBuildTargetSpecific(t *testing.T) {
 		t.Fatalf("wikiOnly = %+v, want only Wiki", wikiOnly)
 	}
 }
+
+func TestBuildBodiesPrunesTheRebuildableCache(t *testing.T) {
+	base := graphBase(t)
+	directory := filepath.Join(base.Root(), services.BodiesDirectory)
+	if err := os.MkdirAll(directory, core.BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "manifest.json"), []byte("{\n  \"schema_version\": 1,\n  \"entries\": {}\n}\n"), core.BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	report, err := services.Build(t.Context(), base, "bodies", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Bodies == nil || report.Graph != nil || report.Wiki != nil {
+		t.Fatalf("report = %+v, want only the bodies maintenance report", report)
+	}
+	if _, err := os.Stat(directory); !os.IsNotExist(err) {
+		t.Fatalf("body cache after prune: %v, want absent", err)
+	}
+}

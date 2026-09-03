@@ -12,7 +12,7 @@ It is four things and nothing else:
 1. **A folder convention.** A base is one git repository holding five typed layers. Anyone can read it with `ls`, `jq`, and `rg`; in twenty years a one-off script still can.
 1. **A command runner.** A source is direct argv declared in the base's own `fkf.yaml`. The CLI that runs it owns the credential; `fkf` never reads a token.
 1. **An open graph over URIs.** Every record and page has a relative URI; a base may declare any non-reserved lowercase entity scheme and shared relation field. The root-level `graph.tsv` transcribes those declarations and authored links.
-1. **A bounded reader.** `context`, `find`, `read`, and `graph` answer across the base; `list`, `validate`, and `tags` inspect its layers. A context pack fits a token budget and carries a receipt saying what was selected and why.
+1. **A bounded reader.** `context`, `find`, `day`, `timeline`, `read`, and `graph` answer across the base; `list`, `validate`, and `tags` inspect its layers. A context pack fits a token budget and carries a receipt saying what was selected and why.
 
 ## Where to start
 

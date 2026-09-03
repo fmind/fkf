@@ -83,6 +83,52 @@ func TestContextIsByteIdentical(t *testing.T) {
 	}
 }
 
+func TestContextResolvesRawRelativeWindowFromItsEvaluationInstant(t *testing.T) {
+	base := contextBase(t)
+	clockReads := 0
+	base.Now = func() time.Time {
+		clockReads++
+		return testClock.AddDate(0, 0, clockReads-1)
+	}
+	pack, err := services.BuildContext(t.Context(), base, services.ContextRequest{
+		Query: "retrieval", Window: services.Window{Since: "today", Until: "today"}, Budget: 2048,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clockReads != 1 || pack.Receipt.AsOf != "2026-05-10" ||
+		pack.Receipt.Window.Since != pack.Receipt.AsOf || pack.Receipt.Window.Until != pack.Receipt.AsOf {
+		t.Fatalf("clock reads = %d, receipt = %+v; want one shared evaluation instant", clockReads, pack.Receipt)
+	}
+}
+
+func TestContextReceiptBindsTheRequestedDeliveryFormat(t *testing.T) {
+	base := contextBase(t)
+	jsonPack, err := services.BuildContext(t.Context(), base, services.ContextRequest{
+		Query: "retrieval boundary", Budget: 2048,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	textPack, err := services.BuildContext(t.Context(), base, services.ContextRequest{
+		Query: "retrieval boundary", Budget: 2048, DeliveryFormat: services.ContextDeliveryText,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if jsonPack.Receipt.Format != services.ContextDeliveryJSON ||
+		textPack.Receipt.Format != services.ContextDeliveryText ||
+		jsonPack.Receipt.InputDigest == textPack.Receipt.InputDigest {
+		t.Fatalf("json receipt = %+v, text receipt = %+v; want format-bound digests",
+			jsonPack.Receipt, textPack.Receipt)
+	}
+	actualTextTokens := (len(services.RenderContextText(textPack)) + 3) / 4
+	if textPack.Receipt.EncodedTokens != actualTextTokens || actualTextTokens > textPack.Receipt.Budget {
+		t.Fatalf("service text encoded_tokens = %d, delivered = %d, budget = %d",
+			textPack.Receipt.EncodedTokens, actualTextTokens, textPack.Receipt.Budget)
+	}
+}
+
 func TestContextDigestCoversSemanticInputsAndEvaluationDay(t *testing.T) {
 	base := contextBase(t)
 	request := services.ContextRequest{Query: "retrieval boundary", Budget: 2048, Explain: true}
@@ -95,7 +141,7 @@ func TestContextDigestCoversSemanticInputsAndEvaluationDay(t *testing.T) {
 	}
 
 	pageURI := "wiki/retrieval-boundary.md"
-	before, err := base.ReadFile(pageURI, core.MaxNarrativeBytes)
+	before, err := base.ReadFileContext(t.Context(), pageURI, core.MaxNarrativeBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,6 +458,28 @@ This body contains unrelated evidence.
 	}
 }
 
+func TestContextFiltersAuthoredPagesByInclusiveValidity(t *testing.T) {
+	base := contextBase(t)
+	for name, bounds := range map[string]string{
+		"current": "valid_from: 2026-05-10\nvalid_until: 2026-05-10\n",
+		"future":  "valid_from: 2026-05-11\n",
+		"expired": "valid_until: 2026-05-09\n",
+	} {
+		write(t, base, "wiki/"+name+"-validity.md", "---\ntype: insight\ntitle: "+name+" validity\n"+
+			bounds+"tags: [test]\n---\n\n# "+name+" validity\n\nValidityneedle evidence.\n")
+	}
+	pack, err := services.BuildContext(t.Context(), base, services.ContextRequest{Query: "validityneedle", Budget: 4096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemByURI(t, pack, "wiki/current-validity.md")
+	for _, excluded := range []string{"wiki/future-validity.md", "wiki/expired-validity.md"} {
+		if slices.ContainsFunc(pack.Items, func(item services.ContextItem) bool { return item.URI == excluded }) {
+			t.Fatalf("invalid authored page %s entered the as-of pack", excluded)
+		}
+	}
+}
+
 // TestContextExpandRescoresThroughTheGraph pins down what one hop actually does. Almost
 // everything it reaches is already a candidate — the window gathered it — so the hop mostly
 // RESCORES: an item sharing any declared entity with a top hit gains a fixed
@@ -513,7 +581,7 @@ func TestContextExpandRefusesAPartialGraphJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	metadata, err := services.NewEdgeListMeta(
-		edges, base.Now(), currentMeta.SHA256.Inputs,
+		edges, base.Now(), currentMeta.SHA256.Inputs, currentMeta.Inputs...,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -559,7 +627,7 @@ func TestContextExpansionPropagatesAStaleGraphTarget(t *testing.T) {
 		},
 	}
 	metadata, err := services.NewEdgeListMeta(
-		edges, base.Now(), currentMeta.SHA256.Inputs,
+		edges, base.Now(), currentMeta.SHA256.Inputs, currentMeta.Inputs...,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -638,10 +706,9 @@ func TestContextExplainOmitsReasonsWhenNotAsked(t *testing.T) {
 	}
 }
 
-// TestRetrievalSmokeTest is the twelve-query recall check over a deterministic base. It is
-// coarse on purpose: it does not tune ranking, it catches the day ranking stops finding the
-// obvious thing.
-func TestRetrievalSmokeTest(t *testing.T) {
+// TestRetrievalEvaluationSuite exercises the strict base-owned recall@k contract rather than
+// maintaining a second ad hoc retrieval loop beside `fkf eval`.
+func TestRetrievalEvaluationSuite(t *testing.T) {
 	base := newBase(t, baseConfig, nil)
 	// Twelve topics, one record each, plus two pages — enough for rarity to matter.
 	for index, topic := range []string{
@@ -678,29 +745,22 @@ func TestRetrievalSmokeTest(t *testing.T) {
 		{"index staleness", "events/2026-04-11/synthetic.json#r10"},
 		{"quiet source watchdog", "events/2026-04-12/synthetic.json#r11"},
 	}
-	for _, expand := range []bool{false, true} {
-		hits := 0
-		for _, test := range queries {
-			pack, err := services.BuildContext(t.Context(), base, services.ContextRequest{
-				Query: test.query, Budget: 4096, Expand: expand,
-			})
-			if err != nil {
-				t.Fatalf("%q: %v", test.query, err)
-			}
-			for index, item := range pack.Items {
-				if index >= 10 {
-					break
-				}
-				if item.URI == test.wantURI {
-					hits++
-					break
-				}
-			}
-		}
-		if hits < len(queries) {
-			t.Fatalf("Recall@10 with expand=%v is %d/%d; every query names its own record verbatim",
-				expand, hits, len(queries))
-		}
+	var suite strings.Builder
+	suite.WriteString("fkf: 1\nk: 10\nrecall_threshold: 1\nqueries:\n")
+	for index, test := range queries {
+		fmt.Fprintf(&suite, "  - name: query-%02d\n", index+1)
+		fmt.Fprintf(&suite, "    question: %q\n", test.query)
+		suite.WriteString("    window: {since: 2026-04-01, until: 2026-05-10}\n")
+		fmt.Fprintf(&suite, "    expected_uris: [%q]\n", test.wantURI)
+		suite.WriteString("    forbidden_uris: []\n")
+	}
+	writeEvalSuite(t, base, suite.String())
+	report, err := services.Evaluate(t.Context(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Passed || report.PassedQueries != len(queries) || report.Failed != 0 {
+		t.Fatalf("evaluation report = %+v, want %d/%d queries at recall@10", report, len(queries), len(queries))
 	}
 }
 
@@ -733,8 +793,8 @@ func TestContextMatchesCanonicalRecordAndPageIdentities(t *testing.T) {
 
 func TestContextTokenizesUnicodeLettersAndNumbers(t *testing.T) {
 	base := newBase(t, baseConfig, nil)
-	collect(t, base, "2026-05-04", `[{"id":"u1","t":"2026-05-04T09:00:00Z","subject":"Discuss éà and 東京"}]`)
-	for _, query := range []string{"éà", "東京"} {
+	collect(t, base, "2026-05-04", `[{"id":"u1","t":"2026-05-04T09:00:00Z","subject":"Discuss éàç and 東京駅"}]`)
+	for _, query := range []string{"éàç", "東京駅"} {
 		t.Run(query, func(t *testing.T) {
 			pack, err := services.BuildContext(t.Context(), base, services.ContextRequest{
 				Query: query, Budget: 4096,
@@ -887,10 +947,11 @@ func hasReason(item *services.ContextItem, name string) (services.Reason, bool) 
 // how old they are — and the fresher one must win, with the receipt saying why.
 func TestContextRecencyPrefersAFreshMatchOverAnOldOneAtEqualRelevance(t *testing.T) {
 	base := newBase(t, baseConfig, &fakeRunner{})
-	// testClock is 2026-05-10. old1 is 35 days old — past the 30-day recency horizon, so it
-	// earns no bonus at all. fresh1 is 1 day old.
-	collect(t, base, "2026-04-05", `[{"id":"old1","t":"2026-04-05T09:00:00Z","subject":"unique term xyzzyplugh combo"}]`)
-	collect(t, base, "2026-05-09", `[{"id":"fresh1","t":"2026-05-09T09:00:00Z","subject":"unique term xyzzyplugh combo"}]`)
+	base.Config.Sources["synthetic"].Recency.HalfLifeDays = 7
+	// Distinct titles keep v6's identical-run collapse from hiding the source-local recency
+	// comparison. testClock is 2026-05-10: old1 is 35 days old and fresh1 is 1 day old.
+	collect(t, base, "2026-04-05", `[{"id":"old1","t":"2026-04-05T09:00:00Z","subject":"old evidence xyzzyplugh combo"}]`)
+	collect(t, base, "2026-05-09", `[{"id":"fresh1","t":"2026-05-09T09:00:00Z","subject":"new evidence xyzzyplugh combo"}]`)
 	// Two terms, matched verbatim as a phrase, so both records clear the floor well before
 	// recency is even considered — the test isolates recency as the ONLY remaining difference.
 	pack, err := services.BuildContext(t.Context(), base, services.ContextRequest{
@@ -913,13 +974,15 @@ func TestContextRecencyPrefersAFreshMatchOverAnOldOneAtEqualRelevance(t *testing
 	if !ok {
 		t.Fatalf("fresh.Reasons = %+v, want a recency reason on a 1-day-old record", fresh.Reasons)
 	}
-	// 15 * (30 - 1) / 30, truncated: the arithmetic is meant to be hand-checkable, so the test
-	// checks the exact value rather than just its sign.
+	// round(15 * 0.5^(1/7)): the source declares the exponential half-life explicitly.
 	if reason.Points != 14 {
 		t.Fatalf("recency points = %d, want 14 for a 1-day-old item", reason.Points)
 	}
 	if _, ok := hasReason(old, "recency"); ok {
-		t.Fatalf("old.Reasons = %+v, want no recency reason past the 30-day horizon", old.Reasons)
+		t.Fatalf("old.Reasons = %+v, want its rounded five-half-life bonus to be zero", old.Reasons)
+	}
+	if pack.Receipt.RecencyModel["synthetic"] != 7 {
+		t.Fatalf("recency_model = %+v, want the source-local seven-day half-life", pack.Receipt.RecencyModel)
 	}
 }
 
@@ -929,6 +992,7 @@ func TestContextRecencyPrefersAFreshMatchOverAnOldOneAtEqualRelevance(t *testing
 // the floor on freshness alone.
 func TestContextRecencyNeverLetsAnUnrelatedFreshRecordClearTheFloor(t *testing.T) {
 	base := newBase(t, baseConfig, &fakeRunner{})
+	base.Config.Sources["synthetic"].Recency.HalfLifeDays = 7
 	collect(t, base, "2026-05-09", `[{"id":"noise1","t":"2026-05-09T09:00:00Z","subject":"Completely unrelated chore"}]`)
 	collect(t, base, "2026-05-04", `[{"id":"match1","t":"2026-05-04T09:00:00Z","subject":"Fix retrieval boundary FK-412"}]`)
 	pack, err := services.BuildContext(t.Context(), base, services.ContextRequest{Query: "retrieval boundary", Budget: 4096})
@@ -975,8 +1039,15 @@ func TestContextRecencyDoesNotApplyToADatelessPage(t *testing.T) {
 // that only shares a common word.
 func TestContextRecencyNeverOutweighsAStrongIdentifierMatch(t *testing.T) {
 	base := newBase(t, baseConfig, &fakeRunner{})
-	collect(t, base, "2026-04-01", `[{"id":"old1","t":"2026-04-01T09:00:00Z","subject":"Fix retrieval boundary (FK-412)","ticket_uri":"ticket:FK-412"}]`)
-	collect(t, base, "2026-05-09", `[{"id":"fresh1","t":"2026-05-09T09:00:00Z","subject":"boundary chatter, nothing about the ticket"}]`)
+	base.Config.Sources["synthetic"].Recency.HalfLifeDays = 7
+	collect(t, base, "2026-04-01", `[
+	  {"id":"old1","t":"2026-04-01T09:00:00Z","subject":"Fix retrieval boundary (FK-412)","ticket_uri":"ticket:FK-412"},
+	  {"id":"noise-old","t":"2026-04-01T10:00:00Z","subject":"Unrelated archival note"}
+	]`)
+	collect(t, base, "2026-05-09", `[
+	  {"id":"fresh1","t":"2026-05-09T09:00:00Z","subject":"boundary chatter, nothing about the ticket"},
+	  {"id":"noise-new","t":"2026-05-09T10:00:00Z","subject":"Unrelated fresh note"}
+	]`)
 	pack, err := services.BuildContext(t.Context(), base, services.ContextRequest{Query: "FK-412 boundary", Budget: 4096, Explain: true})
 	if err != nil {
 		t.Fatalf("BuildContext() error = %v", err)
@@ -1003,6 +1074,7 @@ func TestContextRecencyNeverOutweighsAStrongIdentifierMatch(t *testing.T) {
 // touch this test — and, by the same PR, the docs table — before it can ship.
 var contextReasonVocabulary = []string{
 	"exact-identifier", "exact-phrase", "term", "join-expansion", "superseded", "recency",
+	"created-evidence", "navigation-page", "pinned",
 }
 
 // TestContextNeverProducesAnUndocumentedReasonKind is a hermetic fixture gate for a ranking
@@ -1043,11 +1115,17 @@ func TestContextNeverProducesAnUndocumentedReasonKind(t *testing.T) {
 // "whenever the arithmetic below changes", and nothing before this test enforced that promise.
 func TestContextScoringArithmeticIsPinnedByAGoldenFixture(t *testing.T) {
 	base := newBase(t, baseConfig, &fakeRunner{})
-	// Two records, identical text, six weeks apart. old1 sits past the 30-day recency horizon,
-	// so its score is the rarity/identifier baseline with zero contribution from freshness —
-	// which is what lets fresh1's score isolate the recency bonus below.
-	collect(t, base, "2026-04-05", `[{"id":"old1","t":"2026-04-05T09:00:00Z","subject":"boundary FK-412","ticket_uri":"ticket:FK-412"}]`)
-	collect(t, base, "2026-05-09", `[{"id":"fresh1","t":"2026-05-09T09:00:00Z","subject":"boundary FK-412","ticket_uri":"ticket:FK-412"}]`)
+	base.Config.Sources["synthetic"].Recency.HalfLifeDays = 7
+	// Distinct titles avoid v6's identical-run collapse while keeping equal field lengths and
+	// relevance. old1's five half-lives round to zero; fresh1 earns 14 points.
+	collect(t, base, "2026-04-05", `[
+	  {"id":"old1","t":"2026-04-05T09:00:00Z","subject":"old boundary FK-412","ticket_uri":"ticket:FK-412"},
+	  {"id":"noise-old","t":"2026-04-05T10:00:00Z","subject":"Unrelated archival note"}
+	]`)
+	collect(t, base, "2026-05-09", `[
+	  {"id":"fresh1","t":"2026-05-09T09:00:00Z","subject":"new boundary FK-412","ticket_uri":"ticket:FK-412"},
+	  {"id":"noise-new","t":"2026-05-09T10:00:00Z","subject":"Unrelated fresh note"}
+	]`)
 	pack, err := services.BuildContext(t.Context(), base, services.ContextRequest{
 		Query: "FK-412 boundary", Budget: 4096, Explain: true,
 		Window: services.Window{Since: "2026-04-01", Until: "2026-05-10"},
@@ -1057,17 +1135,14 @@ func TestContextScoringArithmeticIsPinnedByAGoldenFixture(t *testing.T) {
 	}
 	old := itemByURI(t, pack, "old1")
 	fresh := itemByURI(t, pack, "fresh1")
-	// +100 exact-identifier (fk-412) + 5*1 term (boundary, rarity 1x: both of the 2 candidates
-	// carry it) = 105. The word order ("boundary FK-412" against a query of "FK-412 boundary")
-	// is deliberate: the two-word query never appears verbatim in the haystack, so exact-phrase
-	// does not also fire here and the total isolates exactly the two reasons named above.
-	if old.Score != 105 {
-		t.Fatalf("old.Score = %d, want 105 (100 exact-identifier + 5 term at rarity 1x)", old.Score)
+	// +100 exact identifier +50 weighted, length-normalized title term at rarity 2x.
+	if old.Score != 150 {
+		t.Fatalf("old.Score = %d, want 150 (100 exact identifier + 50 weighted term)", old.Score)
 	}
 	// old1's total plus the 1-day-old recency bonus computed in the docstring above and
 	// verified exactly in TestContextRecencyPrefersAFreshMatchOverAnOldOneAtEqualRelevance.
-	if fresh.Score != 119 {
-		t.Fatalf("fresh.Score = %d, want 119 (105, the same as old1, + 14 recency)", fresh.Score)
+	if fresh.Score != 164 {
+		t.Fatalf("fresh.Score = %d, want 164 (150 baseline + 14 recency)", fresh.Score)
 	}
 }
 
@@ -1084,11 +1159,9 @@ func TestContextPhraseScoringIsPinnedByAGoldenFixture(t *testing.T) {
 		t.Fatalf("BuildContext() error = %v", err)
 	}
 	page := itemByURI(t, pack, "wiki/retrieval-boundary.md")
-	// +5*1 term "retrieval" + 5*1 term "boundary" + 50 exact-phrase "retrieval boundary" — the
-	// query's own two terms, verbatim, in a page with no status frontmatter to supersede it and
-	// no date to earn a recency bonus.
-	if page.Score != 60 {
-		t.Fatalf("page.Score = %d, want 60 (5 + 5 term + 50 exact-phrase, no supersession or recency)", page.Score)
+	// v6: +100 exact title, +50 each for two rare weighted title terms, +50 exact phrase.
+	if page.Score != 250 {
+		t.Fatalf("page.Score = %d, want 250 (100 exact title + 100 weighted terms + 50 phrase)", page.Score)
 	}
 }
 
@@ -1201,7 +1274,7 @@ func TestContextIndexesCustomSourceFields(t *testing.T) {
 	collect(t, base, "2026-05-04", `[{"id":"a1","t":"2026-05-04T09:00:00Z","subject":"Generic update","topic":"quantum-roadmap"}]`)
 
 	pack, err := services.BuildContext(t.Context(), base, services.ContextRequest{
-		Query: "quantum roadmap", Budget: 2048, Window: services.Window{Since: "2026-05-04", Until: "2026-05-04"},
+		Query: "quantum-roadmap", Budget: 2048, Window: services.Window{Since: "2026-05-04", Until: "2026-05-04"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1215,7 +1288,7 @@ func TestContextIndexesCustomSourceFields(t *testing.T) {
 	if pack.Receipt.InputDigest == "" {
 		t.Fatal("custom semantic inputs must remain covered by the receipt digest")
 	}
-	document, err := base.ReadDocument("events/2026-05-04/synthetic.json")
+	document, err := base.ReadDocumentContext(t.Context(), "events/2026-05-04/synthetic.json")
 	if err != nil {
 		t.Fatal(err)
 	}

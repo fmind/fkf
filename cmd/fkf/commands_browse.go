@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -166,11 +167,17 @@ func newValidateCommand() *cli.Command {
 		Name: "validate", Aliases: []string{"v"}, Category: groupInspect,
 		Usage: "Check frontmatter, the flat rule, slugs, and links.",
 		UsageText: usageLines(
-			[2]string{"fkf validate [--strict]", "validate enabled wiki and project pages"},
+			[2]string{"fkf validate [--strict]", "validate authored pages and collected subject lines"},
+			[2]string{"fkf validate --lint [--stale-days 90]", "add cross-page knowledge and project-health checks"},
 			[2]string{"fkf validate wiki [--strict]", "frontmatter, flat rule, slugs, links"},
 			[2]string{"fkf validate projects [--strict]", "frontmatter, required status, slugs, links"},
+			[2]string{"fkf validate records [--strict]", "warn when one title describes most records in a source"},
 		),
-		Flags: []cli.Flag{&cli.BoolFlag{Name: "strict", Usage: "Promote every warning to an error."}},
+		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "strict", Usage: "Promote every warning to an error."},
+			&cli.BoolFlag{Name: "lint", Usage: "Add orphan, dangling URI, validity, and stale-project checks."},
+			&cli.IntFlag{Name: "stale-days", Value: services.DefaultProjectStaleDays, Usage: "Warn when an open project has not changed in this many days (with --lint)."},
+		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			return validateAll(ctx, cmd)
 		},
@@ -189,6 +196,14 @@ func newValidateCommand() *cli.Command {
 				Flags: []cli.Flag{&cli.BoolFlag{Name: "strict", Usage: "Promote every warning to an error."}},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					return validateLayer(ctx, cmd, core.LayerProjects, true)
+				},
+			},
+			{
+				Name: "records", Aliases: []string{"r"},
+				Usage: "Check whether collected records have distinguishing subject lines.",
+				Flags: []cli.Flag{&cli.BoolFlag{Name: "strict", Usage: "Promote every warning to an error."}},
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					return validateRecordTitles(ctx, cmd)
 				},
 			},
 		},
@@ -239,6 +254,12 @@ func newTagsCommand() *cli.Command {
 }
 
 func validateAll(ctx context.Context, cmd *cli.Command) error {
+	if cmd.Int("stale-days") < 1 {
+		return invalidUsage(fmt.Errorf("--stale-days is %d; expected a positive integer", cmd.Int("stale-days")))
+	}
+	if cmd.IsSet("stale-days") && !cmd.Bool("lint") {
+		return invalidUsage(errors.New("--stale-days requires --lint"))
+	}
 	base, err := openBase(cmd)
 	if err != nil {
 		return err
@@ -271,9 +292,46 @@ func validateAll(ctx context.Context, cmd *cli.Command) error {
 			hasErrors = true
 		}
 	}
+	records, err := services.ValidateRecordTitles(ctx, base, strict)
+	if err != nil {
+		return err
+	}
+	if err := emit(cmd, records, nil); err != nil {
+		return err
+	}
+	if !records.OK {
+		hasErrors = true
+	}
+	if cmd.Bool("lint") {
+		lint, err := services.ValidateKnowledgeLint(ctx, base, strict, cmd.Int("stale-days"))
+		if err != nil {
+			return err
+		}
+		if err := emit(cmd, lint, nil); err != nil {
+			return err
+		}
+		if !lint.OK {
+			hasErrors = true
+		}
+	}
 
 	if hasErrors {
 		return partialFailure(errUsage("validation found errors"))
+	}
+	return nil
+}
+
+func validateRecordTitles(ctx context.Context, cmd *cli.Command) error {
+	base, err := openBase(cmd)
+	if err != nil {
+		return err
+	}
+	report, err := services.ValidateRecordTitles(ctx, base, cmd.Bool("strict"))
+	if err := emit(cmd, report, err); err != nil {
+		return err
+	}
+	if !report.OK {
+		return partialFailure(errUsage("record-title validation found %d error(s)", report.Errors))
 	}
 	return nil
 }

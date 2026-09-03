@@ -39,7 +39,13 @@ func ConfigSchema() map[string]any {
 				"properties":  layerSchemaProperties(),
 			},
 			"schema": fieldDefinitionSchema(),
-			"bin":    stringArray("Absolute or ~-relative machine-local directories outside the base, prepended to PATH for every declared command. Put base-controlled executables in <base>/bin so trust hashes them."),
+			"identities": map[string]any{
+				"type":                 "object",
+				"description":          "Declared exact aliases for canonical people, organizations, and repositories.",
+				"propertyNames":        map[string]any{"pattern": `^[a-z0-9][a-z0-9-]*$`, "maxLength": MaxBaseNameLength},
+				"additionalProperties": identitySchema(),
+			},
+			"bin": stringArray("Absolute or ~-relative machine-local directories outside the base, prepended to PATH for every declared command. Put base-controlled executables in <base>/bin so trust hashes them."),
 			"sources": map[string]any{
 				"type":                 "object",
 				"description":          "Declared collection commands, keyed by <provider>-<resource>.",
@@ -47,6 +53,36 @@ func ConfigSchema() map[string]any {
 				"additionalProperties": sourceSchema(),
 			},
 			"sync": syncSchema(),
+		},
+	}
+}
+
+func identitySchema() map[string]any {
+	entity := map[string]any{
+		"type": "string", "pattern": `^[a-z][a-z0-9+.-]*:[^\s]+$`,
+		"description": "Canonical entity URI using an open non-reserved scheme.",
+	}
+	alias := map[string]any{
+		"type": "string", "minLength": 1, "maxLength": 320,
+		"pattern": `^(?:[a-z][a-z0-9+.-]*:[^\s]+|[A-Za-z0-9][A-Za-z0-9._+@-]*)$`,
+	}
+	return map[string]any{
+		"type": "object", "additionalProperties": false,
+		"required": []string{"canonical", "aliases"},
+		"properties": map[string]any{
+			"canonical": entity,
+			"aliases": map[string]any{
+				"type": "array", "minItems": 1, "uniqueItems": true, "items": alias,
+				"description": "Exact entity URIs, emails, or provider logins that resolve to canonical.",
+			},
+			"kind": map[string]any{
+				"type": "string", "enum": []string{string(IdentityPerson), string(IdentityOrganization), string(IdentityRepository)},
+				"description": "Optional classification used by graph and people views.",
+			},
+			"owner": map[string]any{
+				"type": "boolean", "default": false,
+				"description": "Marks the one owning person, omitted from ambient people discovery and expansion.",
+			},
 		},
 	}
 }
@@ -72,6 +108,10 @@ func fieldDefinitionSchema() map[string]any {
 				"relation": map[string]any{
 					"type": "boolean", "default": false,
 					"description": "Values are canonical fkf URIs transcribed as graph edges of this field name.",
+				},
+				"weight": map[string]any{
+					"type": "integer", "minimum": 1, "maximum": MaxFieldWeight,
+					"description": "Optional lexical-ranking multiplier. Defaults to 10 for id, 5 for title, and 1 for every other field.",
 				},
 				"examples": map[string]any{
 					"type": "array", "maxItems": MaxFieldExamples,
@@ -120,27 +160,67 @@ func sourceSchema() map[string]any {
 		}
 	}
 	fields := map[string]any{
-		"type": "object", "required": []string{FieldID}, "minProperties": 1, "maxProperties": MaxFields,
+		"type": "object", "required": []string{FieldID, FieldTitle}, "minProperties": 2, "maxProperties": MaxFields,
 		"propertyNames": map[string]any{
 			"pattern": `^[a-z][a-z0-9_-]*$`, "maxLength": MaxFieldNameLength,
 		},
 		"additionalProperties": fieldPaths("A declared semantic projection indexed for lexical context; every path contributes scalar values."),
 		"properties": map[string]any{
-			FieldID:    fieldPaths("Required. Exactly one scalar is the record identity that its URI fragment names."),
-			FieldTime:  fieldPaths("Required for an events source. Exactly one scalar is the record timestamp."),
-			FieldTitle: fieldPaths("Suggested human-readable label; at most one scalar."),
-			FieldURL:   fieldPaths("Suggested provider URL; at most one scalar."),
+			FieldID:         fieldPaths("Required. Exactly one scalar is the record identity that its URI fragment names."),
+			FieldTime:       fieldPaths("Required for an events source. Exactly one scalar is the record timestamp."),
+			FieldTitle:      fieldPaths("Required meaningful human-readable subject line; at most one scalar."),
+			FieldURL:        fieldPaths("Suggested provider URL; at most one scalar."),
+			FieldCategory:   fieldPaths("Optional authorship role: created, received, or saved; at most one scalar."),
+			FieldVisibility: fieldPaths("Optional audience role: private, shared, or public; at most one scalar."),
 		},
-		"description": "Associates root schema names with provider paths. id and event time are required; every declared value is indexed lexically and relation fields are transcribed into the graph.",
+		"description": "Associates root schema names with provider paths. id and title are required, plus time for events; every declared value is indexed lexically and relation fields are transcribed into the graph.",
 	}
 	return map[string]any{
 		"type": "object", "additionalProperties": false,
-		"required": []string{"run", "fields"},
+		"required": []string{"run"},
+		"allOf": []any{
+			map[string]any{
+				"if": map[string]any{
+					"properties": map[string]any{"layer": map[string]any{"const": string(LayerTasks)}},
+					"required":   []string{"layer"},
+				},
+				"then": map[string]any{
+					"required":   []string{"window"},
+					"properties": map[string]any{"window": map[string]any{"const": true}},
+					"not": map[string]any{"anyOf": []any{
+						map[string]any{"required": []string{"records"}},
+						map[string]any{"required": []string{"fields"}},
+						map[string]any{"required": []string{"body"}},
+						map[string]any{"required": []string{"bodies"}},
+						map[string]any{"required": []string{"recency"}},
+					}},
+				},
+				"else": map[string]any{"required": []string{"fields"}},
+			},
+			map[string]any{
+				"if": map[string]any{"anyOf": []any{
+					map[string]any{"not": map[string]any{"required": []string{"layer"}}},
+					map[string]any{"properties": map[string]any{"layer": map[string]any{"const": string(LayerEvents)}}},
+				}},
+				"then": map[string]any{
+					"properties": map[string]any{"fields": map[string]any{"required": []string{FieldID, FieldTime, FieldTitle}}},
+				},
+			},
+		},
 		"properties": map[string]any{
 			"enabled": map[string]any{"type": "boolean", "description": "Whether sync runs this source. Disabled entries are still validated."},
 			"layer": map[string]any{
-				"type": "string", "enum": []string{string(LayerEvents), string(LayerIndex)}, "default": string(LayerEvents),
-				"description": "events files one document per day under events/; index files one point-in-time document under index/.",
+				"type": "string", "enum": []string{string(LayerEvents), string(LayerIndex), string(LayerTasks)}, "default": string(LayerEvents),
+				"description": "events files one JSON document per day; index files one point-in-time JSON document; tasks writes bounded Markdown session traces.",
+			},
+			"auth": map[string]any{
+				"type": "array", "minItems": 1, "items": map[string]any{"type": "string"},
+				"prefixItems": []any{map[string]any{
+					"type": "string", "minLength": 1,
+					"not":         map[string]any{"pattern": `\{\{`},
+					"description": "Literal executable: a bare name resolved on PATH or an absolute machine-local path outside the base.",
+				}},
+				"description": "Optional direct argv that checks provider login readiness before collection. It accepts no placeholders; stdout and stderr are discarded and never logged.",
 			},
 			"run": map[string]any{
 				"type": "array", "minItems": 1, "items": map[string]any{"type": "string"},
@@ -175,6 +255,20 @@ func sourceSchema() map[string]any {
 				}},
 				"description": "Argv (never a shell string) fetching one record's body on demand. Must name {{id}} and may name any declared field plus {{base}} or {{home}}.",
 			},
+			"bodies": map[string]any{
+				"type": "string", "enum": []string{string(BodiesNone), string(BodiesCache), string(BodiesSync)}, "default": string(BodiesNone),
+				"description": "Rebuildable body-cache policy: none never stores, cache stores after explicit read --body, and sync also prefetches missing bodies during collection.",
+			},
+			"recency": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"required": []string{"half_life_days"},
+				"properties": map[string]any{
+					"half_life_days": map[string]any{
+						"type": "integer", "minimum": 1, "maximum": MaxRecencyHalfLifeDays,
+						"description": "Source-local exponential recency half-life; undated records receive no bonus.",
+					},
+				},
+			},
 			"requires": map[string]any{
 				"type": "array", "uniqueItems": true,
 				"items":       map[string]any{"type": "string", "pattern": `^[A-Za-z0-9][A-Za-z0-9._+-]*$`},
@@ -208,9 +302,8 @@ func sourceSchema() map[string]any {
 			"window": map[string]any{
 				"type": "boolean", "default": false,
 				"description": "Render run: ONCE for the whole requested range — {{start}}/{{end}} span " +
-					"every day being collected, not one — and bucket the records it returns into one " +
-					"document per day by each record's own declared fields.time. Only an events source may " +
-					"declare it: a whole-range collection buckets by day, and an index source has no day.",
+					"every day being collected, not one. Events bucket records by fields.time; tasks sources " +
+					"must enable it and import completed session traces; index sources reject it.",
 			},
 		},
 	}

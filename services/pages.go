@@ -3,8 +3,6 @@ package services
 import (
 	"context"
 	"errors"
-	"fmt"
-	"path"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -126,20 +124,6 @@ func hasTag(tags []string, wanted string) bool {
 	return false
 }
 
-// ReadPageBySlug returns one page of a flat layer.
-func ReadPageBySlug(base *Base, layer core.Layer, slug string) (Page, error) {
-	return ReadPageBySlugContext(context.Background(), base, layer, slug)
-}
-
-// ReadPageBySlugContext returns one page of a flat layer with cooperative cancellation.
-func ReadPageBySlugContext(ctx context.Context, base *Base, layer core.Layer, slug string) (Page, error) {
-	slug = strings.TrimSuffix(strings.TrimSpace(slug), core.MarkdownExtension)
-	if slug == "" {
-		return Page{}, fmt.Errorf("a %s page is addressed by its slug, for example retrieval-boundary", layer)
-	}
-	return ReadPageContext(ctx, base, path.Join(string(layer), slug+core.MarkdownExtension))
-}
-
 // TagCount is one tag and the pages carrying it.
 type TagCount struct {
 	Tag   string   `json:"tag"`
@@ -259,7 +243,7 @@ func normalizeTerms(terms []string) []string {
 }
 
 func scorePage(page Page, terms []string) (SearchHit, bool) {
-	haystackTitle := strings.ToLower(page.Title + " " + page.Slug + " " + page.Description)
+	haystackTitle := strings.ToLower(page.Title + " " + page.Slug + " " + page.Description + " " + strings.Join(page.Aliases, " "))
 	haystackTags := strings.ToLower(strings.Join(page.Tags, " "))
 	haystackBody := strings.ToLower(page.Body)
 	hit := SearchHit{

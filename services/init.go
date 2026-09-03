@@ -71,6 +71,14 @@ type InitReport struct {
 	Demo           *DemoReport `json:"demo,omitempty"`
 }
 
+// initCreatedFile records the filesystem identity of a file this init invocation created.
+// Recovery removes only that identity: a pre-existing file, or a path replaced concurrently,
+// remains owner-controlled.
+type initCreatedFile struct {
+	path string
+	info fs.FileInfo
+}
+
 func (r *InitReport) step(item, detail string, changed bool) {
 	r.Steps = append(r.Steps, InitStep{Item: item, Detail: detail, Changed: changed})
 }
@@ -119,6 +127,7 @@ func validateScaffoldTargets(ctx context.Context, root string) error {
 		filepath.Join(root, filepath.FromSlash(core.BaseSkillsDir)),
 		filepath.Join(root, core.BaseBinDir),
 		filepath.Join(root, core.BaseTestsDir),
+		filepath.Join(root, evalDirectory),
 		filepath.Join(root, ".claude"),
 	)
 	for _, layer := range core.Layers {
@@ -140,8 +149,10 @@ func validateScaffoldTargets(ctx context.Context, root string) error {
 		}
 	}
 	for _, name := range []string{
-		core.ConfigFileName, core.BaseAgentsFile, core.GraphFile, core.GraphMetaFile,
+		core.ConfigFileName, core.BaseAgentsFile, core.GraphFile, core.GraphDstFile,
+		core.GraphOffsetsFile, core.GraphMetaFile, core.GraphGenerationFile,
 		".git", ".gitignore", ".gitattributes", "CLAUDE.md",
+		filepath.ToSlash(filepath.Join(evalDirectory, evalQueriesFile)),
 	} {
 		if err := core.ValidatePathConfinement(filepath.Join(root, name)); err != nil {
 			return err
@@ -166,10 +177,11 @@ func create(ctx context.Context, root string, request InitRequest, now func() ti
 		return nil, err
 	}
 	report = &InitReport{Base: root, Name: name, Preset: preset, Created: true, TrackCollected: request.TrackCollected}
+	createdFiles := []initCreatedFile{}
 	if err := os.MkdirAll(root, core.BaseDirMode); err != nil {
 		return nil, fmt.Errorf("create %s: %w", root, err)
 	}
-	config, err := renderConfig(name, preset)
+	config, err := renderConfig(name, preset, request.Demo != 0)
 	if err != nil {
 		return nil, err
 	}
@@ -179,11 +191,14 @@ func create(ctx context.Context, root string, request InitRequest, now func() ti
 	}
 	// fkf.yaml is the create-vs-refresh marker. If anything after this point fails, keeping
 	// that marker would route an ordinary retry into refresh even though AGENTS.md, preset
-	// helpers, git metadata or trust may still be absent. Remove only the configuration this
-	// invocation created; all other idempotent scaffold output can safely be reused by create.
+	// helpers, git metadata or trust may still be absent. Remove the configuration and only
+	// those helper/demo files this invocation created; pre-existing base content stays intact.
 	defer func() {
 		if returnErr == nil {
 			return
+		}
+		if err := rollbackInitCreatedFiles(createdFiles); err != nil {
+			returnErr = errors.Join(returnErr, err)
 		}
 		if err := os.Remove(configPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			returnErr = errors.Join(returnErr, fmt.Errorf("remove incomplete init marker %s: %w", configPath, err))
@@ -196,7 +211,7 @@ func create(ctx context.Context, root string, request InitRequest, now func() ti
 	report.Declared, report.Enabled = len(loaded.Sources), len(loaded.EnabledSources())
 	report.step(core.ConfigFileName, fmt.Sprintf("%d sources declared, %d enabled", report.Declared, report.Enabled), true)
 
-	if err := scaffoldCreatedBase(ctx, root, name, request, loaded, report, now); err != nil {
+	if err := scaffoldCreatedBase(ctx, root, name, request, loaded, report, now, &createdFiles); err != nil {
 		return nil, err
 	}
 	// Trust is the final mutation. A failed demo or scaffold must not leave an external record
@@ -234,6 +249,7 @@ func scaffoldCreatedBase(
 	loaded *core.Config,
 	report *InitReport,
 	now func() time.Time,
+	createdFiles *[]initCreatedFile,
 ) error {
 	store := loaded.Store()
 	for _, layer := range store.EnabledLayers() {
@@ -254,23 +270,79 @@ func scaffoldCreatedBase(
 	if err := writeBaseAgents(root, name, report); err != nil {
 		return err
 	}
-	if err := writeSkillsAndHelpers(root, loaded, report); err != nil {
+	if err := writeStarterEval(root, report, createdFiles); err != nil {
+		return err
+	}
+	if err := writeSkillsAndHelpers(root, loaded, report, createdFiles); err != nil {
 		return err
 	}
 	if err := writeAgentBridges(root, report); err != nil {
 		return err
 	}
+	base := &Base{
+		Config: loaded, Store: store, Env: sources.NewEnvironment(loaded),
+		Runner: sources.ExecRunner(), Now: now,
+	}
 	if request.Demo == 0 {
+		if _, err := Build(ctx, base, "", false); err != nil {
+			return fmt.Errorf("build initial derived files: %w", err)
+		}
 		return nil
 	}
-	base := &Base{Config: loaded, Store: store, Env: sources.NewEnvironment(loaded), Runner: sources.ExecRunner(), Now: now}
+	changed, err := installDemoHelper(root)
+	if err != nil {
+		return err
+	}
+	if changed {
+		created, err := rememberInitCreatedFile(filepath.Join(root, core.BaseBinDir, demoHelperName))
+		if err != nil {
+			return err
+		}
+		*createdFiles = append(*createdFiles, created)
+	}
+	report.step(core.BaseBinDir+"/"+demoHelperName, "deterministic local demo collector", changed)
 	demo, err := WriteDemo(ctx, base, request.Demo)
 	if err != nil {
 		return err
 	}
 	report.Demo = demo
+	*createdFiles = append(*createdFiles, demo.created...)
 	report.step("demo", fmt.Sprintf("%d synthetic days across %d sources", demo.Days, len(demo.Sources)), true)
 	return nil
+}
+
+func rememberInitCreatedFile(path string) (initCreatedFile, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return initCreatedFile{}, fmt.Errorf("inspect newly created %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return initCreatedFile{}, fmt.Errorf("%w: newly created %s is not a regular file", core.ErrUnsafePath, path)
+	}
+	return initCreatedFile{path: path, info: info}, nil
+}
+
+func rollbackInitCreatedFiles(files []initCreatedFile) error {
+	var rollbackErr error
+	for index := len(files) - 1; index >= 0; index-- {
+		created := files[index]
+		current, err := os.Lstat(created.path)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			continue
+		case err != nil:
+			rollbackErr = errors.Join(rollbackErr,
+				fmt.Errorf("inspect incomplete init output %s: %w", created.path, err))
+			continue
+		case !os.SameFile(created.info, current):
+			continue
+		}
+		if err := os.Remove(created.path); err != nil {
+			rollbackErr = errors.Join(rollbackErr,
+				fmt.Errorf("remove incomplete init output %s: %w", created.path, err))
+		}
+	}
+	return rollbackErr
 }
 
 func writeBaseAgents(root, name string, report *InitReport) error {
@@ -289,12 +361,49 @@ func writeBaseAgents(root, name string, report *InitReport) error {
 	return nil
 }
 
+func writeStarterEval(root string, report *InitReport, createdFiles *[]initCreatedFile) error {
+	relative := filepath.ToSlash(filepath.Join(evalDirectory, evalQueriesFile))
+	target := filepath.Join(root, filepath.FromSlash(relative))
+	if info, err := os.Lstat(target); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: %s must be a regular file", core.ErrUnsafePath, relative)
+		}
+		report.step(relative, "left as the base-owned retrieval acceptance set", false)
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect %s: %w", relative, err)
+	}
+	content, err := fs.ReadFile(fkf.Presets, "presets/evals/queries.yaml")
+	if err != nil {
+		return fmt.Errorf("read embedded starter evaluation: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), core.BaseDirMode); err != nil {
+		return fmt.Errorf("create %s: %w", evalDirectory, err)
+	}
+	if err := core.WriteFileAtomicMode(target, content, core.BaseFileMode); err != nil {
+		return err
+	}
+	if createdFiles != nil {
+		created, err := rememberInitCreatedFile(target)
+		if err != nil {
+			return err
+		}
+		*createdFiles = append(*createdFiles, created)
+	}
+	report.step(relative, "runnable retrieval baseline plus target-journey prompts", true)
+	return nil
+}
+
 func recordInitialTrust(ctx context.Context, root string, preexisting bool, report *InitReport, now func() time.Time) error {
 	if preexisting {
 		report.step("trust", "review required: fkf.local.yaml, bin/, or tests/ existed before init; run `fkf trust --all`", false)
 		return nil
 	}
-	if _, err := core.WriteTrust(ctx, root, now()); err != nil {
+	config, err := core.LoadConfig(root)
+	if err != nil {
+		return err
+	}
+	if _, err := core.WriteTrust(ctx, config, now()); err != nil {
 		return err
 	}
 	report.Trusted = true
@@ -311,7 +420,7 @@ func refresh(ctx context.Context, root string, request InitRequest, now func() t
 		Base: root, Name: config.Name, Refreshed: true,
 		Declared: len(config.Sources), Enabled: len(config.EnabledSources()),
 	}
-	if state, stateErr := core.ReadTrust(ctx, root); stateErr == nil {
+	if state, stateErr := core.ReadTrust(ctx, config); stateErr == nil {
 		report.Trusted = state.Trusted
 	}
 	track, err := TracksCollected(root)
@@ -325,18 +434,27 @@ func refresh(ctx context.Context, root string, request InitRequest, now func() t
 	if err := writeManagedBlocks(root, track, report); err != nil {
 		return nil, err
 	}
-	if err := writeSkillsAndHelpers(root, nil, report); err != nil {
+	if err := writeStarterEval(root, report, nil); err != nil {
+		return nil, err
+	}
+	if err := writeSkillsAndHelpers(root, nil, report, nil); err != nil {
 		return nil, err
 	}
 	if err := writeAgentBridges(root, report); err != nil {
 		return nil, err
 	}
+	base := &Base{
+		Config: config, Store: config.Store(), Env: sources.NewEnvironment(config),
+		Runner: sources.ExecRunner(), Now: now,
+	}
+	if _, err := Build(ctx, base, "", false); err != nil {
+		return nil, fmt.Errorf("refresh derived files: %w", err)
+	}
 	report.step(core.ConfigFileName, "left as it is; `init` never rewrites a base's own configuration", false)
 	report.step(core.BaseAgentsFile, "left as it is; it belongs to this base", false)
-	if state, err := core.ReadTrust(ctx, root); err == nil && !state.Trusted {
+	if state, err := core.ReadTrust(ctx, config); err == nil && !state.Trusted {
 		report.step("trust", "the configuration changed since it was trusted; run `fkf trust`", false)
 	}
-	_ = now
 	report.Next = nextSteps(root, report)
 	return report, nil
 }
@@ -388,7 +506,9 @@ func hasPreexistingExecutionInputs(ctx context.Context, root string) (bool, erro
 	return len(scripts) > 0 || len(tests) > 0, nil
 }
 
-func writeSkillsAndHelpers(root string, config *core.Config, report *InitReport) error {
+func writeSkillsAndHelpers(
+	root string, config *core.Config, report *InitReport, createdFiles *[]initCreatedFile,
+) error {
 	states, err := InstallSkills(root)
 	if err != nil {
 		return err
@@ -410,6 +530,15 @@ func writeSkillsAndHelpers(root string, config *core.Config, report *InitReport)
 	}
 	if len(written) > 0 {
 		report.step("bin/", strings.Join(written, ", "), true)
+	}
+	if createdFiles != nil {
+		for _, name := range written {
+			created, err := rememberInitCreatedFile(filepath.Join(root, core.BaseBinDir, name))
+			if err != nil {
+				return err
+			}
+			*createdFiles = append(*createdFiles, created)
+		}
 	}
 	return nil
 }
@@ -455,10 +584,13 @@ func writeAgentBridges(root string, report *InitReport) error {
 // renderConfig composes a base's fkf.yaml from the shared header and the preset's own source
 // block, so every default is visible in the file and the comments live with the sources they
 // explain rather than in a Go string.
-func renderConfig(name, preset string) (string, error) {
+func renderConfig(name, preset string, demo bool) (string, error) {
 	block, err := fs.ReadFile(fkf.Presets, "presets/"+preset+".yaml")
 	if err != nil {
 		return "", fmt.Errorf("read the embedded preset %s: %w", preset, err)
+	}
+	if demo {
+		block = []byte(demoConfigBlock())
 	}
 	defaults := core.DefaultSync()
 	var builder strings.Builder
@@ -472,12 +604,19 @@ schema: # shared semantic names; sources only map provider paths to these defini
   id: {description: Stable record identity., cardinality: one}
   time: {description: Record timestamp when the provider exposes one., cardinality: optional}
   title: {description: Human-readable record label., cardinality: optional}
+  modified: {description: Provider modification timestamp used to refresh rebuildable body caches., cardinality: optional}
+  category: {description: Authorship role., cardinality: optional}
+  visibility: {description: Audience role., cardinality: optional}
   url: {description: Provider page for the record., cardinality: optional, relation: true, examples: [https://example.test/item]}
   repo: {description: Provider owner/name value used by body commands., cardinality: optional}
   repository: {description: Repository associated with the record., cardinality: optional, relation: true, examples: [repo:github.com/owner/name]}
   participant: {description: Person or account involved in the record., cardinality: many, relation: true, examples: [person:email/user@example.test, actor:github.com/login]}
+  owner: {description: Person or account that owns the record., cardinality: many, relation: true, examples: [person:email/user@example.test]}
+  attachment: {description: Document attached to the record., cardinality: many, relation: true, examples: [document:drive.google.com/file-id]}
+  meeting: {description: Calendar event associated with meeting evidence., cardinality: many, relation: true, examples: [events/2026-05-04/google-calendar-events.json#event-id]}
   ticket: {description: Work item associated with the record., cardinality: many, relation: true, examples: [ticket:jira/FKF-1]}
   related: {description: Related base resource or entity., cardinality: many, relation: true, examples: [projects/example.md]}
+  supersedes: {description: Older authored knowledge replaced by this page., cardinality: many, relation: true, examples: [wiki/old-decision.md]}
 
 layers: # a disabled layer is not created, listed, served, or scanned
   events: true # what happened, one document per source per day (JSON)
@@ -531,6 +670,7 @@ func nextSteps(root string, report *InitReport) []string {
 			"fkf status --base " + rootArgument,
 			fmt.Sprintf("fkf find --base %s retrieval", rootArgument),
 			fmt.Sprintf("fkf context --base %s \"<terms>\" --explain", rootArgument),
+			"fkf harness install --all --base " + rootArgument + "  # connect MCP, hooks, and skills",
 		}...)
 	}
 	return append(trust, []string{
@@ -539,10 +679,8 @@ func nextSteps(root string, report *InitReport) []string {
 		"fkf config helpers --refresh --base " + rootArgument + "  # install helpers required by newly enabled sources",
 		"fkf trust --all --base " + rootArgument + "  # review the execution plan after editing enabled sources",
 		"fkf sync --base " + rootArgument + " --days 7  # collect the last seven completed days",
-		"claude mcp add --transport stdio --scope user fkf -- fkf mcp serve --base " + rootArgument,
-		// The one line that makes the base part of every session rather than a command to
-		// remember: the skill's "Serving an agent" section names the hook per harness.
-		shellArg(filepath.Join(root, core.BaseBinDir, "fkf-hook.sh")) + " claude              # your harness's session-start hook; see the fkf-use skill, Serving an agent",
+		"fkf harness install --all --base " + rootArgument + "  # connect MCP, hooks, and skills",
+		"fkf schedule install --base " + rootArgument + "  # collect due evidence hourly",
 	}...)
 }
 
@@ -589,6 +727,7 @@ type TrustedSource struct {
 	Name       string        `json:"name"`
 	Enabled    bool          `json:"enabled"`
 	Layer      core.Layer    `json:"layer"`
+	Auth       []string      `json:"auth,omitempty"`
 	Run        []string      `json:"run,omitempty"`
 	Test       []string      `json:"test,omitempty"`
 	Body       []string      `json:"body,omitempty"`
@@ -623,7 +762,7 @@ func Trust(ctx context.Context, base *Base, record, all bool) (*TrustReport, err
 		}
 		report.Commands = append(report.Commands, TrustedSource{
 			Name: source.Name, Enabled: source.Enabled, Layer: source.Layer,
-			Run: source.Run, Test: source.Test, Body: source.Body,
+			Auth: source.Auth, Run: source.Run, Test: source.Test, Body: source.Body,
 			BodyFields: bodyFields,
 			// How fkf will invoke the line above. A review that says what runs but not how
 			// many times, how often, or for how long is not the whole disclosure.
@@ -641,14 +780,14 @@ func Trust(ctx context.Context, base *Base, record, all bool) (*TrustReport, err
 	}
 	report.Tests = tests
 	if !record {
-		state, err := core.ReadTrustConfig(ctx, base.Config)
+		state, err := core.ReadTrust(ctx, base.Config)
 		if err != nil {
 			return nil, err
 		}
 		report.State = state
 		return report, nil
 	}
-	state, err := core.WriteTrustConfig(ctx, base.Config, base.Now())
+	state, err := core.WriteTrust(ctx, base.Config, base.Now())
 	if err != nil {
 		return nil, err
 	}

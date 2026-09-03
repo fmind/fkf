@@ -6,7 +6,8 @@
 # restrict collection; `chromium-pages.sh --profiles` lists the stable <browser>/<profile> labels.
 # A requested profile that is absent fails loudly rather than filing a misleading empty day.
 #
-# Each locked History database is copied through SQLite's online backup before it is read.
+# Each locked History database is copied through a SQLite online backup before it is read;
+# that snapshot includes committed rows still present only in the browser's live WAL file.
 # Only HTTPS origins and paths leave the machine: authority userinfo, query strings, and
 # fragments are discarded, while malformed and non-HTTPS URLs become null. Output is one JSON
 # array over the half-open UTC window.

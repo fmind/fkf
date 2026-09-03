@@ -286,7 +286,7 @@ func TestWriteAndAppendEdgeList(t *testing.T) {
 	}
 }
 
-func TestMetadataWriteFailureLeavesAnOldSidecarThatCannotValidateNewRows(t *testing.T) {
+func TestGenerationMarkerWriteFailureRetainsTheOldGraph(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -324,8 +324,8 @@ func TestMetadataWriteFailureLeavesAnOldSidecarThatCannotValidateNewRows(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(encodedRows, []byte("\tc\t")) {
-		t.Fatalf("rows = %q, want the rows-first publication failure simulated", encodedRows)
+	if !bytes.Contains(encodedRows, []byte("\tb\t")) || bytes.Contains(encodedRows, []byte("\tc\t")) {
+		t.Fatalf("rows = %q, want the old generation retained when publication cannot start", encodedRows)
 	}
 	encodedMeta, err := os.ReadFile(metaPath)
 	if err != nil {
@@ -336,7 +336,7 @@ func TestMetadataWriteFailureLeavesAnOldSidecarThatCannotValidateNewRows(t *test
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(encodedRows)
-	if retained.SHA256.Outputs.GraphTSV == hex.EncodeToString(digest[:]) {
-		t.Fatal("the retained old sidecar accidentally validates the newly published rows")
+	if retained.SHA256.Outputs.GraphTSV != hex.EncodeToString(digest[:]) {
+		t.Fatal("the retained old sidecar no longer validates the retained old rows")
 	}
 }

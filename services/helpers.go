@@ -237,7 +237,9 @@ func inspectHelper(
 			return status, false, fmt.Errorf("read %s: %w", relative, err)
 		}
 		status.CurrentSHA256 = helperDigest(current)
-		if bytes.Equal(current, shipped) && info.Mode().Perm() == 0o700 {
+		// Helper drift is a byte contract. Repository permissions have their own status
+		// finding and repair recipe, so a chmod must not masquerade as authored content drift.
+		if bytes.Equal(current, shipped) {
 			status.State = HelperCurrent
 		} else {
 			status.State = HelperDrifted

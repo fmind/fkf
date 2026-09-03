@@ -2,6 +2,7 @@ package sources_test
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -18,6 +19,26 @@ import (
 // Keep interpreter-backed isolation tests bounded without turning cold startup on a loaded CI
 // runner into a latency contract.
 const interpreterStartupTestTimeout = 5 * time.Second
+
+func mustBuildRunCommand(
+	t testing.TB, source *core.Source, env sources.Environment, window sources.Window, timeout time.Duration,
+) sources.Command {
+	t.Helper()
+	command, err := sources.BuildRunCommand(source, env, window, timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return command
+}
+
+func mustBuildTestCommand(t testing.TB, source *core.Source, env sources.Environment) sources.Command {
+	t.Helper()
+	command, err := sources.BuildTestCommand(source, env, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return command
+}
 
 func TestExecRunnerLogsDeclaredCommandContextWithoutProviderStderr(t *testing.T) {
 	const privateStderr = "synthetic-provider-private-stderr"
@@ -38,7 +59,7 @@ func TestExecRunnerLogsDeclaredCommandContextWithoutProviderStderr(t *testing.T)
 		Name: "github-events", Layer: core.LayerEvents,
 		Run: []string{"sh", "-c", `printf '%s' "$FKF_SYNTHETIC_PRIVATE_STDERR" >&2; exit 3`},
 	}
-	command := sources.BuildRunCommand(source, sources.Environment{
+	command := mustBuildRunCommand(t, source, sources.Environment{
 		Root: t.TempDir(), Env: map[string]string{"PATH": filepath.Dir(shell)},
 	}, window, time.Second)
 	if _, err := sources.ExecRunner().Run(t.Context(), command); err == nil {
@@ -62,6 +83,7 @@ func TestExecRunnerLogsDeclaredCommandContextWithoutProviderStderr(t *testing.T)
 }
 
 func TestNewEnvironmentExcludesInheritedPathsInsideTheBase(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	shell, err := exec.LookPath("sh")
 	if err != nil {
 		t.Fatal(err)
@@ -91,6 +113,9 @@ func TestNewEnvironmentExcludesInheritedPathsInsideTheBase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := core.WriteTrust(t.Context(), config, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	environment := sources.NewEnvironment(config)
 	for _, entry := range filepath.SplitList(environment.Env["PATH"]) {
 		if entry == root || entry == link {
@@ -113,12 +138,153 @@ func TestNewEnvironmentExcludesInheritedPathsInsideTheBase(t *testing.T) {
 	}
 }
 
+func TestExecRunnerRevalidatesTrustedExecutableTreeBeforeEachExec(t *testing.T) {
+	for _, test := range []struct {
+		name, tree string
+		build      func(testing.TB, *core.Source, sources.Environment) sources.Command
+	}{
+		{
+			name: "collection helper", tree: core.BaseBinDir,
+			build: func(t testing.TB, source *core.Source, env sources.Environment) sources.Command {
+				return mustBuildRunCommand(t, source, env, sources.Window{}, time.Minute)
+			},
+		},
+		{
+			name: "source test helper", tree: core.BaseTestsDir,
+			build: func(t testing.TB, source *core.Source, env sources.Environment) sources.Command {
+				return mustBuildTestCommand(t, source, env)
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			root := t.TempDir()
+			directory := filepath.Join(root, test.tree)
+			if err := os.MkdirAll(directory, core.BaseDirMode); err != nil {
+				t.Fatal(err)
+			}
+			helper := filepath.Join(directory, "helper")
+			if err := os.WriteFile(helper, []byte("#!/bin/sh\nprintf trusted\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			configBody := `fkf: 1
+name: test
+schema:
+  id: {description: Stable identity., cardinality: one}
+  title: {description: Human label., cardinality: one}
+layers: {index: true}
+sources:
+  source:
+    enabled: true
+    layer: index
+    run: [helper]
+    test: [helper]
+    fields: {id: .id, title: .id}
+`
+			if err := os.WriteFile(filepath.Join(root, core.ConfigFileName), []byte(configBody), core.BaseFileMode); err != nil {
+				t.Fatal(err)
+			}
+			config, err := core.LoadConfig(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := core.WriteTrust(t.Context(), config, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			command := test.build(t, config.Sources["source"], sources.NewEnvironment(config))
+			if err := os.WriteFile(helper, []byte("#!/bin/sh\nprintf changed\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			output, err := sources.ExecRunner().Run(t.Context(), command)
+			if !errors.Is(err, core.ErrUntrusted) || output != "" {
+				t.Fatalf("ExecRunner.Run() = %q, %v; want executable-tree drift refused before exec", output, err)
+			}
+		})
+	}
+}
+
 func TestBuildRunCommandDoesNotRequireAnInstalledShell(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	source := &core.Source{Name: "direct", Layer: core.LayerEvents, Run: []string{"helper", "first | second"}}
-	command := sources.BuildRunCommand(source, sources.Environment{Root: t.TempDir()}, sources.Window{}, time.Minute)
+	command := mustBuildRunCommand(t, source, sources.Environment{Root: t.TempDir()}, sources.Window{}, time.Minute)
 	if !slices.Equal(command.Argv, source.Run) {
 		t.Fatalf("argv = %q, want the declared helper and opaque argument with no shell wrapper", command.Argv)
+	}
+}
+
+func TestBuildTestCommandFailsAHomePlaceholderWithoutHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	_, err := sources.BuildTestCommand(
+		&core.Source{Name: "check", Test: []string{"check", "{{home}}"}},
+		sources.Environment{Root: t.TempDir()}, time.Minute,
+	)
+	if err == nil || !strings.Contains(err.Error(), "HOME") {
+		t.Fatalf("BuildTestCommand() error = %v, want {{home}} planning to fail without HOME", err)
+	}
+
+	command, err := sources.BuildRunCommand(
+		&core.Source{Name: "no-home", Run: []string{"provider"}},
+		sources.Environment{Root: t.TempDir()}, sources.Window{}, time.Minute,
+	)
+	if err != nil || !slices.Equal(command.Argv, []string{"provider"}) {
+		t.Fatalf("BuildRunCommand() = %+v, %v; HOME is irrelevant without {{home}}", command, err)
+	}
+}
+
+func TestBuildAuthCommandUsesTheDeclaredExecutionBoundary(t *testing.T) {
+	config := &core.Config{}
+	env := sources.Environment{
+		Root: "/base", Env: map[string]string{"PATH": "/usr/bin"}, TrustConfig: config,
+	}
+	source := &core.Source{
+		Name: "provider", Auth: []string{"provider", "auth", "status"}, Timeout: 5 * time.Second,
+	}
+	command := sources.BuildAuthCommand(source, env, time.Minute)
+	if !slices.Equal(command.Argv, source.Auth) {
+		t.Fatalf("auth argv = %q, want the literal declared probe %q", command.Argv, source.Auth)
+	}
+	if command.Dir != core.DeclaredCommandDirectory || command.ForbiddenRoot != env.Root {
+		t.Fatalf("auth boundary = dir %q, root %q; want neutral cwd and protected base", command.Dir, command.ForbiddenRoot)
+	}
+	if command.Timeout != source.Timeout || command.TrustConfig != config {
+		t.Fatalf("auth timeout/trust = %s, %p; want %s, %p", command.Timeout, command.TrustConfig, source.Timeout, config)
+	}
+	if command.Source != "" {
+		t.Fatalf("auth command source = %q; probe argv must not enter declared-run diagnostics", command.Source)
+	}
+	if !command.QuietFailure {
+		t.Fatal("auth command failures must not be logged")
+	}
+	command.Argv[0] = "changed"
+	command.Env["PATH"] = "/changed"
+	if source.Auth[0] != "provider" || env.Env["PATH"] != "/usr/bin" {
+		t.Fatal("BuildAuthCommand returned caller-owned argv or environment storage")
+	}
+}
+
+func TestExecRunnerKeepsExpectedAuthFailureSilent(t *testing.T) {
+	shell, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &core.Source{
+		Name: "provider", Auth: []string{"sh", "-c", "printf public; printf private >&2; exit 9"},
+	}
+	command := sources.BuildAuthCommand(source, sources.Environment{
+		Root: t.TempDir(), Env: map[string]string{"PATH": filepath.Dir(shell)},
+	}, time.Second)
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	output, err := sources.ExecRunner().Run(t.Context(), command)
+	if err == nil || !strings.Contains(err.Error(), "status 9") {
+		t.Fatalf("auth probe error = %v, want the safe exit status", err)
+	}
+	if output != "" || logs.Len() != 0 {
+		t.Fatalf("auth probe exposed output %q or logs %q", output, logs.String())
 	}
 }
 
@@ -141,8 +307,8 @@ func TestSourceTestPathCannotShadowCollectionCommands(t *testing.T) {
 	}
 	env := sources.Environment{Root: root, Env: map[string]string{"PATH": bin}}
 	source := &core.Source{Run: []string{"helper"}, Test: []string{"helper"}}
-	run := sources.BuildRunCommand(source, env, sources.Window{}, time.Minute)
-	check := sources.BuildTestCommand(source, env, time.Minute)
+	run := mustBuildRunCommand(t, source, env, sources.Window{}, time.Minute)
+	check := mustBuildTestCommand(t, source, env)
 
 	if got := filepath.SplitList(run.Env["PATH"]); !slices.Equal(got, []string{bin}) {
 		t.Fatalf("run PATH = %q, want tests/ unreachable during collection", got)
@@ -195,8 +361,8 @@ func TestSourceHookMayUseATrustedFixtureShadowOnlyInsideTests(t *testing.T) {
 		}
 	}
 	env := sources.Environment{Root: root, Env: map[string]string{"PATH": bin}}
-	run := sources.BuildRunCommand(&core.Source{Run: []string{"git"}}, env, sources.Window{}, time.Minute)
-	check := sources.BuildTestCommand(&core.Source{Test: []string{"git-check"}}, env, time.Minute)
+	run := mustBuildRunCommand(t, &core.Source{Run: []string{"git"}}, env, sources.Window{}, time.Minute)
+	check := mustBuildTestCommand(t, &core.Source{Test: []string{"git-check"}}, env)
 	executor := sources.ExecRunner()
 	if output, err := executor.Run(t.Context(), run); err != nil || output != "real" {
 		t.Fatalf("run git = %q, %v; tests/git shadowed collection", output, err)
@@ -208,8 +374,8 @@ func TestSourceHookMayUseATrustedFixtureShadowOnlyInsideTests(t *testing.T) {
 
 func TestBuildTestCommandInitializesAnEmptyEnvironment(t *testing.T) {
 	root := t.TempDir()
-	command := sources.BuildTestCommand(
-		&core.Source{Test: []string{"check"}}, sources.Environment{Root: root}, time.Minute,
+	command := mustBuildTestCommand(t,
+		&core.Source{Test: []string{"check"}}, sources.Environment{Root: root},
 	)
 	if got := filepath.SplitList(command.Env["PATH"]); !slices.Equal(got, []string{filepath.Join(root, core.BaseTestsDir)}) {
 		t.Fatalf("test PATH = %q, want the dedicated test tree even without inherited environment", got)
@@ -218,7 +384,7 @@ func TestBuildTestCommandInitializesAnEmptyEnvironment(t *testing.T) {
 
 func TestBuildRunCommandUsesANeutralWorkingDirectory(t *testing.T) {
 	root := t.TempDir()
-	command := sources.BuildRunCommand(
+	command := mustBuildRunCommand(t,
 		&core.Source{Run: []string{"provider"}},
 		sources.Environment{Root: root},
 		sources.Window{},
@@ -235,7 +401,7 @@ func TestBuildRunCommandUsesANeutralWorkingDirectory(t *testing.T) {
 func TestExecRunnerRemovesAnAbsoluteBaseConfigRootFromTheNeutralDirectory(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "wiki"))
-	command := sources.BuildRunCommand(
+	command := mustBuildRunCommand(t,
 		&core.Source{Run: []string{"sh", "-c", `printf '%s' "${XDG_CONFIG_HOME-unset}"`}},
 		sources.Environment{Root: root, Env: map[string]string{"PATH": os.Getenv("PATH")}},
 		sources.Window{},
@@ -260,7 +426,7 @@ func TestBuildRunCommandCannotExecuteRelativeAuthoredSupport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wiki, "payload.py"), []byte("print('sourced')\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	command := sources.BuildRunCommand(
+	command := mustBuildRunCommand(t,
 		&core.Source{Run: []string{python, "wiki/payload.py"}},
 		sources.Environment{Root: root, Env: map[string]string{"PATH": os.Getenv("PATH")}},
 		sources.Window{},
@@ -281,7 +447,7 @@ func TestBuildRunCommandDoesNotImportPythonFromTheBaseRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "sitecustomize.py"), []byte("print('sourced')\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	command := sources.BuildRunCommand(
+	command := mustBuildRunCommand(t,
 		&core.Source{Run: []string{python, "-c", "print('declared')"}},
 		sources.Environment{Root: root, Env: map[string]string{"PATH": os.Getenv("PATH")}},
 		sources.Window{},
@@ -351,7 +517,7 @@ func TestBuildRunCommandEscapesControlCharactersInItsDisplay(t *testing.T) {
 	t.Setenv("HOME", "/tmp/home\nsecond\x1bline")
 	root := "/tmp/base\nnext\x1bline"
 	source := &core.Source{Name: "display", Layer: core.LayerEvents, Run: []string{"cli", "{{base}}", "{{home}}"}}
-	command := sources.BuildRunCommand(source, sources.Environment{Root: root}, sources.Window{}, time.Minute)
+	command := mustBuildRunCommand(t, source, sources.Environment{Root: root}, sources.Window{}, time.Minute)
 	display := command.Display()
 	if strings.ContainsAny(display, "\n\x1b") || !strings.Contains(display, `\n`) || !strings.Contains(display, `\x1b`) {
 		t.Fatalf("display = %q, want terminal control characters escaped", display)
@@ -478,11 +644,8 @@ func TestParseDayRejectsACivilDateThatDidNotExist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	previous := time.Local
-	time.Local = location
-	t.Cleanup(func() { time.Local = previous })
 
-	if day, err := sources.ParseDay("2011-12-30"); err == nil {
+	if day, err := sources.ParseDayInLocation("2011-12-30", location); err == nil {
 		t.Fatalf("ParseDay() = %s, nil; Pacific/Apia skipped 2011-12-30 entirely", day.Format(time.RFC3339))
 	}
 }

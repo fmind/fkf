@@ -4,7 +4,7 @@ weight: 9
 description: "Serve one fkf base to coding agents through a read-only stdio MCP server with a fixed, inspectable boundary."
 ---
 
-`fkf mcp serve` hands a base to a coding agent over the Model Context Protocol, on stdio, read-only. It is the same surface as the reading commands — `context`, `find`, `read`, `graph`, and the per-layer listings — reachable without the agent having to spawn a shell.
+`fkf mcp serve` hands a base to a coding agent over the Model Context Protocol, on stdio, read-only. It exposes `context`, `find`, `day`, `timeline`, `read`, `graph`, and the per-layer listings without making the agent spawn a shell.
 
 ```bash
 fkf mcp serve --base ~/brain
@@ -14,19 +14,19 @@ The server opens no socket and no port. The client launches the binary as a chil
 
 ## The launch line
 
-`fkf init` prints this as one of its suggested steps:
+`fkf init` prints the managed installer as one of its suggested steps:
 
 ```bash
-claude mcp add --transport stdio --scope user fkf -- fkf mcp serve --base ~/brain
+fkf --base ~/brain harness install --all
 ```
 
-The server answers questions; it does not ask them. What makes a base part of every session is a session-start hook running `fkf context` with the repository as the query, before the first prompt — the line for each harness is in [agent harnesses](../harnesses/). A client configured with JSON spells the launch line the same way:
+The installer pins the current FKF executable and absolute base instead of leaving either lookup to the harness's environment. The server answers questions; it does not ask them. What makes a base part of every session is a session-start hook running the bounded day and repository reads before the first prompt — the managed shape for each harness is in [agent harnesses](../harnesses/). A client configured with JSON receives the equivalent pinned launch line:
 
 ```json
 {
   "mcpServers": {
     "fkf": {
-      "command": "fkf",
+      "command": "/absolute/path/to/fkf",
       "args": ["mcp", "serve", "--base", "/home/you/brain"]
     }
   }
@@ -37,11 +37,11 @@ The client reports the server as `fkf — <name>`, where `<name>` is the base's 
 
 ## Why `--base` is required
 
-Every other command discovers its base: `--base`, then `$FKF_BASE`, then the nearest ancestor holding `fkf.yaml`. `mcp serve` declines all three. It declares its own required `--base`, and even an exported variable does not satisfy it:
+Every command accepts the same root `--base` flag, before or after its command words. `mcp serve` requires that flag explicitly and declines the two ambient fallbacks, `$FKF_BASE` and ancestor discovery:
 
 ```console
 $ FKF_BASE=~/brain fkf mcp serve
-fkf: Required flag "base" not set
+fkf: fkf mcp serve requires an explicit --base
 ```
 
 Three reasons, and they are the same reason from three angles.
@@ -62,7 +62,7 @@ Read-only here is a property of the tool table, not a permission switch inside e
 | `sync`                          | It runs the commands declared in `fkf.yaml`.                                |
 | `read --body`                   | It is the one read that executes a source's declared `body:` command.       |
 
-`read --body` is the interesting absence. On the command line it is a legitimate read: fetch one record's full body on demand from the CLI that owns the credential, print it, store nothing. Over MCP it would be an agent-driven execution of a command that a base — possibly a base someone else wrote — declared. A server an agent drives must not be able to execute what a base declares, so the option simply is not in the tool's input schema.
+`read --body` is the interesting absence. On the command line it is a legitimate read: fetch one record's full body on demand from the CLI that owns the credential, print it, and cache it only when that source declares `bodies: cache` or `sync`. Over MCP it would be an agent-driven execution of a command that a base — possibly a base someone else wrote — declared. A server an agent drives must not be able to execute what a base declares, so the option simply is not in the tool's input schema.
 
 Four consequences follow from the same construction:
 
@@ -73,15 +73,17 @@ Four consequences follow from the same construction:
 
 Collection can continue while a base is served. Documents are written atomically, so a reader in the middle of a session sees the previous day's file or the new one, never half of one.
 
-## The five tools
+## The seven tools
 
-| Tool      | Inputs                                                                                       | Returns                                                        |
-| --------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `find`    | `source[]`, `layer[]`, `since`, `until`, `grep[]`, `where[]`, `limit`, `count`, `cursor`     | Records and pages, or per-day source volumes                   |
-| `context` | `query` (required), `since`, `until`, `budget`, `pin[]`, `expand`, `explain`                 | A token-bounded pack with its full selection receipt           |
-| `list`    | `layer` (required), `since`, `until`, `source`, `tag[]`, `status`, `type`, `limit`, `cursor` | One layer's days, index documents, traces, or pages            |
-| `read`    | `uri` (required), `cursor`                                                                   | Exactly one thing, in the URI grammar the base uses everywhere |
-| `graph`   | `uri` (required), `direction`, `kind`, `depth`, `limit`, `cursor`                            | The edges around a node, from the derived edge list            |
+| Tool       | Inputs                                                                                       | Returns                                                        |
+| ---------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `find`     | `source[]`, `layer[]`, `since`, `until`, `grep[]`, `where[]`, `limit`, `count`, `cursor`     | Records and pages, or per-day source volumes                   |
+| `context`  | `query` (required), `since`, `until`, `budget`, `pin[]`, `expand`, `explain`                 | A token-bounded pack with its full selection receipt           |
+| `day`      | `date`, `budget`, `all`                                                                      | One compact chronological day digest                           |
+| `timeline` | `since`, `until`, `source[]`, `repo`, `person`, `uri`, `around`, `budget`, `all`             | A compact range or around-record digest                        |
+| `list`     | `layer` (required), `since`, `until`, `source`, `tag[]`, `status`, `type`, `limit`, `cursor` | One layer's days, index documents, traces, or pages            |
+| `read`     | `uri` (required), `cursor`                                                                   | Exactly one thing, in the URI grammar the base uses everywhere |
+| `graph`    | `uri` (required), `direction`, `kind`, `depth`, `limit`, `cursor`                            | The edges around a node, from the derived edge list            |
 
 Every record and page in every result carries the `uri` that addresses it, which is what makes the tools compose: `context` or `find` finds candidates, `read` opens one, `graph` asks what else touches it. The grammar is the same one described in [URIs and the graph](../uris-graph/).
 
@@ -100,7 +102,9 @@ Supplying a filter that does not apply to the chosen layer is an error rather th
 - `read` takes no limit. Directory listings and entity neighbourhoods use the fixed server page size.
 - `graph` covers `graph` only. `graph nodes` and `build` are not tools.
 
-Every successful tool result carries the same complete compact JSON twice: once as text for clients that still consume only textual tool output, and once as structured content for current clients. Neither path receives a prose summary or partial representation. The combined serialized result must fit the 4 MiB response bound.
+Every successful tool result carries the same complete compact JSON twice: once as text for clients that still consume only textual tool output, and once as structured content for current clients. Neither path receives a prose summary or partial representation. The combined serialized result must fit the 4 MiB response bound. Tool definitions advertise that ceiling in the namespaced `_meta["io.github.fmind/result-size"]` hint; results add their actual encoded bytes and item count.
+
+Graph walks and entity reads also carry `_meta["io.github.fmind/graph-generation"]`, the SHA-256 of the validated graph bytes used for that answer. MCP defines `ttlMs` for tool and resource lists and resource reads, not for `tools/call`, so FKF leaves those protocol TTLs at zero and does not invent a tool-call TTL. A client that caches graph-derived calls can key them by the published generation and arguments, and discard them when the generation changes.
 
 For everything else — the wiki's tag vocabulary and source health — there is no tool at all, and the answer arrives as a resource instead.
 
@@ -178,10 +182,10 @@ This is the same reasoning as the token budget in [context](../context/): an age
 Composition belongs in the client, where it is one entry per base:
 
 ```bash
-claude mcp add --transport stdio --scope user    fkf-personal -- fkf mcp serve --base ~/brain
-claude mcp add --transport stdio --scope project fkf-team     -- fkf mcp serve --base ~/work/team-brain
+claude mcp add --transport stdio --scope user    fkf-personal -- /absolute/path/to/fkf mcp serve --base /absolute/path/to/brain
+claude mcp add --transport stdio --scope project fkf-team     -- /absolute/path/to/fkf mcp serve --base /absolute/path/to/team-brain
 ```
 
-Two things make this work in practice. Give each base a distinct `name:`, so `fkf://personal/status` and `fkf://team/status` stay apart and each set of instructions names the base it describes. Then let the client namespace the tools by entry name, so `find` on the personal base does not shadow `find` on the team one, and the agent picks a boundary every time it picks a tool.
+This is the exceptional manual case because the managed installer owns one `fkf` entry per harness. Use `fkf harness print <name>` to inspect its pinned executable and base shape, then substitute absolute paths above; never leave the executable to `PATH` resolution. Give each base a distinct `name:`, so `fkf://personal/status` and `fkf://team/status` stay apart and each set of instructions names the base it describes. Then let the client namespace the tools by entry name, so `find` on the personal base does not shadow `find` on the team one, and the agent picks a boundary every time it picks a tool.
 
 The cost is one extra process that reads files on demand. There is no daemon or port, and MCP readers never take the CLI's cross-process writer lock. A base you stop serving is removed by deleting one line from the client's configuration, with the repository left exactly where it was.

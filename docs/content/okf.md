@@ -49,7 +49,7 @@ The type vocabulary is open, not a closed set. The `learn` skill uses `decision`
 
 ## The two skeletons
 
-These are the shapes the `learn` skill writes, so a page created by an agent and a page created by hand are the same page.
+These are the shapes the `learn` skill proposes, so an applied agent diff and a page created by hand are the same page.
 
 A concept, `wiki/<slug>.md`:
 
@@ -179,14 +179,17 @@ The last one is a warning on purpose: writing a link before its target is a norm
 
 Invisible and control characters are errors rather than warnings because they are never stylistic slips. A zero-width space, soft hyphen, or right-to-left override changes what a human believes a page says; an escape or other terminal control can change what the terminal displays. Frontmatter is single-line metadata and permits no control character. Markdown bodies retain their ordinary newline, carriage-return, and tab layout, while every other control is refused. `fkf build wiki` checks the type, title, description, and tags before it writes the generated index, so unsafe metadata cannot be copied into a page the validator would then reject. See [privacy and security](../privacy/) for the wider trust boundary.
 
+Optional `valid_from` and `valid_until` frontmatter values are inclusive absolute `YYYY-MM-DD` bounds. `relations.supersedes` names older wiki or project pages through the base's declared `supersedes` relation. Context evaluates those claims against its receipt `as_of`: not-yet-valid and expired pages stay out, while superseded pages retain provenance but rank below their newest valid replacement. `fkf validate --lint` reports invalid windows, missing targets, and stale active projects before they quietly become retrieval debt.
+
 ## Task traces
 
-`tasks/YYYY-MM-DD/<slug>/TASKS.md` is the evidence layer: one trace per session, with a `## <n>. <request>` section per instruction — the request, a concise step trace, the files changed, and the exact verification output, with records cited by URI — and a closing `## Learned` list the `learn` skill harvests. An instruction is addressable by its heading anchor. In a shared base, prefix the slug with your handle. It has no required frontmatter and no validator, because a trace is written under time pressure and a rejected trace is a trace that does not get written. Its title comes from the first heading, its links enter the graph like any other page, and `fkf context` ranks it alongside the records — with no upper date bound, since a trace written today is the only same-day evidence the base holds.
+`tasks/YYYY-MM-DD/<slug>/TASKS.md` is the evidence layer: one trace per session, with a `## <n>. <request>` section per instruction — the request, a concise step trace, changed-file paths, verification commands seen, and the last assistant message — plus a closing `## Learned` list the `learn` skill harvests. The personal preset's `agent-session-traces` source creates these skeletons from the harness-independent session store without a model call. Captured prose is rendered as inert code, the helper never reads changed file contents, and an existing trace is never overwritten. An instruction is addressable by its heading anchor. A trace has no required frontmatter and no validator because it is evidence written under time pressure. Its title comes from the first heading, authored links enter the graph like any other page, and `fkf context` ranks it alongside records.
 
-Both skills are written into every base at `.agents/skills/` by `fkf init`, and refreshed by running `init` again. Bases also receive `.claude/skills -> ../.agents/skills` when that path is absent, so Claude reads the same packages rather than a copy. The use skill reads. The learn skill may append an evidence-linked, dated bullet to `wiki/log.md` and add its trace to `sources:` without approval, but it stops for explicit approval before creating a durable concept or changing a project. `--dry-run` writes nothing at all, including log bullets.
+All three bundled skills are written into every base at `.agents/skills/` by `fkf init`, and refreshed by running `init` again. Bases also receive `.claude/skills -> ../.agents/skills` when that path is absent, so Claude reads the same packages rather than a copy. The use skill reads. The learn skill writes only ignored proposal diffs; every durable log, concept, or project change waits for an explicit `fkf learn apply <id>`. The daily-brief skill narrates the bounded report. `fkf learn propose --dry-run` lists trace-citing log candidates without creating the proposal queue.
 
 ```bash
 fkf list tasks --since 7d
 fkf list wiki && fkf list projects --status active
-fkf validate --strict && fkf build
+fkf learn propose --dry-run
+fkf learn review <id> --diff
 ```

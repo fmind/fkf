@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -101,7 +100,6 @@ func (p *PolicyRunner) retryable(err error) bool {
 	if p.source == nil {
 		return false
 	}
-	message := err.Error()
 	// The real runner returns an opaque command failure: its Error is deliberately safe, while
 	// these two methods expose only the exact decisions retry needs. Keeping the matcher on the
 	// error means wrapping it with source/day context never loses the private retry evidence.
@@ -111,14 +109,10 @@ func (p *PolicyRunner) retryable(err error) bool {
 		MatchesCommandStderr(string) bool
 	}
 	var commandFailure privateCommandFailure
-	hasCommandFailure := errors.As(err, &commandFailure)
-	var exitErr *exec.ExitError
-	code, hasCode := -1, errors.As(err, &exitErr)
-	if hasCode {
-		code = exitErr.ExitCode()
-	} else if hasCommandFailure {
-		code, hasCode = commandFailure.ExitCode()
+	if !errors.As(err, &commandFailure) {
+		return false
 	}
+	code, hasCode := commandFailure.ExitCode()
 	for _, condition := range p.source.Retry.On {
 		if wanted, isExit := strings.CutPrefix(condition, "exit:"); isExit {
 			if parsed, parseErr := strconv.Atoi(strings.TrimSpace(wanted)); parseErr == nil &&
@@ -127,15 +121,7 @@ func (p *PolicyRunner) retryable(err error) bool {
 			}
 			continue
 		}
-		if hasCommandFailure {
-			if commandFailure.MatchesCommandStderr(condition) {
-				return true
-			}
-			continue
-		}
-		// A custom fake Runner may return an ordinary error. Keep that seam useful for hermetic
-		// tests, while production command failures always take the opaque branch above.
-		if strings.Contains(message, condition) {
+		if commandFailure.MatchesCommandStderr(condition) {
 			return true
 		}
 	}

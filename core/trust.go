@@ -32,6 +32,10 @@ import (
 // whose configuration changed since it was. The CLI maps it to exit code 3.
 var ErrUntrusted = errors.New("base is not trusted on this machine")
 
+// ErrStateDirectoryUnavailable reports that fkf cannot place machine-local state without
+// guessing a shared location. Trust records and writer locks must never fall back to /tmp.
+var ErrStateDirectoryUnavailable = errors.New("fkf state directory is unavailable")
+
 // TrustRecord is what is stored per base. The aggregate digest is the gate; Items is what
 // makes a re-trust reviewable.
 //
@@ -201,49 +205,53 @@ func (d *framedDigest) sum() string {
 // StateDir is where machine-local fkf state lives. It follows XDG so a test can redirect it
 // with one variable, which is what keeps the suite hermetic.
 func StateDir() string {
+	directory, _ := stateDir()
+	return directory
+}
+
+func stateDir() (string, error) {
 	if state := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); state != "" {
-		return filepath.Join(ExpandHome(state), "fkf")
+		state = ExpandHome(state)
+		if !filepath.IsAbs(state) {
+			return "", fmt.Errorf("%w: XDG_STATE_HOME must be absolute", ErrStateDirectoryUnavailable)
+		}
+		return filepath.Join(state, "fkf"), nil
 	}
 	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return filepath.Join(os.TempDir(), "fkf")
+	if err != nil || strings.TrimSpace(home) == "" {
+		return "", fmt.Errorf("%w: set HOME or XDG_STATE_HOME", ErrStateDirectoryUnavailable)
 	}
-	return filepath.Join(home, ".local", "state", "fkf")
+	if !filepath.IsAbs(home) {
+		return "", fmt.Errorf("%w: HOME must be absolute", ErrStateDirectoryUnavailable)
+	}
+	return filepath.Join(home, ".local", "state", "fkf"), nil
 }
 
 // trustRecordPath names one base's record by the hash of its absolute path. Hashing rather
 // than escaping keeps the filename bounded and free of separators, and the record repeats
 // the path so the directory stays readable.
-func trustRecordPath(root string) string {
+func trustRecordPath(root string) (string, error) {
+	directory, err := stateDir()
+	if err != nil {
+		return "", err
+	}
 	absolute, err := filepath.Abs(root)
 	if err != nil {
 		absolute = root
 	}
 	sum := sha256.Sum256([]byte(absolute))
-	return filepath.Join(StateDir(), "trust", hex.EncodeToString(sum[:])+".json")
+	return filepath.Join(directory, "trust", hex.EncodeToString(sum[:])+".json"), nil
 }
 
-// ConfigDigest reduces the canonical execution plan to one hash. The plan is loaded and merged
-// first, so comments, key ordering, and retrieval-only semantics cannot re-arm trust while a
-// local overlay that changes what runs still does.
+// ConfigDigest reduces an already decoded execution plan to one hash. Binding trust to the
+// caller's snapshot prevents a disk reload from approving different commands than it runs.
 //
 // bin/ belongs in the plan because it is committed with the base and sits first on the PATH
 // every declared command gets. tests/ is equally executable but is prepended only for source
 // verification hooks. Without both trees, a later pull could replace what a reviewed argv
 // actually executes while the aggregate digest still matched.
-func ConfigDigest(ctx context.Context, root string) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	config, err := LoadConfig(root)
-	if err != nil {
-		return "", err
-	}
-	return configDigest(ctx, config)
-}
-
-func configDigest(ctx context.Context, config *Config) (string, error) {
-	items, err := trustItems(ctx, config)
+func ConfigDigest(ctx context.Context, config *Config) (string, error) {
+	items, err := TrustItems(ctx, config)
 	if err != nil {
 		return "", err
 	}
@@ -304,38 +312,8 @@ func executionTreeScripts(ctx context.Context, root, tree string) ([]BinScript, 
 		return nil, err
 	}
 	directory := filepath.Join(filepath.Clean(ExpandHome(root)), tree)
-	info, err := os.Lstat(directory)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("inspect %s: %w", directory, err)
-	}
-	// A symlinked execution tree is refused rather than walked. WalkDir stops at a symlinked root and the
-	// loop below skips the root entry itself, so every script behind the link stayed out of the
-	// digest AND out of the `fkf trust` listing, while the directory it points at was still
-	// first on the PATH of every declared command: a shadow `git` there ran, its output was
-	// stored as a record, and swapping its contents afterwards left the digest byte-identical.
-	//
-	// Recording the link and hashing its target is not enough — the target lives outside the
-	// base, so nothing bounds what it becomes next. Refusing is the same rule the store already
-	// applies to every addressable path: a base addresses only its own files.
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("%w: %s/ is a symlink; a base runs only its own scripts, and a link "+
-			"leaves what fkf trusted outside the base", ErrUnsafePath, tree)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("%w: %s/ is not a directory", ErrUnsafePath, tree)
-	}
 	var scripts []BinScript
-	// WalkDir uses lstat semantics, so links are visible without ever following them.
-	err = filepath.WalkDir(directory, func(path string, entry fs.DirEntry, walkErr error) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if walkErr != nil {
-			return fmt.Errorf("inspect %s: %w", path, walkErr)
-		}
+	err := WalkOwnedTree(ctx, directory, func(path string, _ fs.DirEntry, info fs.FileInfo) error {
 		if path == directory {
 			return nil
 		}
@@ -344,14 +322,7 @@ func executionTreeScripts(ctx context.Context, root, tree string) ([]BinScript, 
 			return fmt.Errorf("inspect %s: %w", path, err)
 		}
 		name := filepath.ToSlash(relative)
-		info, err := entry.Info()
-		if err != nil {
-			return fmt.Errorf("inspect %s: %w", path, err)
-		}
 		switch {
-		case info.Mode()&os.ModeSymlink != 0:
-			return fmt.Errorf("%w: %s is a symlink; a base runs only files whose contents are "+
-				"inside the trusted %s tree", ErrUnsafePath, filepath.ToSlash(filepath.Join(tree, relative)), tree)
 		case info.Mode().IsRegular():
 			data, err := ReadFileLimit(path, MaxControlFileBytes)
 			if err != nil {
@@ -372,6 +343,9 @@ func executionTreeScripts(ctx context.Context, root, tree string) ([]BinScript, 
 		}
 		return nil
 	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -379,21 +353,13 @@ func executionTreeScripts(ctx context.Context, root, tree string) ([]BinScript, 
 	return scripts, nil
 }
 
-// TrustItems reduces everything a base can execute to reviewable canonical units: one
+// TrustItems reduces everything a decoded base can execute to reviewable canonical units: one
 // base-wide policy, every declared source, and every entry under bin/ and tests/. Invalid
 // configuration cannot be trusted because there is no execution plan to review.
-func TrustItems(ctx context.Context, root string) ([]TrustItem, error) {
+func TrustItems(ctx context.Context, config *Config) ([]TrustItem, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	config, err := LoadConfig(root)
-	if err != nil {
-		return nil, err
-	}
-	return trustItems(ctx, config)
-}
-
-func trustItems(ctx context.Context, config *Config) ([]TrustItem, error) {
 	items := make([]TrustItem, 0, 8)
 	items = append(items, TrustItem{Kind: TrustItemConfig, Name: "base", Digest: baseExecutionDigest(config)})
 	for _, name := range config.SourceNames() {
@@ -468,6 +434,9 @@ func sourceDigest(source *Source) string {
 	digest := newFramedDigest("source-execution-v3")
 	digest.boolean("enabled", source.Enabled)
 	digest.field("layer", string(source.Layer))
+	for _, argument := range source.Auth {
+		digest.field("auth", argument)
+	}
 	for _, argument := range source.Run {
 		digest.field("run", argument)
 	}
@@ -477,6 +446,7 @@ func sourceDigest(source *Source) string {
 	for _, argument := range source.Body {
 		digest.field("body", argument)
 	}
+	digest.field("bodies-policy", string(source.Bodies))
 	for _, name := range source.BodyFieldNames() {
 		for _, fieldPath := range source.Fields.Paths(name) {
 			digest.field("body-field-name", name)
@@ -494,27 +464,15 @@ func sourceDigest(source *Source) string {
 	return digest.sum()
 }
 
-// ReadTrust reports whether this machine has trusted the base's current configuration.
-func ReadTrust(ctx context.Context, root string) (TrustState, error) {
-	if err := ctx.Err(); err != nil {
-		return TrustState{}, err
-	}
-	config, err := LoadConfig(root)
-	if err != nil {
-		return TrustState{}, err
-	}
-	return ReadTrustConfig(ctx, config)
-}
-
-// ReadTrustConfig reports trust for the exact decoded execution plan a caller will use.
+// ReadTrust reports trust for the exact decoded execution plan a caller will use.
 // Binding the check to this snapshot prevents a later disk reload from approving one plan
 // while a long-lived Base executes another plan it opened earlier.
-func ReadTrustConfig(ctx context.Context, config *Config) (TrustState, error) {
+func ReadTrust(ctx context.Context, config *Config) (TrustState, error) {
 	if err := ctx.Err(); err != nil {
 		return TrustState{}, err
 	}
 	root := config.Store().Root()
-	items, err := trustItems(ctx, config)
+	items, err := TrustItems(ctx, config)
 	if err != nil {
 		return TrustState{}, err
 	}
@@ -522,7 +480,11 @@ func ReadTrustConfig(ctx context.Context, config *Config) (TrustState, error) {
 	if err != nil {
 		return TrustState{}, err
 	}
-	state := TrustState{Base: root, Digest: digest, Items: items, Path: trustRecordPath(root)}
+	path, err := trustRecordPath(root)
+	if err != nil {
+		return TrustState{}, err
+	}
+	state := TrustState{Base: root, Digest: digest, Items: items, Path: path}
 	data, err := ReadFileLimit(state.Path, MaxControlFileBytes)
 	if errors.Is(err, os.ErrNotExist) {
 		return state, nil
@@ -545,18 +507,9 @@ func ReadTrustConfig(ctx context.Context, config *Config) (TrustState, error) {
 	return state, nil
 }
 
-// WriteTrust records the base's current configuration digest for this machine.
-func WriteTrust(ctx context.Context, root string, now time.Time) (TrustState, error) {
-	config, err := LoadConfig(root)
-	if err != nil {
-		return TrustState{}, err
-	}
-	return WriteTrustConfig(ctx, config, now)
-}
-
-// WriteTrustConfig records the exact decoded execution plan shown to and approved by a caller.
-func WriteTrustConfig(ctx context.Context, config *Config, now time.Time) (TrustState, error) {
-	state, err := ReadTrustConfig(ctx, config)
+// WriteTrust records the exact decoded execution plan shown to and approved by a caller.
+func WriteTrust(ctx context.Context, config *Config, now time.Time) (TrustState, error) {
+	state, err := ReadTrust(ctx, config)
 	if err != nil {
 		return TrustState{}, err
 	}
@@ -584,19 +537,10 @@ func WriteTrustConfig(ctx context.Context, config *Config, now time.Time) (Trust
 	return state, nil
 }
 
-// RequireTrust is the gate every command that executes a declared command calls first. It
-// names the remedy, because a refusal the user cannot act on is just an outage.
-func RequireTrust(ctx context.Context, root string) error {
-	config, err := LoadConfig(root)
-	if err != nil {
-		return err
-	}
-	return RequireTrustConfig(ctx, config)
-}
-
-// RequireTrustConfig gates the exact decoded execution plan a caller is about to execute.
-func RequireTrustConfig(ctx context.Context, config *Config) error {
-	state, err := ReadTrustConfig(ctx, config)
+// RequireTrust gates the exact decoded execution plan a caller is about to execute and names
+// the remedy, because a refusal the user cannot act on is just an outage.
+func RequireTrust(ctx context.Context, config *Config) error {
+	state, err := ReadTrust(ctx, config)
 	if err != nil {
 		return err
 	}

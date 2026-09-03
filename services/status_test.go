@@ -172,6 +172,14 @@ func TestStatusQuietWatchdog(t *testing.T) {
 			t.Fatal("the median has to be reported once the watchdog is armed")
 		}
 	})
+	t.Run("does not compare a quiet weekend with active weekdays", func(t *testing.T) {
+		// 2026-04-11 is Saturday. Weekday-only sources such as commits, pull requests,
+		// and calendars must not look broken merely because the latest civil day is quiet.
+		status := fill(t, []int{10, 12, 9, 11, 10, 0, 0, 13, 10, 11, 0})
+		if status.Sources[0].Quiet {
+			t.Fatalf("source = %+v, want an ordinary quiet weekend left alone", status.Sources[0])
+		}
+	})
 }
 
 func TestStatusReportsUndeclaredHistory(t *testing.T) {
@@ -275,6 +283,7 @@ func TestStatusFreshnessIsPerEnabledSource(t *testing.T) {
     fields:
       id: .id
       time: .t
+      title: .id
 `
 	base := newBase(t, config, nil)
 	document := collect(t, base, "2026-05-09", strings.ReplaceAll(dayOne, "2026-05-04", "2026-05-09"))
@@ -1051,5 +1060,36 @@ func TestStatusReportsInvalidGraphCacheWithoutAborting(t *testing.T) {
 				t.Fatal("status with a corrupt graph cache reported OK")
 			}
 		})
+	}
+}
+
+func TestStatusLiveReportsAuthAndHarnessReadinessWithoutFailingLoggedOutSources(t *testing.T) {
+	runner := &fakeRunner{err: authExitFailure{}}
+	config := strings.Replace(baseConfig,
+		"    run: [cli, --since, \"{{date}}\", --until, \"{{next_date}}\"]",
+		"    auth: [cli, auth, status]\n    run: [cli, --since, \"{{date}}\", --until, \"{{next_date}}\"]", 1)
+	base := newBase(t, config, runner)
+	if _, err := services.Trust(t.Context(), base, true, false); err != nil {
+		t.Fatal(err)
+	}
+	status, err := services.Report(t.Context(), base, services.StatusRequest{
+		SkipGitAudit: true, Live: true, Executable: "/usr/local/bin/fkf",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(status.AuthRequired, []string{"synthetic"}) {
+		t.Fatalf("auth_required = %v, want synthetic", status.AuthRequired)
+	}
+	if len(status.Sources) != 1 || !status.Sources[0].Auth || !status.Sources[0].AuthRequired {
+		t.Fatalf("source status = %+v, want declared and required auth", status.Sources)
+	}
+	if len(status.Harnesses) != len(services.HarnessNames()) {
+		t.Fatalf("harnesses = %d, want %d", len(status.Harnesses), len(services.HarnessNames()))
+	}
+	for _, harness := range status.Harnesses {
+		if harness.Registered {
+			t.Fatalf("empty isolated home reports %s registered", harness.Name)
+		}
 	}
 }

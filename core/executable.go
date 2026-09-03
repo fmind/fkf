@@ -50,16 +50,7 @@ func LookPathIn(name, pathList string) (string, bool) {
 	return "", false
 }
 
-// SanitizePathList returns only absolute PATH entries that cannot be supplied by mutable
-// content below forbiddenRoot. Empty and relative entries are working-directory aliases, so a
-// shell given one can execute a different file after Cmd.Dir changes than the resolver
-// reviewed before exec. An inherited absolute entry inside the base has the same flaw: a pull
-// can replace its executable without changing the digest, except for the canonical base/bin
-// directory which callers prepend separately after filtering the inherited list.
-//
-// Inspection fails closed. A missing or unreadable inherited directory cannot resolve a
-// command now, and retaining it would let it become executable later without another config
-// or trust change.
+// SanitizePathList keeps unique absolute entries outside forbiddenRoot.
 func SanitizePathList(pathList, forbiddenRoot string) string {
 	var root, resolvedRoot string
 	if forbiddenRoot != "" {

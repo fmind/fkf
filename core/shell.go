@@ -42,6 +42,8 @@ type commandEnvironmentKey struct{}
 
 type declaredCommandDiagnosticKey struct{}
 
+type quietCommandFailureKey struct{}
+
 // DeclaredCommandDiagnostic is the safe context attached only to a source's run: command.
 // Body commands are deliberately excluded because their argv may contain a value copied from
 // collected provider data. Values maps are also excluded because provider selectors and
@@ -66,6 +68,12 @@ func WithDeclaredCommandDiagnostic(
 	ctx context.Context, diagnostic DeclaredCommandDiagnostic,
 ) context.Context {
 	return context.WithValue(ctx, declaredCommandDiagnosticKey{}, diagnostic)
+}
+
+// WithQuietCommandFailure suppresses the expected failure log for probes whose exit status is
+// their result. The caller still receives the same bounded, private command error.
+func WithQuietCommandFailure(ctx context.Context) context.Context {
+	return context.WithValue(ctx, quietCommandFailureKey{}, true)
 }
 
 // WithCommandEnvironment binds explicit immutable subprocess configuration to one call
@@ -106,14 +114,13 @@ func withCommandEnvironment(
 }
 
 func (buffer *boundedBuffer) Write(data []byte) (int, error) {
-	written := len(data)
 	remaining := max(0, buffer.limit-buffer.buffer.Len())
 	if remaining < len(data) {
 		buffer.truncated = true
-		data = data[:remaining]
+		written, _ := buffer.buffer.Write(data[:remaining])
+		return written, ErrCLIOutputTooLarge
 	}
-	_, _ = buffer.buffer.Write(data)
-	return written, nil
+	return buffer.buffer.Write(data)
 }
 
 func (buffer *boundedBuffer) String() string { return buffer.buffer.String() }
@@ -180,18 +187,9 @@ func newCommandFailure(cause error, stderr string) *commandFailure {
 	return failure
 }
 
-// RunCLI executes a CLI command with a given timeout and working directory.
-// The parent context is honored, so an interrupt/SIGTERM cancels in-flight
-// subprocesses instead of waiting out the per-call timeout.
+// RunCLI executes a CLI command with a bounded lifetime and output.
 func RunCLI(ctx context.Context, cmd []string, cwd string, timeout time.Duration) (string, error) {
 	return RunCLIBounded(ctx, cmd, cwd, "", timeout, MaxCLIOutputBytes)
-}
-
-// RunCLIStdin executes a CLI command feeding it one in-memory document. It exists for the
-// single case that needs it — handing a stored document to the `jq` a `?jq=` URI names — so
-// that expression stays one argv element and never reaches a shell.
-func RunCLIStdin(ctx context.Context, cmd []string, cwd, stdin string, timeout time.Duration) (string, error) {
-	return RunCLIBounded(ctx, cmd, cwd, stdin, timeout, MaxCLIOutputBytes)
 }
 
 // RunCLIBounded executes a CLI while applying the caller's tighter limit independently
@@ -234,19 +232,10 @@ func RunCLIBounded(ctx context.Context, cmd []string, cwd, stdin string, timeout
 	// comes from ResolveExecutable, and the base that declared it must be trusted before this
 	// is reached (core.RequireTrust), which is where the review of what may run belongs.
 	execCmd := exec.CommandContext(ctx, name, args...)
-	// A helper may fork descendants. CommandContext on
-	// its own kills only the shell, and because Stdout/Stderr are ordinary writers rather than
-	// *os.File, os/exec copies through a pipe whose write end a surviving grandchild still
-	// holds — so Wait blocked until the pipeline finished on its own and the declared timeout
-	// bounded nothing. Killing the process group reaps the pipeline; WaitDelay is the backstop
-	// for whatever a group kill still cannot reach.
+	// A helper may fork descendants, so cancellation targets its process group.
 	setProcessGroup(execCmd)
 	execCmd.WaitDelay = commandWaitDelay
-	forbiddenRoot := inherited.forbiddenRoot
-	if forbiddenRoot == "" {
-		forbiddenRoot = cwd
-	}
-	execCmd.Env = mergedCommandEnvironment(environment, forbiddenRoot)
+	execCmd.Env = mergedCommandEnvironment(environment, inherited.forbiddenRoot)
 	if cwd != "" {
 		execCmd.Dir = cwd
 	}
@@ -286,7 +275,9 @@ func RunCLIBounded(ctx context.Context, cmd []string, cwd, stdin string, timeout
 		}
 		attributes = append(attributes,
 			"status", failure.StatusClass(), "diagnostic", failure.Diagnostic())
-		slog.ErrorContext(ctx, "CLI command failed", attributes...)
+		if quiet, _ := ctx.Value(quietCommandFailureKey{}).(bool); !quiet {
+			slog.ErrorContext(ctx, "CLI command failed", attributes...)
+		}
 		return "", failure
 	}
 
@@ -316,17 +307,13 @@ func mergedCommandEnvironment(overrides map[string]string, commandDirectory stri
 }
 
 func removeRuntimeStartupEnvironment(values map[string]string, commandDirectory string) {
-	// These variables can load code before a declared argv reaches its own entrypoint. In
-	// particular, relative values resolve from Cmd.Dir, which is the base root for collectors;
-	// inheriting one could execute mutable wiki or collected content outside the trust digest.
-	// Provider credentials and profile selectors remain inherited, but runtime startup hooks do
-	// not cross the command boundary, including when an internal caller explicitly overrides one.
 	for _, key := range []string{
 		"BASH_ENV", "ENV", "ZDOTDIR", "fish_function_path",
 		"PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONINSPECT", "PYTHONUSERBASE", "PYTHONPLATLIBDIR",
-		"NODE_OPTIONS", "NODE_PATH", "PERL5OPT", "PERL5LIB", "RUBYOPT", "RUBYLIB",
+		"NODE_OPTIONS", "NODE_PATH", "PERL5OPT", "PERL5LIB", "PERLLIB",
+		"RUBYOPT", "RUBYLIB", "RUBYGEMS_GEMDEPS", "GEM_PATH",
 		"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS",
-		"LD_PRELOAD", "LD_LIBRARY_PATH", "GCONV_PATH",
+		"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "GCONV_PATH",
 		"R_ENVIRON", "R_ENVIRON_USER", "R_PROFILE", "R_PROFILE_USER",
 	} {
 		delete(values, key)
@@ -336,9 +323,7 @@ func removeRuntimeStartupEnvironment(values map[string]string, commandDirectory 
 			delete(values, key)
 		}
 	}
-	// XDG roots and HOME are ordinary provider configuration when they are absolute and
-	// machine-local. Refuse only spellings that can resolve into this base, so a Fish startup
-	// file cannot hide in wiki/ while GH_CONFIG_DIR and other provider selectors keep working.
+	// Provider configuration roots stay available only when they cannot resolve into the base.
 	for _, key := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"} {
 		if value, found := values[key]; found && unsafeCommandDirectoryPath(value, commandDirectory) {
 			delete(values, key)

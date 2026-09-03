@@ -39,7 +39,7 @@ func newInitCommand() *cli.Command {
 		Usage:     "Create a base, or refresh the parts of one that fkf owns." + markWrite,
 		ArgsUsage: "[path]",
 		Description: "On a new path this writes the chosen preset's fkf.yaml, the enabled layers, " +
-			"managed git blocks, AGENTS.md, two skills, helpers required by enabled sources, and agent " +
+			"managed git blocks, AGENTS.md, bundled skills, helpers required by enabled sources, and agent " +
 			"bridges. It records trust only when no execution input predated init. On an existing base " +
 			"it refreshes the skills and managed blocks, creates missing agent bridges, and preserves " +
 			"fkf.yaml, AGENTS.md, and helpers; `fkf config helpers --refresh` installs newly required helpers.",
@@ -81,7 +81,7 @@ func newInitCommand() *cli.Command {
 func newTrustCommand() *cli.Command {
 	return &cli.Command{
 		Name: "trust", Category: groupRun,
-		Usage: "Review every declared run:, test:, and body: command, body-bound field path, enabled state, " +
+		Usage: "Review every declared auth:, run:, test:, and body: command, body-bound field path, enabled state, " +
 			"invocation policy, bin: PATH directories, and every helper or hook under bin/ and tests/; " +
 			"then record trust." + markWrite,
 		Description: "Reading the commands is the act of trusting them, so the listing is part of " +
@@ -163,32 +163,47 @@ func newSyncCommand() *cli.Command {
 			&cli.BoolFlag{Name: "force", Usage: "Re-collect days that already have a document."},
 			&cli.BoolFlag{Name: "dry-run", Usage: "Print every substituted command and execute none."},
 			&cli.BoolFlag{Name: "preview", Usage: "Run and validate exactly one source, show up to three projected records, and write nothing." + markRun},
+			&cli.BoolFlag{Name: "if-due", Usage: "Return a compact success without taking the writer lock when every selected document already exists."},
 			&cli.BoolFlag{Name: "no-graph", Usage: "Skip the derived edge-list rebuild."},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if err := requirePositiveIntFlagAtMost(cmd, "days", 366); err != nil {
 				return err
 			}
+			if cmd.Bool("if-due") && (cmd.Bool("force") || cmd.Bool("dry-run") || cmd.Bool("preview")) {
+				return invalidUsage(errUsage("--if-due cannot be combined with --force, --dry-run, or --preview"))
+			}
 			base, err := openBase(cmd)
 			if err != nil {
 				return err
 			}
+			request := services.SyncRequest{
+				Targets: cmd.Args().Slice(), Days: cmd.Int("days"), Date: cmd.String("date"),
+				Force: cmd.Bool("force"), DryRun: cmd.Bool("dry-run"), NoGraph: cmd.Bool("no-graph"),
+				Preview: cmd.Bool("preview"), IfDue: cmd.Bool("if-due"),
+			}
 			run := func() error {
-				report, err := services.Sync(ctx, base, services.SyncRequest{
-					Targets: cmd.Args().Slice(), Days: cmd.Int("days"), Date: cmd.String("date"),
-					Force: cmd.Bool("force"), DryRun: cmd.Bool("dry-run"), NoGraph: cmd.Bool("no-graph"),
-					Preview: cmd.Bool("preview"),
-				})
+				report, err := services.Sync(ctx, base, request)
 				if err := emit(cmd, report, err); err != nil {
 					return err
 				}
 				if !report.Complete {
-					return partialFailure(fmt.Errorf("%d unit(s) failed:\n%s", report.Failed, report.FailureSummary()))
+					return partialFailure(fmt.Errorf("%d evidence unit(s) and %d body fetch(es) failed:\n%s",
+						report.Failed, report.BodyFailed, report.FailureSummary()))
 				}
 				return nil
 			}
 			if cmd.Bool("dry-run") || cmd.Bool("preview") {
 				return run()
+			}
+			if cmd.Bool("if-due") {
+				preflight, err := services.PreflightSync(ctx, base, request)
+				if err != nil {
+					return err
+				}
+				if !preflight.Due {
+					return render(cmd)(preflight.Report(), nil)
+				}
 			}
 			return withWriterLock(ctx, base.Root(), run)
 		},
@@ -204,6 +219,7 @@ func newStatusCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.IntFlag{Name: "max-age-hours", Usage: fmt.Sprintf("Exit 1 when any enabled source is missing or older than this, 1 to %d.", core.MaxFreshnessAgeHours)},
 			&cli.BoolFlag{Name: "all", Usage: "Include all sources in full detail."},
+			&cli.BoolFlag{Name: "live", Usage: "Probe trusted source login readiness and inspect user-scope harness registrations." + markRun},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if err := requirePositiveIntFlagAtMost(cmd, "max-age-hours", core.MaxFreshnessAgeHours); err != nil {
@@ -213,9 +229,14 @@ func newStatusCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
+			executable, err := os.Executable()
+			if err != nil {
+				return fmt.Errorf("locate current FKF executable: %w", err)
+			}
 			run := func() error {
 				status, err := services.Report(ctx, base, services.StatusRequest{
-					MaxAgeHours: cmd.Int("max-age-hours"), All: cmd.Bool("all"),
+					MaxAgeHours: cmd.Int("max-age-hours"), All: cmd.Bool("all"), Live: cmd.Bool("live"),
+					Executable: executable,
 				})
 				if err := emit(cmd, status, err); err != nil {
 					return err
@@ -230,54 +251,6 @@ func newStatusCommand() *cli.Command {
 				return nil
 			}
 			return run()
-		},
-	}
-}
-
-func newBuildCommand() *cli.Command {
-	return &cli.Command{
-		Name: "build", Aliases: []string{"b"}, Category: groupRun,
-		Usage:     "Rebuild derived caches: graph, wiki index, or all." + markWrite,
-		ArgsUsage: "[target]",
-		UsageText: usageLines(
-			[2]string{"fkf build", "rebuild all derived caches (graph and wiki index)"},
-			[2]string{"fkf build graph", "rescan the base and rebuild graph.tsv at the base root"},
-			[2]string{"fkf build wiki [--check]", "regenerate the generated block in wiki/index.md"},
-		),
-		Description: "Rebuilds derived caches from base content. Derived files are rebuildable caches " +
-			"and never the source of truth. --check with wiki reports whether wiki/index.md is stale and writes nothing.",
-		Flags: []cli.Flag{
-			&cli.BoolFlag{Name: "check", Usage: "Report whether the target is stale and write nothing (wiki only)."},
-		},
-		Action: func(ctx context.Context, cmd *cli.Command) error {
-			if err := requireAtMostOneArg(cmd, "fkf build [graph|wiki|all] [--check]"); err != nil {
-				return err
-			}
-			target := cmd.Args().First()
-			if target != "" && target != "graph" && target != "wiki" && target != "all" {
-				return invalidUsage(fmt.Errorf("unknown build target %q; expected graph, wiki, or all", target))
-			}
-			if cmd.Bool("check") && target != "wiki" {
-				return invalidUsage(errors.New("--check is supported only by `fkf build wiki`; graph checks are not implemented"))
-			}
-			base, err := openBase(cmd)
-			if err != nil {
-				return err
-			}
-			run := func() error {
-				report, err := services.Build(ctx, base, target, cmd.Bool("check"))
-				if err := emit(cmd, report, err); err != nil {
-					return err
-				}
-				if report.Wiki != nil && report.Wiki.Stale && cmd.Bool("check") {
-					return partialFailure(errUsage("%s is out of date; run `fkf build wiki`", report.Wiki.URI))
-				}
-				return nil
-			}
-			if cmd.Bool("check") {
-				return run()
-			}
-			return withWriterLock(ctx, base.Root(), run)
 		},
 	}
 }
@@ -303,7 +276,7 @@ func newNewCommand() *cli.Command {
 						return err
 					}
 					return withWriterLock(ctx, base.Root(), func() error {
-						return render(cmd)(services.CreateNew(base, services.NewRequest{
+						return render(cmd)(services.CreateNewAndBuild(ctx, base, services.NewRequest{
 							Kind: services.NewKindTask, Slug: cmd.Args().First(), Title: cmd.String("title"),
 						}))
 					})
@@ -326,7 +299,7 @@ func newNewCommand() *cli.Command {
 						return err
 					}
 					return withWriterLock(ctx, base.Root(), func() error {
-						return render(cmd)(services.CreateNew(base, services.NewRequest{
+						return render(cmd)(services.CreateNewAndBuild(ctx, base, services.NewRequest{
 							Kind: services.NewKindProject, Slug: cmd.Args().First(),
 							Title: cmd.String("title"), Tags: cmd.StringSlice("tag"),
 						}))
@@ -370,7 +343,7 @@ func newNewCommand() *cli.Command {
 						return err
 					}
 					return withWriterLock(ctx, base.Root(), func() error {
-						return render(cmd)(services.CreateNew(base, services.NewRequest{
+						return render(cmd)(services.CreateNewAndBuild(ctx, base, services.NewRequest{
 							Kind: services.NewKindWiki, Slug: cmd.Args().First(),
 							Type: cmd.String("type"), Title: cmd.String("title"), Tags: cmd.StringSlice("tag"),
 						}))
@@ -437,16 +410,14 @@ func newMCPCommand() *cli.Command {
 			{
 				Name: "serve", Aliases: []string{"s"},
 				Usage: "Run the read-only stdio server. --base is required.",
-				Description: "Exposes context, find, list, read, and graph, plus four resources. " +
+				Description: "Exposes context, find, day, timeline, list, read, and graph, plus four resources. " +
 					"It cannot write, shell, or fetch, and it never exposes `read --body`.",
-				Flags: []cli.Flag{
-					&cli.StringFlag{
-						Name: "base", Aliases: []string{"b"}, Required: true, Local: true,
-						Usage: "Base directory. Required so a launch line always says what the agent can see.",
-					},
-				},
 				Action: func(ctx context.Context, cmd *cli.Command) error {
-					base, err := services.Open(cmd.String("base"))
+					basePath := cmd.Root().String("base")
+					if basePath == "" {
+						return invalidUsage(errors.New("fkf mcp serve requires an explicit --base"))
+					}
+					base, err := services.Open(basePath)
 					if err != nil {
 						return err
 					}

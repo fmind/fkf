@@ -33,14 +33,18 @@ func AcquireWriterLock(ctx context.Context, root string) (*WriterLock, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	identity, err := physicalWriterRoot(root)
+	identity, err := ResolvePhysicalPath(root)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve writer-lock base: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	directory := filepath.Join(StateDir(), "locks")
+	state, err := stateDir()
+	if err != nil {
+		return nil, err
+	}
+	directory := filepath.Join(state, "locks")
 	if err := os.MkdirAll(directory, BaseDirMode); err != nil {
 		return nil, fmt.Errorf("create writer-lock state: %w", err)
 	}
@@ -85,31 +89,4 @@ func (lock *WriterLock) Close() error {
 		return fmt.Errorf("release writer lock: %w", err)
 	}
 	return nil
-}
-
-func physicalWriterRoot(root string) (string, error) {
-	absolute, err := ResolveAbsolutePath(root)
-	if err != nil {
-		return "", fmt.Errorf("resolve writer-lock base: %w", err)
-	}
-	current := absolute
-	missing := make([]string, 0, 2)
-	for {
-		resolved, err := filepath.EvalSymlinks(current)
-		if err == nil {
-			for index := len(missing) - 1; index >= 0; index-- {
-				resolved = filepath.Join(resolved, missing[index])
-			}
-			return filepath.Clean(resolved), nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("resolve writer-lock base %s: %w", root, err)
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", fmt.Errorf("resolve writer-lock base %s: no existing ancestor", root)
-		}
-		missing = append(missing, filepath.Base(current))
-		current = parent
-	}
 }

@@ -138,6 +138,8 @@ func resolveRead(ctx context.Context, base *Base, raw string, options ReadOption
 
 func isGraphArtifact(relative string) bool {
 	return relative == core.GraphFile ||
+		relative == core.GraphDstFile ||
+		relative == core.GraphOffsetsFile ||
 		relative == core.GraphMetaFile
 }
 
@@ -149,7 +151,7 @@ func readGraphArtifact(ctx context.Context, base *Base, uri URI) (*ReadResult, e
 	if uri.Fragment != "" {
 		return nil, fmt.Errorf("%s does not support fragments", uri.Path)
 	}
-	if uri.Path == core.GraphFile && uri.JQ != "" {
+	if uri.Path != core.GraphMetaFile && uri.JQ != "" {
 		return nil, fmt.Errorf("?jq= applies to a JSON document; %s is not one", uri.Path)
 	}
 	cache, _, meta, err := openValidatedGraphCache(ctx, base)
@@ -158,20 +160,33 @@ func readGraphArtifact(ctx context.Context, base *Base, uri URI) (*ReadResult, e
 	}
 	defer func() { _ = cache.close() }()
 
-	if uri.Path == core.GraphFile {
-		if meta.Bytes > int(core.MaxNarrativeBytes) {
+	if uri.Path != core.GraphMetaFile {
+		var file *os.File
+		switch uri.Path {
+		case core.GraphFile:
+			file = cache.file
+		case core.GraphDstFile:
+			file = cache.dst
+		case core.GraphOffsetsFile:
+			file = cache.offsets
+		}
+		manifest, found := graphManifestByURI(meta.Outputs, uri.Path)
+		if !found {
+			return nil, fmt.Errorf("invalid derived graph cache: metadata omits %s; run `fkf build graph`", uri.Path)
+		}
+		if manifest.Bytes > core.MaxNarrativeBytes {
 			return nil, fmt.Errorf("read %s: file exceeds %d-byte limit", uri.Path, core.MaxNarrativeBytes)
 		}
-		if _, err := cache.file.Seek(0, io.SeekStart); err != nil {
-			return nil, fmt.Errorf("rewind the edge-list snapshot: %w", err)
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return nil, fmt.Errorf("rewind %s snapshot: %w", uri.Path, err)
 		}
-		data, err := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, reader: cache.file}, int64(core.MaxNarrativeBytes)+1))
+		data, err := io.ReadAll(io.LimitReader(contextReader{ctx: ctx, reader: file}, core.MaxNarrativeBytes+1))
 		if err != nil {
-			return nil, fmt.Errorf("read the edge-list snapshot: %w", err)
+			return nil, fmt.Errorf("read %s snapshot: %w", uri.Path, err)
 		}
-		if len(data) != meta.Bytes {
+		if int64(len(data)) != manifest.Bytes {
 			return nil, fmt.Errorf("invalid derived graph cache: %s changed during the read; run `fkf build graph`",
-				core.GraphFile)
+				uri.Path)
 		}
 		if err := cache.revalidateBytes(ctx); err != nil {
 			return nil, err
@@ -281,8 +296,8 @@ func readJSON(ctx context.Context, base *Base, uri URI, options ReadOptions) (*R
 }
 
 // attachBody distinguishes the three absences the design insists on: a body is fetchable
-// (the source declares `body:`), never (it does not), or the fetch failed (reported, with
-// the day's document left untouched — nothing fetched is ever stored).
+// (the source declares `body:`), never (it does not), or the fetch failed. Policy none leaves
+// the fetched text ephemeral; cache and sync publish it only in the ignored body cache.
 func attachBody(ctx context.Context, base *Base, result *ReadResult, document *sources.Document, record sources.Record) error {
 	source, err := base.Source(document.Source)
 	if err != nil {
@@ -295,12 +310,30 @@ func attachBody(ctx context.Context, base *Base, result *ReadResult, document *s
 		}
 		return fmt.Errorf("source %s declares no body: command, so its record bodies are not fetchable", document.Source)
 	}
+	if source.CachesBodies() {
+		body, _, found, err := readCachedBody(ctx, base, result.URI)
+		if err != nil {
+			result.BodyState = "failed"
+			return err
+		}
+		if found {
+			result.Body, result.BodyState = body, "cached"
+			return nil
+		}
+	}
 	body, err := base.RunBody(ctx, source, document.Fields, record)
 	if err != nil {
 		result.BodyState = "failed"
 		return err
 	}
 	result.Body, result.BodyState = body, "fetched"
+	if source.CachesBodies() {
+		if _, err := cacheBody(ctx, base, document, record, result.URI, body); err != nil {
+			result.BodyState = "failed"
+			return fmt.Errorf("cache body for %s: %w", result.URI, err)
+		}
+		result.BodyState = "fetched-and-cached"
+	}
 	return nil
 }
 

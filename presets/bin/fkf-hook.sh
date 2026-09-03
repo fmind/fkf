@@ -1,15 +1,16 @@
 #!/bin/sh
-# fkf-hook.sh <harness> — written into <base>/bin by `fkf init`. The session-start hook for the base
+# fkf-hook.sh <harness> [fkf-executable] — written into <base>/bin by `fkf init`. The session-start hook for the base
 # this script lives in: it reads the hook's stdin when the harness sends one, finds the repository
-# and branch the agent is working in, asks `fkf context` for a budgeted pack about them, and
-# prints it in the envelope the harness expects. One script, one line per harness:
+# and branch the agent is working in, combines yesterday's stored digest with a budgeted
+# repository pack, and prints it in the envelope the harness expects. One script, one line per harness:
 #
-#   claude       plain text on stdout              Claude Code    SessionStart, UserPromptSubmit
-#   codex        plain text on stdout              Codex CLI      SessionStart, UserPromptSubmit
-#   kiro         plain text on stdout              Kiro           SessionStart, UserPromptSubmit
-#   copilot      {"additionalContext": …}          Copilot CLI    sessionStart
-#   gemini       {"hookSpecificOutput": …}         Gemini CLI     SessionStart, BeforeAgent
-#   devin        {"hookSpecificOutput": …}         Devin Local    SessionStart, UserPromptSubmit
+#   claude       plain text on stdout              Claude Code    SessionStart
+#   codex        {"hookSpecificOutput": …}         Codex CLI      SessionStart
+#   opencode     plain text for its plugin         OpenCode       first system transform
+#   grok         plain text (currently ignored)    Grok           SessionStart
+#   kiro         plain text on stdout              Kiro           SessionStart
+#   copilot      {} (stdout is ignored)             Copilot CLI    sessionStart
+#   gemini       {"hookSpecificOutput": …}         Gemini CLI     SessionStart
 #   cursor       {"additional_context": …}         Cursor         sessionStart
 #   antigravity  {"injectSteps": …}                Antigravity    PreInvocation, first call only
 #   cline        {"contextModification": …}        Cline          TaskStart
@@ -22,8 +23,11 @@
 # that starts every session empty, lower it when the hook also fires on every prompt.
 set -u
 
-harness=${1:?usage: fkf-hook.sh <claude|codex|kiro|copilot|gemini|devin|cursor|antigravity|cline>}
-budget=1500
+harness=${1:?usage: fkf-hook.sh <claude|codex|gemini|copilot|antigravity|opencode|grok|cursor|kiro|cline>}
+fkf_executable=${2-}
+day_budget=600
+repository_budget=850
+compact_budget=600
 
 # Resolve the base with shell builtins before any command lookup. The inherited PATH is
 # untrusted: an agent launched inside a checkout commonly inherits an absolute .venv/bin or
@@ -48,18 +52,32 @@ esac
 export PATH
 unset script_dir
 
+# Managed harness entries pass the exact binary that installed them, avoiding a stale release
+# earlier on PATH. A direct/manual invocation may still resolve fkf from the closed PATH above.
+if [ -n "$fkf_executable" ]; then
+  case "$fkf_executable" in /*) [ -x "$fkf_executable" ] || exit 0 ;; *) exit 0 ;; esac
+else
+  fkf_executable=$(command -v fkf 2>/dev/null || true)
+  [ -n "$fkf_executable" ] || exit 0
+fi
+
 # Every JSON envelope needs jq; without it the promise to never block wins over the pack.
-command -v jq >/dev/null 2>&1 || case "$harness" in claude | codex | kiro) ;; *) exit 0 ;; esac
+command -v jq >/dev/null 2>&1 || case "$harness" in claude | opencode | grok | kiro) ;; *) exit 0 ;; esac
 
 # The hook's JSON arrives on stdin for every harness that sends one; a terminal means none.
 input=""
 if [ ! -t 0 ]; then input=$(cat 2>/dev/null || true); fi
 field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null || true; }
 
+# Claude's compact source already carries the conversation summary. Re-inject only the smaller
+# repository reminder there; startup keeps the ordinary session pack.
+compact=false
+if [ "$harness" = "claude" ] && [ "$(field '.source')" = "compact" ]; then compact=true; fi
+
 # Nothing to add is a valid answer, spelled the way each harness reads it.
 empty() {
   case "$harness" in
-    claude | codex | kiro) : ;;
+    claude | opencode | grok | kiro) : ;;
     cline) echo '{"cancel":false}' ;;
     *) echo '{}' ;;
   esac
@@ -74,7 +92,7 @@ esac
 # Where the agent works: the harness's own field first (user-level hooks often run from the
 # configuration directory, not the project), then the environment, then this process's cwd.
 dir=$(field '.cwd // .workspace_roots[0] // .workspacePaths[0] // .workspaceRoots[0] // .workspaceInfo.rootPath')
-[ -n "$dir" ] || dir=${CLAUDE_PROJECT_DIR:-${GEMINI_PROJECT_DIR:-${DEVIN_PROJECT_DIR:-$PWD}}}
+[ -n "$dir" ] || dir=${CLAUDE_PROJECT_DIR:-${GEMINI_PROJECT_DIR:-$PWD}}
 
 # repo_name accepts only an exact GitHub owner/name from a plain identifier, a github.com URL,
 # or a github.com SCP-style remote. Authority userinfo, other hosts, and malformed paths never
@@ -116,14 +134,35 @@ remote=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
 repo=$(repo_name "$remote")
 branch=$(git -C "$dir" branch --show-current 2>/dev/null || true)
 query=$(printf '%s %s' "$repo" "$branch" | sed 's/^ *//; s/ *$//')
-[ -n "$query" ] || empty
-pack=$(fkf context --base "$base" --budget "$budget" --format text -- "$query" 2>/dev/null || true)
+
+# Startup carries two independently bounded stored reads. Their 600 + 850 token budgets leave
+# room inside the historical 1500-token hook envelope for the two labels below. Compact already
+# has the conversation summary, so it skips yesterday and keeps only a 600-token repository cue.
+pack=""
+if [ "$compact" = false ]; then
+  day_pack=$("$fkf_executable" day yesterday --base "$base" --budget "$day_budget" --format text 2>/dev/null || true)
+  if [ -n "$day_pack" ]; then pack=$(printf 'Yesterday:\n%s' "$day_pack"); fi
+fi
+repository_pack=""
+if [ -n "$query" ]; then
+  budget=$repository_budget
+  if [ "$compact" = true ]; then budget=$compact_budget; fi
+  repository_pack=$("$fkf_executable" context --base "$base" --budget "$budget" --format text -- "$query" 2>/dev/null || true)
+fi
+if [ -n "$repository_pack" ]; then
+  if [ -n "$pack" ]; then
+    pack=$(printf '%s\n\nRepository:\n%s' "$pack" "$repository_pack")
+  else
+    pack=$repository_pack
+  fi
+fi
 [ -n "$pack" ] || empty
 
 case "$harness" in
-  claude | codex | kiro) printf '%s\n' "$pack" ;;
-  copilot) printf '%s' "$pack" | jq -Rs '{additionalContext: .}' ;;
-  gemini | devin)
+  claude | opencode | grok | kiro) printf '%s\n' "$pack" ;;
+  codex) printf '%s' "$pack" | jq -Rs '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: .}}' ;;
+  copilot) echo '{}' ;;
+  gemini)
     event=$(field '.hook_event_name'); event=${event:-SessionStart}
     printf '%s' "$pack" | jq -Rs --arg event "$event" '{hookSpecificOutput: {hookEventName: $event, additionalContext: .}}'
     ;;

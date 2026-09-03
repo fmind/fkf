@@ -41,7 +41,7 @@ func TestTextRenderingCoversTheReadSurface(t *testing.T) {
 	}{
 		{"find records", []string{"find", "--limit", "2"}, []string{"record(s) scanned"}},
 		{"find count", []string{"find", "--count"}, []string{"day(s)"}},
-		{"context", []string{"context", "retrieval boundary", "--explain"}, []string{"pack for", "candidate(s)", "untrusted data", "ranking v", "digest", "as of"}},
+		{"context", []string{"context", "retrieval boundary", "--explain"}, []string{"pack for", "selected", "untrusted data", "ranking v", "digest", "as_of"}},
 		{"read a page", []string{"read", "wiki/retrieval-boundary.md"}, []string{"[page]"}},
 		{"read a document", []string{"read", "events/"}, []string{"[directory]"}},
 		{"read a record", []string{"read", "", ""}, nil}, // filled in below
@@ -64,7 +64,7 @@ func TestTextRenderingCoversTheReadSurface(t *testing.T) {
 		{"status", []string{"status"}, []string{"events", "wiki", "next"}},
 		{"new task", []string{"new", "task", "sample-task"}, []string{"tasks/"}},
 		{"config", []string{"config"}, []string{"layers:", "sync:"}},
-		{"trust", []string{"trust", "--check"}, []string{"enables no source"}},
+		{"trust", []string{"trust", "--check"}, []string{"git-commits", "enabled: false"}},
 		{"source tests", []string{"test"}, []string{"0 passed", "0 failed"}},
 	}
 	// The listing leads with the day's URI (events/<date>/), so the date is the middle segment.
@@ -109,6 +109,7 @@ func TestTrustTextDisclosesFieldsThatSelectBodyArguments(t *testing.T) {
 	report := &services.TrustReport{
 		Commands: []services.TrustedSource{{
 			Name: "source", Enabled: true, Layer: core.LayerEvents,
+			Auth:       []string{"cli", "auth", "status"},
 			Body:       []string{"cli", "view", "{{id}}", "{{project}}"},
 			BodyFields: core.FieldMap{core.FieldID: {id}, "project": {project, fallback}},
 		}},
@@ -116,9 +117,25 @@ func TestTrustTextDisclosesFieldsThatSelectBodyArguments(t *testing.T) {
 	}
 	var output bytes.Buffer
 	writeTrustText(&textWriter{out: &output}, report)
-	for _, want := range []string{"body field id: .id", "body field project: [.project, .fallback]"} {
+	for _, want := range []string{
+		`auth: ["cli", "auth", "status"]`,
+		"body field id: .id", "body field project: [.project, .fallback]",
+	} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("trust output = %q, want %q", output.String(), want)
+		}
+	}
+}
+
+func TestUpgradeTextWarnsWhenAnotherBinaryPrecedesTheTarget(t *testing.T) {
+	var output bytes.Buffer
+	writeUpgradeText(&textWriter{out: &output}, &services.UpgradeReport{
+		Previous: "v1.0.0", Current: "v1.1.0", Updated: true,
+		Path: "/opt/fkf/bin/fkf", PrecededBy: "/home/example/go/bin/fkf",
+	})
+	for _, want := range []string{"warning:", "/home/example/go/bin/fkf", "/opt/fkf/bin/fkf", "PATH"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("upgrade output = %q, want %q", output.String(), want)
 		}
 	}
 }
@@ -196,7 +213,7 @@ func TestInitTextShowsWhatChangedAndWhatIsNext(t *testing.T) {
 	}
 	for _, want := range []string{
 		"created " + root, "+ fkf.yaml", "+ layers", "+ .gitignore", "+ .gitattributes",
-		"+ AGENTS.md", "+ .agents/skills/", "+ trusted", "next", "claude mcp add",
+		"+ AGENTS.md", "+ .agents/skills/", "+ trusted", "next", "fkf harness install --all", "fkf schedule install",
 	} {
 		if !strings.Contains(got.stdout, want) {
 			t.Fatalf("stdout = %q, want it to contain %q", got.stdout, want)
@@ -224,7 +241,7 @@ func TestSyncTextReportsPerUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := "sources:\n  synthetic:\n    enabled: true\n    layer: events\n" +
-		`    run: [printf, '[{"id":"a","t":"{{start}}"}]']` + "\n    fields:\n      id: .id\n      time: .t\n"
+		`    run: [printf, '[{"id":"a","t":"{{start}}"}]']` + "\n    fields:\n      id: .id\n      time: .t\n      title: .id\n"
 	if err := os.WriteFile(config, []byte(strings.Replace(string(data), "sources: {}", source, 1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -263,6 +280,7 @@ func TestSyncFailureNamesTheSubstitutedCommandWithoutProviderStderr(t *testing.T
     fields:
       id: .id
       time: .time
+      title: .id
 `
 	if err := os.WriteFile(config, []byte(strings.Replace(string(data), "sources: {}", source, 1)), 0o600); err != nil {
 		t.Fatal(err)
@@ -459,5 +477,37 @@ func TestReadRecordTextPrintsEveryStoredField(t *testing.T) {
 	}
 	if !slices.IsSorted(keys) {
 		t.Errorf("record fields render in %v, which is not sorted", keys)
+	}
+}
+
+func TestSyncTextKeepsTimerNoOpsToOneLineAndNamesAuthGaps(t *testing.T) {
+	var output bytes.Buffer
+	writeSyncText(&textWriter{out: &output}, &services.SyncReport{NothingDue: true, Elapsed: "4ms"})
+	if got := output.String(); got != "nothing due (4ms)\n" {
+		t.Fatalf("nothing-due output = %q, want one compact line", got)
+	}
+
+	output.Reset()
+	writeSyncText(&textWriter{out: &output}, &services.SyncReport{
+		Units:        []services.SyncUnit{{Source: "google-calendar-events", Outcome: services.OutcomeAuthRequired}},
+		AuthRequired: []string{"google-calendar-events"}, Complete: true,
+	})
+	if got := output.String(); !strings.Contains(got, "auth-required") ||
+		!strings.Contains(got, "auth required: google-calendar-events") {
+		t.Fatalf("auth-gap output = %q, want unit and summary", got)
+	}
+}
+
+func TestStatusTextNamesLiveAuthAndHarnessState(t *testing.T) {
+	var output bytes.Buffer
+	writeStatusText(&textWriter{out: &output}, &services.Status{
+		Name: "brain", Base: "/tmp/brain", AuthRequired: []string{"google-calendar-events"},
+		Sources:   []services.SourceStatus{{Name: "google-calendar-events", Enabled: true, Auth: true, AuthRequired: true}},
+		Harnesses: []services.HarnessRegistration{{Name: "codex", Registered: true}, {Name: "grok", Changes: 2}},
+	})
+	for _, want := range []string{"auth-required", "auth required: google-calendar-events", "registered for this base: codex"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("status output = %q, want %q", output.String(), want)
+		}
 	}
 }

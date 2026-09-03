@@ -34,6 +34,8 @@ const (
 	OutcomeFailed SyncOutcome = "failed"
 	// OutcomePlanned is what --dry-run reports: this is what would have run.
 	OutcomePlanned SyncOutcome = "planned"
+	// OutcomeAuthRequired means the source had due work but its declared readiness probe failed.
+	OutcomeAuthRequired SyncOutcome = "auth-required"
 )
 
 // SyncUnit is one (source, day) pair and its result.
@@ -50,23 +52,36 @@ type SyncUnit struct {
 	// Attempts is set only when the declared retry policy actually ran the command more than
 	// once. A retried failure must never be quieter than a first-try one.
 	Attempts int `json:"attempts,omitempty"`
+	// BodiesCached and BodyFailures describe the rebuildable cache separately from the
+	// durable document outcome. A body failure never rolls back complete evidence.
+	BodiesCached     int    `json:"bodies_cached,omitempty"`
+	BodyFailures     int    `json:"body_failures,omitempty"`
+	BodyError        string `json:"body_error,omitempty"`
+	BodyAuthRequired bool   `json:"body_auth_required,omitempty"`
 }
 
 // SyncReport is what `fkf sync` returns. A caller reads its exit code; a timer unit is six
 // documented lines rather than a command fkf has to own.
 type SyncReport struct {
-	Base     string       `json:"base"`
-	DryRun   bool         `json:"dry_run,omitempty"`
-	Preview  *SyncPreview `json:"preview,omitempty"`
-	Window   Window       `json:"window"`
-	Units    []SyncUnit   `json:"units"`
-	Written  int          `json:"written"`
-	Skipped  int          `json:"skipped"`
-	Failed   int          `json:"failed"`
-	Records  int          `json:"records"`
-	Graph    *GraphBuild  `json:"graph,omitempty"`
-	Elapsed  string       `json:"elapsed"`
-	Complete bool         `json:"complete"`
+	Base    string       `json:"base"`
+	DryRun  bool         `json:"dry_run,omitempty"`
+	Preview *SyncPreview `json:"preview,omitempty"`
+	Window  Window       `json:"window"`
+	Units   []SyncUnit   `json:"units"`
+	Written int          `json:"written"`
+	Skipped int          `json:"skipped"`
+	Failed  int          `json:"failed"`
+	// AuthRequired names sources whose due work was skipped after their readiness probe failed.
+	AuthRequired []string           `json:"auth_required,omitempty"`
+	Records      int                `json:"records"`
+	BodiesCached int                `json:"bodies_cached,omitempty"`
+	BodyFailed   int                `json:"body_failed,omitempty"`
+	Graph        *GraphBuild        `json:"graph,omitempty"`
+	Index        *LexicalIndexBuild `json:"index,omitempty"`
+	Elapsed      string             `json:"elapsed"`
+	Complete     bool               `json:"complete"`
+	// NothingDue lets timer-facing renderers collapse an opportunistic no-op to one line.
+	NothingDue bool `json:"nothing_due,omitempty"`
 }
 
 // SyncPreview is a validated, non-persistent sample from exactly one source.
@@ -87,20 +102,76 @@ type SyncRequest struct {
 	DryRun  bool
 	NoGraph bool
 	Preview bool
+	IfDue   bool
 }
 
-// Sync collects every unit the window is missing.
-func Sync(ctx context.Context, base *Base, request SyncRequest) (*SyncReport, error) {
-	if request.Preview {
-		return previewSync(ctx, base, request)
+// SyncPreflight is the read-only answer used to decide whether an opportunistic sync needs a
+// writer lock. Sync repeats the same check after the lock to close the planning race.
+type SyncPreflight struct {
+	Base       string   `json:"base"`
+	Window     Window   `json:"window"`
+	Due        bool     `json:"due"`
+	DueSources []string `json:"due_sources,omitempty"`
+	Elapsed    string   `json:"elapsed"`
+}
+
+// Report returns the no-work sync result a caller may emit without taking the writer lock.
+func (preflight *SyncPreflight) Report() *SyncReport {
+	return &SyncReport{
+		Base: preflight.Base, Window: preflight.Window, Units: []SyncUnit{},
+		Elapsed: preflight.Elapsed, Complete: true, NothingDue: true,
 	}
-	targets, err := resolveTargets(base, request.Targets)
+}
+
+// PreflightSync computes whether any selected source has work without executing or writing.
+func PreflightSync(ctx context.Context, base *Base, request SyncRequest) (*SyncPreflight, error) {
+	if err := validateSyncRequest(request); err != nil {
+		return nil, err
+	}
+	started := base.Now()
+	targets, err := resolveTargets(base, request.Targets, false)
 	if err != nil {
 		return nil, err
 	}
 	days, window, err := planDays(base, request)
 	if err != nil {
 		return nil, err
+	}
+	preflight := &SyncPreflight{Base: base.Root(), Window: window, DueSources: []string{}}
+	preflight.DueSources, err = dueSyncSources(ctx, base, planUnits(targets, days), request)
+	if err != nil {
+		return nil, err
+	}
+	preflight.Due = len(preflight.DueSources) > 0
+	preflight.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
+	return preflight, nil
+}
+
+// Sync collects every unit the window is missing.
+func Sync(ctx context.Context, base *Base, request SyncRequest) (*SyncReport, error) {
+	if err := validateSyncRequest(request); err != nil {
+		return nil, err
+	}
+	if request.Preview {
+		return previewSync(ctx, base, request)
+	}
+	targets, err := resolveTargets(base, request.Targets, request.DryRun)
+	if err != nil {
+		return nil, err
+	}
+	days, window, err := planDays(base, request)
+	if err != nil {
+		return nil, err
+	}
+	work := planUnits(targets, days)
+	if request.IfDue {
+		due, err := dueSyncSources(ctx, base, work, request)
+		if err != nil {
+			return nil, err
+		}
+		if len(due) == 0 {
+			return (&SyncPreflight{Base: base.Root(), Window: window}).Report(), nil
+		}
 	}
 	if !request.DryRun {
 		if err := base.RequireTrust(ctx); err != nil {
@@ -112,17 +183,55 @@ func Sync(ctx context.Context, base *Base, request SyncRequest) (*SyncReport, er
 	}
 	started := base.Now()
 	report := &SyncReport{Base: base.Root(), DryRun: request.DryRun, Window: window, Units: []SyncUnit{}}
-	work := planUnits(targets, days)
 	if err := runUnits(ctx, base, report, work, request); err != nil {
 		return nil, err
 	}
+	if !request.DryRun {
+		if err := syncRequestedBodies(ctx, base, report); err != nil {
+			return nil, err
+		}
+	}
+	summarizeSyncReport(report, request)
+	// Derived caches change only when their inputs changed. Bodies affect lexical candidates,
+	// never graph evidence; a cache-only repair must not republish the graph generation.
+	if !request.DryRun && (report.Written > 0 || report.BodiesCached > 0) {
+		if err := rebuildDerived(ctx, base, report, request); err != nil {
+			report.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
+			return report, fmt.Errorf("source documents are complete but derived rebuild failed; run `fkf build` to retry it: %w", err)
+		}
+	}
+	report.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
+	return report, nil
+}
+
+func dueSyncSources(
+	ctx context.Context, base *Base, work []syncWork, request SyncRequest,
+) ([]string, error) {
+	dueSources := make([]string, 0)
+	for _, item := range work {
+		due, err := syncWorkDue(ctx, base, item, request)
+		if err != nil {
+			return nil, err
+		}
+		if due {
+			dueSources = append(dueSources, item.source.Name)
+		}
+	}
+	slices.Sort(dueSources)
+	return slices.Compact(dueSources), nil
+}
+
+func summarizeSyncReport(report *SyncReport, request SyncRequest) {
 	sort.SliceStable(report.Units, func(i, j int) bool {
 		if report.Units[i].Date != report.Units[j].Date {
 			return report.Units[i].Date < report.Units[j].Date
 		}
 		return report.Units[i].Source < report.Units[j].Source
 	})
+	authRequired := make(map[string]struct{})
 	for _, unit := range report.Units {
+		report.BodiesCached += unit.BodiesCached
+		report.BodyFailed += unit.BodyFailures
 		switch unit.Outcome {
 		case OutcomeWritten:
 			report.Written++
@@ -131,20 +240,31 @@ func Sync(ctx context.Context, base *Base, request SyncRequest) (*SyncReport, er
 			report.Skipped++
 		case OutcomeFailed:
 			report.Failed++
+		case OutcomeAuthRequired:
+			authRequired[unit.Source] = struct{}{}
+		}
+		if unit.BodyAuthRequired {
+			authRequired[unit.Source] = struct{}{}
 		}
 	}
-	report.Complete = report.Failed == 0
-	// A derived-stage failure happens after complete source documents are atomically filed.
-	// The ordinary retry therefore sees those units as existing; retry derived work for both
-	// newly written and already-collected inputs so that failure cannot become sticky.
-	if !request.DryRun && (report.Written > 0 || report.Skipped > 0) {
-		if err := rebuildDerived(ctx, base, report, request); err != nil {
-			report.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
-			return report, fmt.Errorf("source documents are complete but derived rebuild failed; rerun the same sync to retry it: %w", err)
-		}
+	for source := range authRequired {
+		report.AuthRequired = append(report.AuthRequired, source)
 	}
-	report.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
-	return report, nil
+	sort.Strings(report.AuthRequired)
+	report.Complete = report.Failed == 0 && report.BodyFailed == 0
+	if request.IfDue && report.Written == 0 && report.Failed == 0 && report.BodiesCached == 0 &&
+		report.BodyFailed == 0 && len(report.AuthRequired) == 0 {
+		report.NothingDue = true
+		report.Units = []SyncUnit{}
+		report.Skipped = 0
+	}
+}
+
+func validateSyncRequest(request SyncRequest) error {
+	if request.IfDue && (request.Force || request.DryRun || request.Preview) {
+		return fmt.Errorf("%w: --if-due cannot be combined with --force, --dry-run, or --preview", core.ErrConfig)
+	}
+	return nil
 }
 
 func previewSync(ctx context.Context, base *Base, request SyncRequest) (*SyncReport, error) {
@@ -154,14 +274,16 @@ func previewSync(ctx context.Context, base *Base, request SyncRequest) (*SyncRep
 	if request.Days != 0 || request.Force || request.DryRun || request.NoGraph {
 		return nil, fmt.Errorf("%w: --preview may be combined only with --date", core.ErrConfig)
 	}
-	targets, err := resolveTargets(base, request.Targets)
+	targets, err := resolveTargets(base, request.Targets, false)
 	if err != nil {
 		return nil, err
 	}
 	source := targets[0]
+	if source.Layer == core.LayerTasks {
+		return nil, fmt.Errorf("%w: --preview is unavailable for a tasks source; use --dry-run to inspect its command", core.ErrConfig)
+	}
 	started := base.Now()
 	window := Window{}
-	collectionWindow := sources.Window{}
 	date := ""
 	if source.Layer == core.LayerEvents {
 		date = request.Date
@@ -172,17 +294,37 @@ func previewSync(ctx context.Context, base *Base, request SyncRequest) (*SyncRep
 			}
 			date = completed[0].Format(time.DateOnly)
 		}
-		days, planned, err := planDays(base, SyncRequest{Date: date})
+		_, planned, err := planDays(base, SyncRequest{Date: date})
 		if err != nil {
 			return nil, err
 		}
 		window = planned
-		collectionWindow = sources.DayWindow(days[0])
 	} else if request.Date != "" {
 		return nil, fmt.Errorf("%w: --date applies only to an events source", core.ErrConfig)
 	}
+	collectionWindow, err := sourceCollectionWindow(source, date, started)
+	if err != nil {
+		return nil, err
+	}
 	if err := base.RequireTrust(ctx); err != nil {
 		return nil, err
+	}
+	ready, err := runAuthProbe(ctx, base, source)
+	if err != nil {
+		return nil, err
+	}
+	if !ready {
+		uri := sources.IndexDocumentURI(source.Name)
+		if source.Layer == core.LayerEvents {
+			uri = sources.EventDocumentURI(date, source.Name)
+		}
+		return &SyncReport{
+			Base: base.Root(), Window: window, Units: []SyncUnit{{
+				Source: source.Name, Kind: source.Layer, Date: date, URI: uri, Outcome: OutcomeAuthRequired,
+			}},
+			AuthRequired: []string{source.Name}, Complete: true,
+			Elapsed: base.Now().Sub(started).Round(time.Millisecond).String(),
+		}, nil
 	}
 	pacer := sources.NewPacer(base.Now)
 	runner := sources.NewPolicyRunner(sources.NewPacingRunner(base.Runner, pacer, source), source)
@@ -205,14 +347,23 @@ func previewSync(ctx context.Context, base *Base, request SyncRequest) (*SyncRep
 	return report, nil
 }
 
-func resolveTargets(base *Base, names []string) ([]*core.Source, error) {
+func resolveTargets(base *Base, names []string, allowDisabled bool) ([]*core.Source, error) {
 	if len(names) == 0 {
 		enabled := base.Config.EnabledSources()
-		if len(enabled) == 0 {
-			return nil, fmt.Errorf("%w: no source is enabled in %s; set `enabled: true` on the sources you want",
-				core.ErrConfig, base.Config.Path)
+		if len(enabled) > 0 {
+			return enabled, nil
 		}
-		return enabled, nil
+		if allowDisabled {
+			targets := make([]*core.Source, 0, len(base.Config.Sources))
+			for _, name := range base.Config.SourceNames() {
+				targets = append(targets, base.Config.Sources[name])
+			}
+			if len(targets) > 0 {
+				return targets, nil
+			}
+		}
+		return nil, fmt.Errorf("%w: no source is enabled in %s; set `enabled: true` on the sources you want",
+			core.ErrConfig, base.Config.Path)
 	}
 	targets := make([]*core.Source, 0, len(names))
 	seen := make(map[string]struct{}, len(names))
@@ -225,7 +376,7 @@ func resolveTargets(base *Base, names []string) ([]*core.Source, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !source.Enabled {
+		if !source.Enabled && !allowDisabled {
 			return nil, fmt.Errorf("%w: source %s is disabled; set `sources.%s.enabled: true` in %s to collect it",
 				core.ErrConfig, name, name, base.Config.Path)
 		}
@@ -238,7 +389,7 @@ func resolveTargets(base *Base, names []string) ([]*core.Source, error) {
 func planDays(base *Base, request SyncRequest) ([]time.Time, Window, error) {
 	now := base.Now()
 	if request.Date != "" {
-		day, err := sources.ParseDay(request.Date)
+		day, err := sources.ParseDayInLocation(request.Date, now.Location())
 		if err != nil {
 			return nil, Window{}, err
 		}
@@ -273,13 +424,14 @@ func planDays(base *Base, request SyncRequest) ([]time.Time, Window, error) {
 // normalizes that request to another day and could otherwise plan today twice. Missing labels
 // are not days, so they do not consume the caller's requested count.
 func previousCompletedDays(now time.Time, count int) ([]time.Time, error) {
-	anchor, err := time.Parse(time.DateOnly, now.Format(time.DateOnly))
+	loc := now.Location()
+	anchor, err := time.ParseInLocation(time.DateOnly, now.Format(time.DateOnly), loc)
 	if err != nil {
 		return nil, fmt.Errorf("anchor completed-day planning: %w", err)
 	}
 	days := make([]time.Time, 0, count)
 	for cursor := anchor.AddDate(0, 0, -1); len(days) < count; cursor = cursor.AddDate(0, 0, -1) {
-		day, err := sources.ParseDay(cursor.Format(time.DateOnly))
+		day, err := sources.ParseDayInLocation(cursor.Format(time.DateOnly), loc)
 		if errors.Is(err, sources.ErrCivilDateDoesNotExist) {
 			continue
 		}
@@ -293,10 +445,9 @@ func previousCompletedDays(now time.Time, count int) ([]time.Time, error) {
 }
 
 // syncWork is one item under the concurrency guard. A `window: true` source's whole requested
-// range is ONE item — one process, one slot — that produces MANY report units when it runs;
-// every other source keeps the existing one-item-per-(source,day) shape. Grouping happens at
-// planning time rather than by post-processing the day list, so the two paths never have to
-// agree on how to undo each other's grouping.
+// range is ONE item — one process, one slot — that produces MANY report units when it runs.
+// Task imports are deliberately one item per day: their aggregate byte boundary must not
+// grow with a catch-up window. Every other source keeps the one-item-per-(source,day) shape.
 type syncWork struct {
 	source *core.Source
 	unit   SyncUnit // the single unit to collect; zero when dates is set
@@ -311,6 +462,10 @@ func planUnits(targets []*core.Source, days []time.Time) []syncWork {
 	work := make([]syncWork, 0, len(targets)*max(1, len(days)))
 	for _, source := range targets {
 		switch {
+		case source.Layer == core.LayerTasks:
+			for _, date := range dates {
+				work = append(work, syncWork{source: source, dates: []string{date}})
+			}
 		case source.Layer == core.LayerIndex:
 			work = append(work, syncWork{source: source, unit: SyncUnit{
 				Source: source.Name, Kind: source.Layer, URI: sources.IndexDocumentURI(source.Name),
@@ -329,11 +484,93 @@ func planUnits(targets []*core.Source, days []time.Time) []syncWork {
 	return work
 }
 
+func syncWorkDue(
+	ctx context.Context, base *Base, item syncWork, request SyncRequest,
+) (bool, error) {
+	if item.source.Layer == core.LayerTasks {
+		if request.Force {
+			return len(item.dates) > 0, nil
+		}
+		return taskTraceRangeDue(base, item.source.Name, item.dates)
+	}
+	if item.dates == nil {
+		skip, _, err := shouldSkip(ctx, base, item.source, item.unit, request)
+		if err != nil || !skip {
+			return !skip, err
+		}
+		return syncBodyDocumentDue(ctx, base, item.source, item.unit.URI)
+	}
+	for _, date := range item.dates {
+		unit := SyncUnit{
+			Source: item.source.Name, Kind: item.source.Layer, Date: date,
+			URI: sources.EventDocumentURI(date, item.source.Name),
+		}
+		skip, _, err := shouldSkip(ctx, base, item.source, unit, request)
+		if err != nil {
+			return false, err
+		}
+		if !skip {
+			return true, nil
+		}
+		bodyDue, err := syncBodyDocumentDue(ctx, base, item.source, unit.URI)
+		if err != nil {
+			return false, err
+		}
+		if bodyDue {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func runUnits(ctx context.Context, base *Base, report *SyncReport, work []syncWork, request SyncRequest) error {
-	workerCount := min(len(work), max(1, base.Config.Sync.Concurrency))
 	// One pacer per run, not per process: two syncs in one binary — a test suite — must never
 	// pace each other, and a source's `min_interval:` is about this run's calls to a provider.
 	pacer := sources.NewPacer(base.Now)
+	auth := newAuthProbeCache(base)
+	ordinary, baseReaders := partitionSyncWork(work)
+	for _, phase := range [][]syncWork{ordinary, baseReaders} {
+		if err := runUnitPhase(ctx, base, report, phase, request, pacer, auth); err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
+}
+
+// A run command that receives a base-owned path can intentionally join against durable
+// evidence. Run those collectors after all ordinary sources so they observe one completed
+// collection phase instead of racing the writes they validate. Unrelated work remains bounded
+// by sync.concurrency inside each phase.
+func partitionSyncWork(work []syncWork) (ordinary, baseReaders []syncWork) {
+	for _, item := range work {
+		if sourceReadsBase(item.source) {
+			baseReaders = append(baseReaders, item)
+		} else {
+			ordinary = append(ordinary, item)
+		}
+	}
+	return ordinary, baseReaders
+}
+
+func sourceReadsBase(source *core.Source) bool {
+	for _, argument := range source.Run {
+		if strings.Contains(argument, "{{base}}") {
+			return true
+		}
+	}
+	return false
+}
+
+func runUnitPhase(
+	ctx context.Context,
+	base *Base,
+	report *SyncReport,
+	work []syncWork,
+	request SyncRequest,
+	pacer *sources.Pacer,
+	auth *authProbeCache,
+) error {
+	workerCount := min(len(work), max(1, base.Config.Sync.Concurrency))
 	var (
 		next        int
 		workMutex   sync.Mutex
@@ -358,10 +595,12 @@ func runUnits(ctx context.Context, base *Base, report *SyncReport, work []syncWo
 				return
 			}
 			var results []SyncUnit
-			if item.dates != nil {
-				results = collectRangeGroup(ctx, base, item.source, item.dates, request, pacer)
+			if item.source.Layer == core.LayerTasks {
+				results = []SyncUnit{collectTaskTraceRange(ctx, base, item.source, item.dates, request, pacer, auth)}
+			} else if item.dates != nil {
+				results = collectRangeGroup(ctx, base, item.source, item.dates, request, pacer, auth)
 			} else {
-				results = []SyncUnit{collectUnit(ctx, base, item.source, item.unit, request, pacer)}
+				results = []SyncUnit{collectUnit(ctx, base, item.source, item.unit, request, pacer, auth)}
 			}
 			reportMutex.Lock()
 			report.Units = append(report.Units, results...)
@@ -379,21 +618,107 @@ func runUnits(ctx context.Context, base *Base, report *SyncReport, work []syncWo
 	return ctx.Err()
 }
 
-func collectUnit(
-	ctx context.Context, base *Base, source *core.Source,
-	unit SyncUnit, request SyncRequest, pacer *sources.Pacer,
+func collectTaskTraceRange(
+	ctx context.Context, base *Base, source *core.Source, dates []string,
+	request SyncRequest, pacer *sources.Pacer, auth *authProbeCache,
 ) SyncUnit {
 	started := base.Now()
-	window := sources.Window{}
-	if unit.Date != "" {
-		day, err := sources.ParseDay(unit.Date)
+	unit := SyncUnit{Source: source.Name, Kind: core.LayerTasks, URI: string(core.LayerTasks) + "/"}
+	if len(dates) == 0 {
+		unit.Outcome = OutcomeSkipped
+		return unit
+	}
+	unit.Date = dates[0]
+	window, err := windowSpanning(dates, started.Location())
+	if err != nil {
+		unit.Outcome, unit.Error = OutcomeFailed, err.Error()
+		return unit
+	}
+	spanSource := sourceWithWindowTimeout(source, base.Config.Sync.Timeout, len(dates))
+	command, err := sources.BuildRunCommand(spanSource, base.Env, window, base.Config.Sync.Timeout)
+	if err != nil {
+		unit.Outcome, unit.Error = OutcomeFailed, err.Error()
+		return unit
+	}
+	unit.Command = command.Display()
+	if request.DryRun {
+		unit.Outcome = OutcomePlanned
+		return unit
+	}
+	if !request.Force {
+		due, err := taskTraceRangeDue(base, source.Name, dates)
 		if err != nil {
 			unit.Outcome, unit.Error = OutcomeFailed, err.Error()
 			return unit
 		}
-		window = sources.DayWindow(day)
+		if !due {
+			unit.Outcome = OutcomeSkipped
+			return unit
+		}
 	}
-	command := sources.BuildRunCommand(source, base.Env, window, base.Config.Sync.Timeout)
+	ready, err := auth.ready(ctx, source)
+	if err != nil {
+		unit.Outcome, unit.Error = OutcomeFailed, err.Error()
+		return unit
+	}
+	if !ready {
+		unit.Outcome, unit.Command = OutcomeAuthRequired, ""
+		return unit
+	}
+	runner := sources.NewPolicyRunner(sources.NewPacingRunner(base.Runner, pacer, spanSource), spanSource)
+	stdout, err := runner.Run(ctx, command)
+	if attempts := runner.Attempts(); attempts > 1 {
+		unit.Attempts = attempts
+	}
+	if err != nil {
+		unit.Outcome, unit.Error = OutcomeFailed, err.Error()
+		unit.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
+		return unit
+	}
+	result, err := ImportSessionTraces(ctx, base, source, stdout, window)
+	if err != nil {
+		unit.Outcome, unit.Error = OutcomeFailed, err.Error()
+		unit.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
+		return unit
+	}
+	if err := checkContext(ctx); err != nil {
+		rollbackErr := rollbackImportedSessionTraces(base, result)
+		unit.Outcome, unit.Error = OutcomeFailed, errors.Join(err, rollbackErr).Error()
+		unit.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
+		return unit
+	}
+	if err := markTaskTraceRange(ctx, base, source.Name, dates, started.Location()); err != nil {
+		rollbackErr := rollbackImportedSessionTraces(base, result)
+		unit.Outcome, unit.Error = OutcomeFailed, errors.Join(err, rollbackErr).Error()
+		unit.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
+		return unit
+	}
+	unit.Count = result.Written
+	if result.Written == 0 {
+		unit.Outcome = OutcomeSkipped
+	} else {
+		unit.Outcome = OutcomeWritten
+	}
+	unit.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
+	return unit
+}
+
+func collectUnit(
+	ctx context.Context, base *Base, source *core.Source,
+	unit SyncUnit, request SyncRequest, pacer *sources.Pacer, auth *authProbeCache,
+) SyncUnit {
+	started := base.Now()
+	window, err := sourceCollectionWindow(source, unit.Date, started)
+	if err != nil {
+		unit.Outcome, unit.Error = OutcomeFailed, err.Error()
+		return unit
+	}
+	command, err := sources.BuildRunCommand(source, base.Env, window, base.Config.Sync.Timeout)
+	if err != nil {
+		unit.Outcome, unit.Error = OutcomeFailed, err.Error()
+		unit.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
+		return unit
+	}
 	unit.Command = command.Display()
 	skip, outcome, err := shouldSkip(ctx, base, source, unit, request)
 	if err != nil {
@@ -407,6 +732,16 @@ func collectUnit(
 	}
 	if request.DryRun {
 		unit.Outcome = OutcomePlanned
+		return unit
+	}
+	ready, err := auth.ready(ctx, source)
+	if err != nil {
+		unit.Outcome, unit.Error = OutcomeFailed, err.Error()
+		return unit
+	}
+	if !ready {
+		unit.Outcome = OutcomeAuthRequired
+		unit.Command = ""
 		return unit
 	}
 	// The declared invocation policy wraps the runner rather than replacing it, so the fake
@@ -434,6 +769,23 @@ func collectUnit(
 	return unit
 }
 
+// sourceCollectionWindow gives event sources their requested completed day and index sources
+// the current local day. The latter remains a replaceable point-in-time snapshot, but can use
+// the same exact date arguments for current agenda-like provider queries.
+func sourceCollectionWindow(source *core.Source, date string, now time.Time) (sources.Window, error) {
+	if date == "" {
+		if source.Layer != core.LayerIndex {
+			return sources.Window{}, nil
+		}
+		date = now.Format(time.DateOnly)
+	}
+	day, err := sources.ParseDayInLocation(date, now.Location())
+	if err != nil {
+		return sources.Window{}, err
+	}
+	return sources.DayWindow(day), nil
+}
+
 // collectRangeGroup runs a `window: true` source's command ONCE for the whole requested range
 // and turns what comes back into the same per-day SyncUnit shape every other source produces —
 // the grouping is invisible to everything that reads report.Units, including the CLI text
@@ -444,7 +796,7 @@ func collectUnit(
 // still amortizes the source's fixed process or pagination cost.
 func collectRangeGroup(
 	ctx context.Context, base *Base, source *core.Source,
-	dates []string, request SyncRequest, pacer *sources.Pacer,
+	dates []string, request SyncRequest, pacer *sources.Pacer, auth *authProbeCache,
 ) []SyncUnit {
 	started := base.Now()
 	units := make([]SyncUnit, 0, len(dates))
@@ -468,7 +820,24 @@ func collectRangeGroup(
 	if len(needed) == 0 {
 		return units
 	}
-	spans, err := contiguousDaySpans(needed)
+	if !request.DryRun {
+		ready, err := auth.ready(ctx, source)
+		if err != nil || !ready {
+			outcome := OutcomeAuthRequired
+			diagnostic := ""
+			if err != nil {
+				outcome, diagnostic = OutcomeFailed, err.Error()
+			}
+			for _, date := range needed {
+				units = append(units, SyncUnit{
+					Source: source.Name, Kind: source.Layer, Date: date,
+					URI: sources.EventDocumentURI(date, source.Name), Outcome: outcome, Error: diagnostic,
+				})
+			}
+			return units
+		}
+	}
+	spans, err := contiguousDaySpans(needed, started.Location())
 	if err != nil {
 		for _, date := range needed {
 			units = append(units, failedRangeUnit(source, date, "", err, started, base.Now()))
@@ -486,14 +855,21 @@ func collectRangeSpan(
 	request SyncRequest, pacer *sources.Pacer, started time.Time,
 ) []SyncUnit {
 	units := make([]SyncUnit, 0, len(dates))
-	rangeWindow, err := windowSpanning(dates)
+	rangeWindow, err := windowSpanning(dates, started.Location())
 	if err != nil {
 		for _, date := range dates {
 			units = append(units, failedRangeUnit(source, date, "", err, started, base.Now()))
 		}
 		return units
 	}
-	command := sources.BuildRunCommand(source, base.Env, rangeWindow, base.Config.Sync.Timeout)
+	spanSource := sourceWithWindowTimeout(source, base.Config.Sync.Timeout, len(dates))
+	command, err := sources.BuildRunCommand(spanSource, base.Env, rangeWindow, base.Config.Sync.Timeout)
+	if err != nil {
+		for _, date := range dates {
+			units = append(units, failedRangeUnit(source, date, "", err, started, base.Now()))
+		}
+		return units
+	}
 	if request.DryRun {
 		for _, date := range dates {
 			units = append(units, SyncUnit{
@@ -504,8 +880,8 @@ func collectRangeSpan(
 		}
 		return units
 	}
-	runner := sources.NewPolicyRunner(sources.NewPacingRunner(base.Runner, pacer, source), source)
-	documents, err := sources.CollectWindow(ctx, runner, source, base.Env, rangeWindow, dates, base.Config.Sync.Timeout, base.Now())
+	runner := sources.NewPolicyRunner(sources.NewPacingRunner(base.Runner, pacer, spanSource), spanSource)
+	documents, err := sources.CollectWindow(ctx, runner, spanSource, base.Env, rangeWindow, dates, base.Config.Sync.Timeout, base.Now())
 	attempts := runner.Attempts()
 	if err != nil {
 		for _, date := range dates {
@@ -538,17 +914,38 @@ func collectRangeSpan(
 	return units
 }
 
-func contiguousDaySpans(dates []string) ([][]string, error) {
+// sourceWithWindowTimeout preserves one contiguous-span invocation while giving it the same
+// total wall-clock allowance as day-at-a-time collection. A source override replaces the base
+// timeout before scaling, and the command boundary remains capped at one hour.
+func sourceWithWindowTimeout(source *core.Source, baseTimeout time.Duration, days int) *core.Source {
+	spanSource := *source
+	effective := baseTimeout
+	if source.Timeout > 0 {
+		effective = source.Timeout
+	}
+	if days > 1 {
+		factor := time.Duration(days)
+		if effective >= time.Hour/factor {
+			effective = time.Hour
+		} else {
+			effective *= factor
+		}
+	}
+	spanSource.Timeout = min(effective, time.Hour)
+	return &spanSource
+}
+
+func contiguousDaySpans(dates []string, loc *time.Location) ([][]string, error) {
 	if len(dates) == 0 {
 		return nil, nil
 	}
-	previous, err := sources.ParseDay(dates[0])
+	previous, err := sources.ParseDayInLocation(dates[0], loc)
 	if err != nil {
 		return nil, err
 	}
 	spans := [][]string{{dates[0]}}
 	for _, date := range dates[1:] {
-		current, err := sources.ParseDay(date)
+		current, err := sources.ParseDayInLocation(date, loc)
 		if err != nil {
 			return nil, err
 		}
@@ -565,12 +962,12 @@ func contiguousDaySpans(dates []string) ([][]string, error) {
 // windowSpanning builds the {{start}}/{{end}} boundary for a whole requested range, from the
 // first and last requested day's own DST-safe boundary — never from AddDate on either end,
 // which is exactly the arithmetic sources.DayWindow was fixed to avoid.
-func windowSpanning(dates []string) (sources.Window, error) {
-	first, err := sources.ParseDay(dates[0])
+func windowSpanning(dates []string, loc *time.Location) (sources.Window, error) {
+	first, err := sources.ParseDayInLocation(dates[0], loc)
 	if err != nil {
 		return sources.Window{}, err
 	}
-	last, err := sources.ParseDay(dates[len(dates)-1])
+	last, err := sources.ParseDayInLocation(dates[len(dates)-1], loc)
 	if err != nil {
 		return sources.Window{}, err
 	}
@@ -619,14 +1016,18 @@ func shouldSkip(ctx context.Context, base *Base, source *core.Source, unit SyncU
 // rebuildDerived regenerates the graph cache from stored input. A failure is reported without
 // rolling back complete source documents; an ordinary retry resumes this stage.
 func rebuildDerived(ctx context.Context, base *Base, report *SyncReport, request SyncRequest) error {
-	if request.NoGraph {
-		return nil
+	if !request.NoGraph && report.Written > 0 {
+		build, err := BuildGraph(ctx, base)
+		if err != nil {
+			return err
+		}
+		report.Graph = build
 	}
-	build, err := BuildGraph(ctx, base)
+	index, err := BuildIfStale(ctx, base, "index")
 	if err != nil {
 		return err
 	}
-	report.Graph = build
+	report.Index = index.Index
 	return nil
 }
 
@@ -638,15 +1039,19 @@ var ErrPartial = errors.New("collection was incomplete")
 func (r *SyncReport) FailureSummary() string {
 	var lines []string
 	for _, unit := range r.Units {
-		if unit.Outcome != OutcomeFailed {
+		if unit.Outcome != OutcomeFailed && unit.BodyFailures == 0 {
 			continue
 		}
 		label := unit.Source
 		if unit.Date != "" {
 			label += " " + unit.Date
 		}
-		line := "  " + label + ": " + unit.Error
-		if unit.Command != "" {
+		diagnostic := unit.Error
+		if unit.BodyFailures > 0 {
+			diagnostic = unit.BodyError
+		}
+		line := "  " + label + ": " + diagnostic
+		if unit.Command != "" && unit.Outcome == OutcomeFailed {
 			line += "\n    command: " + unit.Command
 		}
 		lines = append(lines, line)

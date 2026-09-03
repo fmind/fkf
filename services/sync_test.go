@@ -10,7 +10,9 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +36,220 @@ func syncBase(t *testing.T, stdout string) (*services.Base, *fakeRunner) {
 }
 
 const oneRecord = `[{"id":"a1","t":"2026-05-09T09:00:00Z","subject":"s","link":"https://x.test/a1","repo_uri":"repo:o/r","author_uris":["person:email/m@x.test"]}]`
+
+type authSyncRunner struct {
+	mutex sync.Mutex
+	calls []sources.Command
+}
+
+type authExitFailure struct{}
+
+func (authExitFailure) Error() string         { return "private auth error" }
+func (authExitFailure) ExitCode() (int, bool) { return 1, true }
+
+func (runner *authSyncRunner) Run(_ context.Context, command sources.Command) (string, error) {
+	runner.mutex.Lock()
+	runner.calls = append(runner.calls, command)
+	runner.mutex.Unlock()
+	if len(command.Argv) > 0 && command.Argv[0] == "gws" {
+		return "private auth output", authExitFailure{}
+	}
+	return "[]", nil
+}
+
+func TestSyncAuthProbeTreatsTrustDriftAsAUnitFailure(t *testing.T) {
+	base := newBase(t, authSyncConfig, nil)
+	base.Runner = sources.RunnerFunc(func(_ context.Context, command sources.Command) (string, error) {
+		if command.Argv[0] == "gh" || command.Argv[0] == "gws" {
+			return "", fmt.Errorf("revalidate declared command trust: %w", core.ErrUntrusted)
+		}
+		return "[]", nil
+	})
+	trust(t, base)
+	report, err := services.Sync(t.Context(), base, services.SyncRequest{Days: 1, NoGraph: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Failed != 2 || len(report.AuthRequired) != 0 || report.Complete {
+		t.Fatalf("sync report = %+v, want both auth-gated units failed on trust drift", report)
+	}
+	for _, unit := range report.Units {
+		if unit.Source != "local" && !strings.Contains(unit.Error, core.ErrUntrusted.Error()) {
+			t.Fatalf("auth-gated unit = %+v, want trust failure preserved", unit)
+		}
+	}
+}
+
+func (runner *authSyncRunner) countExecutable(name string) int {
+	runner.mutex.Lock()
+	defer runner.mutex.Unlock()
+	count := 0
+	for _, command := range runner.calls {
+		if len(command.Argv) > 0 && command.Argv[0] == name {
+			count++
+		}
+	}
+	return count
+}
+
+const authSyncConfig = `name: auth-sync
+layers: {events: true}
+sources:
+  local:
+    enabled: true
+    layer: events
+    run: [local-cli, "{{date}}"]
+    fields: {id: .id, time: .time, title: .id}
+  github:
+    enabled: true
+    layer: events
+    auth: [gh, auth, status]
+    run: [github-cli, "{{date}}"]
+    fields: {id: .id, time: .time, title: .id}
+  google:
+    enabled: true
+    layer: events
+    auth: [gws, auth, status]
+    run: [google-cli, "{{date}}"]
+    fields: {id: .id, time: .time, title: .id}
+`
+
+func TestSyncProbesAuthOncePerDueSourceAndKeepsTheRunComplete(t *testing.T) {
+	runner := &authSyncRunner{}
+	base := newBase(t, authSyncConfig, nil)
+	base.Runner = runner
+	trust(t, base)
+
+	report, err := services.Sync(t.Context(), base, services.SyncRequest{Days: 2, NoGraph: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Complete || report.Failed != 0 || !slices.Equal(report.AuthRequired, []string{"google"}) {
+		t.Fatalf("report = %+v, want a complete run naming only google as auth-required", report)
+	}
+	if runner.countExecutable("gh") != 1 || runner.countExecutable("gws") != 1 {
+		t.Fatalf("auth calls: gh=%d gws=%d, want one per due source",
+			runner.countExecutable("gh"), runner.countExecutable("gws"))
+	}
+	if runner.countExecutable("local-cli") != 2 || runner.countExecutable("github-cli") != 2 ||
+		runner.countExecutable("google-cli") != 0 {
+		t.Fatalf("collection calls: local=%d github=%d google=%d; want ready sources collected and google skipped",
+			runner.countExecutable("local-cli"), runner.countExecutable("github-cli"), runner.countExecutable("google-cli"))
+	}
+	for _, unit := range report.Units {
+		if unit.Source == "google" && (unit.Outcome != services.OutcomeAuthRequired || unit.Error != "") {
+			t.Fatalf("google unit = %+v, want a non-failing auth-required outcome with no private diagnostic", unit)
+		}
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "private auth") {
+		t.Fatalf("report leaked discarded auth output/error: %s", encoded)
+	}
+}
+
+func TestSyncDoesNotProbeAuthWithoutDueWorkOrDuringDryRun(t *testing.T) {
+	runner := &authSyncRunner{}
+	base := newBase(t, authSyncConfig, nil)
+	base.Runner = runner
+	trust(t, base)
+
+	if _, err := services.Sync(t.Context(), base, services.SyncRequest{Days: 1, DryRun: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("dry run executed %d command(s), want none", len(runner.calls))
+	}
+
+	readyOnly := strings.Replace(authSyncConfig, "    auth: [gws, auth, status]\n", "", 1)
+	readyBase := newBase(t, readyOnly, nil)
+	readyBase.Runner = runner
+	trust(t, readyBase)
+	if _, err := services.Sync(t.Context(), readyBase, services.SyncRequest{Days: 1, NoGraph: true}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(runner.calls)
+	if _, err := services.Sync(t.Context(), readyBase, services.SyncRequest{Days: 1, NoGraph: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != before {
+		t.Fatalf("no-due sync added %d command(s), want no auth or collection", len(runner.calls)-before)
+	}
+}
+
+func TestSyncRunsBaseReadingSourcesAfterOrdinaryCollection(t *testing.T) {
+	const config = `name: dependent-sync
+layers: {events: true}
+sync: {days: 1, concurrency: 4}
+sources:
+  calendar:
+    enabled: true
+    layer: events
+    window: true
+    run: [calendar-cli, "{{start}}", "{{end}}"]
+    fields: {id: .id, time: .time, title: .title}
+  notes:
+    enabled: true
+    layer: events
+    window: true
+    run: [notes-cli, "{{base}}", "{{start}}", "{{end}}"]
+    fields: {id: .id, time: .time, title: .title}
+`
+	base := newBase(t, config, nil)
+	notesStarted := make(chan struct{})
+	base.Runner = sources.RunnerFunc(func(_ context.Context, command sources.Command) (string, error) {
+		switch command.Argv[0] {
+		case "calendar-cli":
+			timer := time.NewTimer(100 * time.Millisecond)
+			defer timer.Stop()
+			select {
+			case <-notesStarted:
+			case <-timer.C:
+			}
+			return `[{"id":"calendar","time":"2026-05-09T09:00:00Z","title":"Calendar"}]`, nil
+		case "notes-cli":
+			close(notesStarted)
+			calendar := filepath.Join(base.Root(), "events", "2026-05-09", "calendar.json")
+			if _, err := os.Stat(calendar); err != nil {
+				return "", fmt.Errorf("notes observed collection before its durable calendar dependency: %w", err)
+			}
+			return `[{"id":"notes","time":"2026-05-09T09:05:00Z","title":"Notes"}]`, nil
+		default:
+			return "", fmt.Errorf("unexpected command %q", command.Argv[0])
+		}
+	})
+	trust(t, base)
+
+	report, err := services.Sync(t.Context(), base, services.SyncRequest{Days: 1, NoGraph: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Complete || report.Written != 2 || report.Failed != 0 {
+		t.Fatalf("sync report = %+v, want the base reader after the durable calendar write", report)
+	}
+}
+
+func TestSyncPreviewProbesAuthAndWritesNothing(t *testing.T) {
+	runner := &authSyncRunner{}
+	base := newBase(t, authSyncConfig, nil)
+	base.Runner = runner
+	trust(t, base)
+	report, err := services.Sync(t.Context(), base, services.SyncRequest{
+		Targets: []string{"google"}, Preview: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Complete || !slices.Equal(report.AuthRequired, []string{"google"}) || report.Preview != nil {
+		t.Fatalf("preview report = %+v, want a complete auth-required result without a sample", report)
+	}
+	if runner.countExecutable("gws") != 1 || runner.countExecutable("google-cli") != 0 {
+		t.Fatalf("preview calls: gws=%d google=%d, want only the readiness probe",
+			runner.countExecutable("gws"), runner.countExecutable("google-cli"))
+	}
+}
 
 func TestSyncCollectsTheMissingDays(t *testing.T) {
 	base, runner := syncBase(t, oneRecord)
@@ -71,6 +287,242 @@ func TestSyncCollectsTheMissingDays(t *testing.T) {
 	}
 }
 
+func TestSyncBodyPolicyPrefetchesAndExplicitlyRestoresAWipedCache(t *testing.T) {
+	config := strings.Replace(baseConfig,
+		"    body: [cli, view, \"{{id}}\"]\n",
+		"    body: [cli, view, \"{{id}}\"]\n    bodies: sync\n", 1)
+	runner := &fakeRunner{responses: map[string]string{
+		"cli --since": dayOne,
+		"cli view":    "meeting body text",
+	}}
+	base := newBase(t, config, runner)
+	trust(t, base)
+	request := services.SyncRequest{Date: "2026-05-04"}
+	first, err := services.Sync(t.Context(), base, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Written != 1 || first.BodiesCached != 2 || first.BodyFailed != 0 || !first.Complete ||
+		first.Graph == nil || first.Index == nil {
+		t.Fatalf("first sync = %+v", first)
+	}
+	read, err := services.Read(t.Context(), base,
+		"events/2026-05-04/synthetic.json#a1", services.ReadOptions{Body: true})
+	if err != nil || read.BodyState != "cached" || read.Body != "meeting body text" {
+		t.Fatalf("cached read = %+v, %v", read, err)
+	}
+	if _, err := services.PruneBodies(t.Context(), base); err != nil {
+		t.Fatal(err)
+	}
+	preflight, err := services.PreflightSync(t.Context(), base, services.SyncRequest{
+		Date: "2026-05-04", NoGraph: true, IfDue: true,
+	})
+	if err != nil || !preflight.Due {
+		t.Fatalf("preflight after body prune = %+v, %v; the newest sync-policy event should restore once", preflight, err)
+	}
+
+	runner = &fakeRunner{responses: map[string]string{"cli view": "updated meeting body text"}}
+	base.Runner = runner
+	restored, err := services.Sync(t.Context(), base, services.SyncRequest{
+		Date: "2026-05-04", IfDue: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Written != 0 || restored.Skipped != 1 || restored.BodiesCached != 2 ||
+		restored.BodyFailed != 0 || restored.Graph != nil || restored.Index == nil || len(runner.calls) != 2 {
+		t.Fatalf("ordinary cache restore = %+v, calls = %+v; want only the two body fetches", restored, runner.calls)
+	}
+
+	if _, err := services.PruneBodies(t.Context(), base); err != nil {
+		t.Fatal(err)
+	}
+	runner = &fakeRunner{responses: map[string]string{"cli view": "meeting body text"}}
+	base.Runner = runner
+	fetched, err := services.Read(t.Context(), base,
+		"events/2026-05-04/synthetic.json#a1", services.ReadOptions{Body: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fetched.BodyState != "fetched-and-cached" || fetched.Body != "meeting body text" || len(runner.calls) != 1 {
+		t.Fatalf("explicit body read = %+v, calls = %+v", fetched, runner.calls)
+	}
+
+	if _, err := services.PruneBodies(t.Context(), base); err != nil {
+		t.Fatal(err)
+	}
+	runner = &fakeRunner{responses: map[string]string{
+		"cli --since": dayOne,
+		"cli view":    "meeting body text",
+	}}
+	base.Runner = runner
+	forced, err := services.Sync(t.Context(), base, services.SyncRequest{
+		Date: "2026-05-04", NoGraph: true, Force: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forced.Written != 1 || forced.BodiesCached != 2 || forced.BodyFailed != 0 || len(runner.calls) != 3 {
+		t.Fatalf("forced recollection = %+v, calls = %+v; want collection plus both body prefetches", forced, runner.calls)
+	}
+}
+
+func TestSyncBodyPolicyRetriesATransientEventBodyFailureOnce(t *testing.T) {
+	config := strings.Replace(baseConfig,
+		"    body: [cli, view, \"{{id}}\"]\n",
+		"    body: [cli, view, \"{{id}}\"]\n    bodies: sync\n", 1)
+	base := newBase(t, config, nil)
+	bodyCalls := 0
+	base.Runner = sources.RunnerFunc(func(_ context.Context, command sources.Command) (string, error) {
+		if len(command.Argv) > 1 && command.Argv[0] == "cli" && command.Argv[1] == "view" {
+			bodyCalls++
+			return "", errors.New("historical backing file disappeared")
+		}
+		return dayOne, nil
+	})
+	trust(t, base)
+	request := services.SyncRequest{Date: "2026-05-04", NoGraph: true}
+	first, err := services.Sync(t.Context(), base, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Written != 1 || first.BodyFailed != 2 || first.Complete || bodyCalls != 2 {
+		t.Fatalf("first sync = %+v, body calls = %d; want one durable document and two reported prefetch failures",
+			first, bodyCalls)
+	}
+	document, err := base.ReadDocumentContext(t.Context(), "events/2026-05-04/synthetic.json")
+	if err != nil || document.Count != 2 || len(document.Records) != 2 {
+		t.Fatalf("stored evidence after body failures = %+v, %v; want the complete atomic document", document, err)
+	}
+
+	preflight, err := services.PreflightSync(t.Context(), base, services.SyncRequest{
+		Date: "2026-05-04", NoGraph: true, IfDue: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preflight.Due {
+		t.Fatalf("preflight = %+v; the failed new document must arm one bounded body retry", preflight)
+	}
+	second, err := services.Sync(t.Context(), base, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Written != 0 || second.Skipped != 1 || second.BodyFailed != 2 || second.Complete || bodyCalls != 4 {
+		t.Fatalf("second sync = %+v, body calls = %d; want exactly one retry of the failed document",
+			second, bodyCalls)
+	}
+	preflight, err = services.PreflightSync(t.Context(), base, services.SyncRequest{
+		Date: "2026-05-04", NoGraph: true, IfDue: true,
+	})
+	if err != nil || preflight.Due {
+		t.Fatalf("preflight after retry = %+v, %v; the exhausted retry must not run forever", preflight, err)
+	}
+}
+
+func TestSyncBodyPolicyRestoresOnlyTheNewestEventDocumentAfterPrune(t *testing.T) {
+	config := strings.Replace(baseConfig,
+		"    body: [cli, view, \"{{id}}\"]\n",
+		"    body: [cli, view, \"{{id}}\"]\n    bodies: sync\n", 1)
+	runner := &fakeRunner{responses: map[string]string{
+		"cli --since 2026-05-04": dayOne,
+		"cli --since 2026-05-05": strings.ReplaceAll(dayOne, "2026-05-04", "2026-05-05"),
+		"cli view":               "meeting body text",
+	}}
+	base := newBase(t, config, runner)
+	base.Now = func() time.Time { return time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC) }
+	trust(t, base)
+	request := services.SyncRequest{Days: 2, NoGraph: true}
+	first, err := services.Sync(t.Context(), base, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Written != 2 || first.BodiesCached != 4 || first.BodyFailed != 0 {
+		t.Fatalf("first sync = %+v, want two body-prefetched event documents", first)
+	}
+	if _, err := services.PruneBodies(t.Context(), base); err != nil {
+		t.Fatal(err)
+	}
+
+	runner = &fakeRunner{responses: map[string]string{"cli view": "restored body text"}}
+	base.Runner = runner
+	restored, err := services.Sync(t.Context(), base, services.SyncRequest{
+		Days: 2, NoGraph: true, IfDue: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Written != 0 || restored.Skipped != 2 || restored.BodiesCached != 2 ||
+		restored.BodyFailed != 0 || len(runner.calls) != 2 {
+		t.Fatalf("restore sync = %+v, calls = %+v; want newest-document body calls only", restored, runner.calls)
+	}
+	manifestData, err := os.ReadFile(filepath.Join(base.Root(), "bodies", "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest services.BodyManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Entries) != 2 || !manifest.EventAttempts["synthetic"] {
+		t.Fatalf("restored manifest = %+v, want two newest-day entries and one event attempt", manifest)
+	}
+	for uri := range manifest.Entries {
+		if !strings.HasPrefix(uri, "events/2026-05-05/synthetic.json#") {
+			t.Fatalf("restored historical body %q, want only the newest selected document", uri)
+		}
+	}
+	preflight, err := services.PreflightSync(t.Context(), base, services.SyncRequest{
+		Days: 2, NoGraph: true, IfDue: true,
+	})
+	if err != nil || preflight.Due {
+		t.Fatalf("preflight after one restore = %+v, %v; attempt must not repeat", preflight, err)
+	}
+}
+
+func TestSyncBodyPolicyRepairsTheCurrentIndexSnapshot(t *testing.T) {
+	config := strings.Replace(baseConfig, "    layer: events\n", "    layer: index\n", 1)
+	config = strings.Replace(config,
+		"    body: [cli, view, \"{{id}}\"]\n",
+		"    body: [cli, view, \"{{id}}\"]\n    bodies: sync\n", 1)
+	runner := &fakeRunner{responses: map[string]string{
+		"cli --since": dayOne,
+		"cli view":    "current body text",
+	}}
+	base := newBase(t, config, runner)
+	trust(t, base)
+	request := services.SyncRequest{Days: 1, NoGraph: true}
+	first, err := services.Sync(t.Context(), base, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Written != 1 || first.BodiesCached != 2 || first.BodyFailed != 0 {
+		t.Fatalf("first index sync = %+v", first)
+	}
+	if _, err := services.PruneBodies(t.Context(), base); err != nil {
+		t.Fatal(err)
+	}
+	preflight, err := services.PreflightSync(t.Context(), base, services.SyncRequest{
+		Days: 1, NoGraph: true, IfDue: true,
+	})
+	if err != nil || !preflight.Due {
+		t.Fatalf("index preflight after body prune = %+v, %v; want current snapshot repair due", preflight, err)
+	}
+
+	runner = &fakeRunner{responses: map[string]string{"cli view": "current body text"}}
+	base.Runner = runner
+	restored, err := services.Sync(t.Context(), base, services.SyncRequest{
+		Days: 1, NoGraph: true, IfDue: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Written != 0 || restored.Skipped != 1 || restored.BodiesCached != 2 ||
+		restored.BodyFailed != 0 || len(runner.calls) != 2 {
+		t.Fatalf("restored index sync = %+v, calls = %+v; want two body calls and no provider listing", restored, runner.calls)
+	}
+}
+
 // TestSyncDryRunExecutesNothing is asserted the only way that proves it: the runner is never
 // called, and the report still shows exactly what would have run.
 func TestSyncDryRunExecutesNothing(t *testing.T) {
@@ -92,6 +544,77 @@ func TestSyncDryRunExecutesNothing(t *testing.T) {
 	}
 }
 
+func TestSyncIfDuePreflightIsReadOnlyAndSyncRechecksAfterTheLock(t *testing.T) {
+	base, runner := syncBase(t, oneRecord)
+	request := services.SyncRequest{Days: 1, NoGraph: true, IfDue: true}
+	preflight, err := services.PreflightSync(t.Context(), base, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preflight.Due || !slices.Equal(preflight.DueSources, []string{"synthetic"}) {
+		t.Fatalf("empty-base preflight = %+v, want synthetic due", preflight)
+	}
+	if len(runner.calls) != 0 || base.Exists(core.GraphFile) {
+		t.Fatalf("preflight executed %d command(s) or wrote the graph", len(runner.calls))
+	}
+
+	// Simulate another process winning the race after the CLI's lock-free preflight.
+	if _, err := services.Sync(t.Context(), base, services.SyncRequest{Days: 1, NoGraph: true}); err != nil {
+		t.Fatal(err)
+	}
+	runner.mutex.Lock()
+	runner.calls = nil
+	runner.mutex.Unlock()
+	preflight, err = services.PreflightSync(t.Context(), base, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preflight.Due {
+		t.Fatalf("filled-base preflight = %+v, want no due work", preflight)
+	}
+	report, err := services.Sync(t.Context(), base, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.NothingDue || !report.Complete || len(report.Units) != 0 || report.Graph != nil {
+		t.Fatalf("race recheck report = %+v, want a complete no-work result", report)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("race recheck executed %d command(s), want none", len(runner.calls))
+	}
+}
+
+func TestSyncIfDueRejectsAmbiguousModes(t *testing.T) {
+	base, _ := syncBase(t, oneRecord)
+	for _, request := range []services.SyncRequest{
+		{IfDue: true, Force: true},
+		{IfDue: true, DryRun: true},
+		{IfDue: true, Preview: true, Targets: []string{"synthetic"}},
+	} {
+		if _, err := services.PreflightSync(t.Context(), base, request); !errors.Is(err, core.ErrConfig) {
+			t.Fatalf("PreflightSync(%+v) error = %v, want ErrConfig", request, err)
+		}
+		if _, err := services.Sync(t.Context(), base, request); !errors.Is(err, core.ErrConfig) {
+			t.Fatalf("Sync(%+v) error = %v, want ErrConfig", request, err)
+		}
+	}
+}
+
+func TestSyncRebuildsDerivedContentOnlyAfterWritingADocument(t *testing.T) {
+	base, _ := syncBase(t, oneRecord)
+	first, err := services.Sync(t.Context(), base, services.SyncRequest{Days: 1})
+	if err != nil || first.Graph == nil || first.Written != 1 {
+		t.Fatalf("first sync = %+v, %v; want one write and a graph rebuild", first, err)
+	}
+	second, err := services.Sync(t.Context(), base, services.SyncRequest{Days: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Written != 0 || second.Skipped != 1 || second.Graph != nil {
+		t.Fatalf("second sync = %+v, want an existing document skipped without a derived rebuild", second)
+	}
+}
+
 func TestSyncTrustsTheExactOpenedExecutionPlan(t *testing.T) {
 	runner := &fakeRunner{responses: map[string]string{"": oneRecord}}
 	openedConfig := strings.Replace(baseConfig, "run: [cli, --since", "run: [untrusted-cli, --since", 1)
@@ -101,11 +624,15 @@ func TestSyncTrustsTheExactOpenedExecutionPlan(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(base.Root(), core.ConfigFileName), []byte(trustedConfig), core.BaseFileMode); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := core.WriteTrust(t.Context(), base.Root(), testClock); err != nil {
+	trusted, err := core.LoadConfig(base.Root())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := core.WriteTrust(t.Context(), trusted, testClock); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := services.Sync(t.Context(), base, services.SyncRequest{
+	_, err = services.Sync(t.Context(), base, services.SyncRequest{
 		Targets: []string{"synthetic"}, Date: "2026-05-09", Preview: true,
 	})
 	if !errors.Is(err, core.ErrUntrusted) {
@@ -121,9 +648,6 @@ func TestSyncSkipsACivilDateThatDidNotExist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	previous := time.Local
-	time.Local = location
-	t.Cleanup(func() { time.Local = previous })
 
 	base, runner := syncBase(t, "[]")
 	base.Now = func() time.Time { return time.Date(2011, 12, 31, 12, 0, 0, 0, location) }
@@ -327,7 +851,7 @@ func TestSyncRecollectionReplacesStaleGraphEdges(t *testing.T) {
 	if _, err := services.Sync(t.Context(), base, services.SyncRequest{Days: 1, Force: true}); err != nil {
 		t.Fatal(err)
 	}
-	edges, err := base.ReadFile(core.GraphFile, core.MaxSourceDocumentBytes)
+	edges, err := base.ReadFileContext(t.Context(), core.GraphFile, core.MaxSourceDocumentBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,6 +875,15 @@ func TestSyncTargetsAreValidated(t *testing.T) {
 	_, err = services.Sync(t.Context(), disabled, services.SyncRequest{Days: 1})
 	if err == nil || !strings.Contains(err.Error(), "no source is enabled") {
 		t.Fatalf("Sync() error = %v, want a base with nothing enabled to say so", err)
+	}
+	for _, request := range []services.SyncRequest{
+		{Targets: []string{"synthetic"}, Days: 1, DryRun: true},
+		{Days: 1, DryRun: true},
+	} {
+		report, err := services.Sync(t.Context(), disabled, request)
+		if err != nil || len(report.Units) != 1 || report.Units[0].Outcome != services.OutcomePlanned {
+			t.Fatalf("disabled dry-run = %+v, %v; want one safe planned command", report, err)
+		}
 	}
 }
 
@@ -407,7 +940,7 @@ func TestSyncIndexSourceRefreshesOnAge(t *testing.T) {
 	if again.Units[0].Outcome != services.OutcomeFresh {
 		t.Fatalf("outcome = %q, want it skipped as fresh within index_max_age_hours", again.Units[0].Outcome)
 	}
-	document, err := base.ReadDocument("index/repos.json")
+	document, err := base.ReadDocumentContext(t.Context(), "index/repos.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +981,7 @@ func TestSyncWorkerAllocationIsBoundedByConcurrency(t *testing.T) {
 			"    enabled: true\n"+
 			"    layer: events\n"+
 			"    run: [cli, --since, \"{{date}}\", --until, \"{{next_date}}\"]\n"+
-			"    fields:\n      id: .id\n"+
+			"    fields:\n      id: .id\n      title: .id\n"+
 			"      time: .time\n", index)
 	}
 	fmt.Fprintf(&config, "sync: {days: 30, index_max_age_hours: 168, timeout: 1m, concurrency: %d}\n", concurrency)
@@ -565,7 +1098,9 @@ func TestSyncRebuildsTheDerivedFilesWithoutTheIndexLayer(t *testing.T) {
 	if report.Graph == nil || report.Graph.Edges == 0 {
 		t.Fatalf("report.Graph = %+v, want the edge list rebuilt; it is derived from events, not from index/", report.Graph)
 	}
-	for _, uri := range []string{core.GraphFile, core.GraphMetaFile} {
+	for _, uri := range []string{
+		core.GraphFile, core.GraphDstFile, core.GraphOffsetsFile, core.GraphMetaFile, core.GraphGenerationFile,
+	} {
 		if !base.Exists(uri) {
 			t.Fatalf("%s was not written on a base that disables the index layer", uri)
 		}
@@ -663,12 +1198,41 @@ func TestSyncCollectsAWholeWindowInOneCommand(t *testing.T) {
 	}
 }
 
+func TestSyncScalesOneWindowedCommandTimeoutAcrossTheContiguousSpan(t *testing.T) {
+	for _, test := range []struct {
+		name, sourceTimeout string
+		want                time.Duration
+	}{
+		{name: "base timeout", want: 6 * time.Second},
+		{name: "source override before scaling", sourceTimeout: "    timeout: 5s\n", want: 15 * time.Second},
+		{name: "one hour cap", sourceTimeout: "    timeout: 30m\n", want: time.Hour},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := strings.Replace(windowedConfig, "    window: true\n", "    window: true\n"+test.sourceTimeout, 1) +
+				"sync: {timeout: 2s}\n"
+			runner := &fakeRunner{responses: map[string]string{"": "[]"}}
+			base := newBase(t, config, runner)
+			trust(t, base)
+
+			if _, err := services.Sync(t.Context(), base, services.SyncRequest{Days: 3, NoGraph: true}); err != nil {
+				t.Fatal(err)
+			}
+			if len(runner.calls) != 1 {
+				t.Fatalf("runner calls = %d, want one contiguous-span invocation", len(runner.calls))
+			}
+			if got := runner.calls[0].Timeout; got != test.want {
+				t.Fatalf("command timeout = %s, want %s for the three-day span", got, test.want)
+			}
+		})
+	}
+}
+
 func TestSyncPartitionsWindowedCollectionAroundExistingDays(t *testing.T) {
-	leftDay, err := sources.ParseDay("2026-05-05")
+	leftDay, err := sources.ParseDayInLocation("2026-05-05", testClock.Location())
 	if err != nil {
 		t.Fatal(err)
 	}
-	rightDay, err := sources.ParseDay("2026-05-08")
+	rightDay, err := sources.ParseDayInLocation("2026-05-08", testClock.Location())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -682,7 +1246,7 @@ func TestSyncPartitionsWindowedCollectionAroundExistingDays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	day, err := sources.ParseDay("2026-05-07")
+	day, err := sources.ParseDayInLocation("2026-05-07", testClock.Location())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,10 +8,29 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 const writerLockHelperEnv = "FKF_WRITER_LOCK_HELPER"
+
+func TestWriterLockFailsClosedWithoutHomeOrXDGState(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	temporary := t.TempDir()
+	t.Setenv("TMPDIR", temporary)
+
+	if lock, err := AcquireWriterLock(t.Context(), t.TempDir()); err == nil ||
+		!strings.Contains(err.Error(), "HOME or XDG_STATE_HOME") {
+		if lock != nil {
+			_ = lock.Close()
+		}
+		t.Fatalf("AcquireWriterLock() error = %v, want a missing state-root refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(temporary, "fkf")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("writer lock created the shared temporary fallback: %v", err)
+	}
+}
 
 func TestWriterLockExcludesAnotherProcessAndReleasesOnExit(t *testing.T) {
 	root := t.TempDir()

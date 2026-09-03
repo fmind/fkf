@@ -133,7 +133,7 @@ func TestDocumentRoundTripsThroughDisk(t *testing.T) {
 	if mode := info.Mode().Perm(); mode != core.BaseFileMode {
 		t.Fatalf("a collected document is owner-only, got %o", mode)
 	}
-	loaded, err := sources.ReadDocument(path)
+	loaded, err := sources.ReadDocumentContext(t.Context(), path)
 	if err != nil {
 		t.Fatalf("ReadDocument() error = %v", err)
 	}

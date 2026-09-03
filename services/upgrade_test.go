@@ -77,6 +77,101 @@ func TestUpgradeSkipsDownloadsWhenTheExecutableIsCurrent(t *testing.T) {
 	}
 }
 
+func TestUpgradeReportsAnotherFKFThatPrecedesItsTargetOnPath(t *testing.T) {
+	executable, fetcher := upgradeFixture(t, "v1.2.3", false)
+	shadowDirectory := t.TempDir()
+	shadow := filepath.Join(shadowDirectory, "fkf")
+	writeUpgradeExecutable(t, shadow, "v0.1.0")
+	t.Setenv("PATH", strings.Join([]string{
+		shadowDirectory, filepath.Dir(executable), os.Getenv("PATH"),
+	}, string(os.PathListSeparator)))
+
+	report, err := upgradeWith(t.Context(), executable, "v1.2.3", "linux", "amd64", fetcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.PrecededBy != shadow {
+		t.Fatalf("preceded_by = %q, want %q", report.PrecededBy, shadow)
+	}
+}
+
+func TestUpgradeReportsAnotherFKFFromRelativePathEntry(t *testing.T) {
+	executable, fetcher := upgradeFixture(t, "v1.2.3", false)
+	shadowDirectory := t.TempDir()
+	shadow := filepath.Join(shadowDirectory, "fkf")
+	writeUpgradeExecutable(t, shadow, "v0.1.0")
+	t.Chdir(shadowDirectory)
+	t.Setenv("PATH", strings.Join([]string{
+		".", filepath.Dir(executable),
+	}, string(os.PathListSeparator)))
+
+	report, err := upgradeWith(t.Context(), executable, "v1.2.3", "linux", "amd64", fetcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.PrecededBy != shadow {
+		t.Fatalf("preceded_by = %q, want relative PATH candidate %q", report.PrecededBy, shadow)
+	}
+}
+
+func TestUpgradeDoesNotWarnWhenItsTargetIsFirstOnPath(t *testing.T) {
+	executable, fetcher := upgradeFixture(t, "v1.2.3", false)
+	shadowDirectory := t.TempDir()
+	writeUpgradeExecutable(t, filepath.Join(shadowDirectory, "fkf"), "v0.1.0")
+	t.Setenv("PATH", strings.Join([]string{
+		filepath.Dir(executable), shadowDirectory, os.Getenv("PATH"),
+	}, string(os.PathListSeparator)))
+
+	report, err := upgradeWith(t.Context(), executable, "v1.2.3", "linux", "amd64", fetcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.PrecededBy != "" {
+		t.Fatalf("preceded_by = %q, want no warning for the first PATH entry", report.PrecededBy)
+	}
+}
+
+func TestCurlReleaseFetcherPreservesHomeAndExplicitlyDisablesCurlConfig(t *testing.T) {
+	home := t.TempDir()
+	fakeBin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "curl.log")
+	curl := filepath.Join(fakeBin, "curl")
+	writeUpgradeExecutableBody(t, curl, `#!/bin/sh
+set -eu
+[ "$HOME" = "$FKF_EXPECT_HOME" ] || { printf 'HOME was hidden: %s\n' "$HOME" >&2; exit 91; }
+[ "${1:-}" = -q ] || { printf '%s\n' 'curl config was not disabled first' >&2; exit 92; }
+printf '%s\n' "$*" >> "$FKF_CURL_LOG"
+output=
+previous=
+for argument do
+  if [ "$previous" = -o ] && [ "$argument" != /dev/null ]; then output=$argument; fi
+  previous=$argument
+done
+if [ -n "$output" ]; then : > "$output"; else printf '%s' 'https://github.com/fmind/fkf/releases/tag/v1.2.3'; fi
+`)
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", fakeBin)
+	t.Setenv("FKF_EXPECT_HOME", home)
+	t.Setenv("FKF_CURL_LOG", log)
+	fetcher := curlReleaseFetcher{}
+
+	latest, err := fetcher.Latest(t.Context())
+	if err != nil || latest != "v1.2.3" {
+		t.Fatalf("Latest() = %q, %v", latest, err)
+	}
+	destination := filepath.Join(t.TempDir(), "download")
+	if err := fetcher.Download(t.Context(), "https://example.test/artifact", destination, 1024); err != nil {
+		t.Fatalf("Download() error = %v", err)
+	}
+	commands, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Count(strings.TrimSpace(string(commands)), "\n") + 1; lines != 2 {
+		t.Fatalf("curl commands = %q, want latest and download", commands)
+	}
+}
+
 func TestUpgradeDoesNotReplaceAnEqualDevelopmentBuild(t *testing.T) {
 	executable, fetcher := upgradeFixture(t, "v1.2.3", false)
 	before, err := os.ReadFile(executable)
@@ -196,7 +291,12 @@ func writeUpgradeArchive(t *testing.T, path, version string) {
 func writeUpgradeExecutable(t *testing.T, path, version string) {
 	t.Helper()
 	body := []byte("#!/bin/sh\nprintf '%s\\n' 'fkf version " + version + "'\n")
-	if err := os.WriteFile(path, body, 0o700); err != nil {
+	writeUpgradeExecutableBody(t, path, string(body))
+}
+
+func writeUpgradeExecutableBody(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
 }

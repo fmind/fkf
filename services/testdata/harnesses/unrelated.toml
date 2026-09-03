@@ -1,0 +1,2 @@
+# Existing user configuration must survive managed FKF blocks byte-for-byte.
+user_setting = "keep"

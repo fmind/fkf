@@ -234,11 +234,6 @@ func (r *documentContextReader) Read(buffer []byte) (int, error) {
 	return r.reader.Read(buffer)
 }
 
-// ReadDocument loads one stored document under the whole-file bound.
-func ReadDocument(path string) (*Document, error) {
-	return ReadDocumentContext(context.Background(), path)
-}
-
 // ReadDocumentContext loads and decodes one bounded stored document with cancellation.
 func ReadDocumentContext(ctx context.Context, path string) (*Document, error) {
 	data, err := core.ReadFileLimitContext(ctx, path, core.MaxSourceDocumentBytes)

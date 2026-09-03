@@ -9,6 +9,7 @@
 #   OpenCode         ~/.local/share/opencode/opencode.db                    SQLite: session, message
 #   Copilot CLI      ~/.copilot/session-store.db                            SQLite: sessions, turns
 #   Antigravity CLI  ~/.gemini/antigravity-cli/history.jsonl                one object per line
+#   Grok CLI         ~/.grok/sessions/<cwd>/<session>/{events.jsonl,summary.json}
 # A record is metadata only: the session id, when it was active that day, the harness, the
 # working directory and branch, a safe owner/name projected from the repository its clone points
 # at, and the harness's own title line when it keeps one. No prompt or response text is ever read
@@ -290,6 +291,42 @@ with_repo() {
       | map(. + { title: ("antigravity in " + ((.cwd // "") | split("/") | last | select(. != "") // "a workspace")) })
       | .[]' < "$history"
   fi
+
+  # Grok CLI: events.jsonl supplies exact activity timestamps without prompt or response
+  # bodies. summary.json contributes repository metadata only; generated summaries and titles
+  # never leave the harness state. Explicit non-primary relationships are subagents and skipped.
+  modified_since "$HOME/.grok/sessions" 'events.jsonl' 3 > "$paths"
+  while IFS= read -r file; do
+    summary=${file%/events.jsonl}/summary.json
+    [ -f "$summary" ] || {
+      echo "agent-sessions.sh: Grok session beside $file has no summary.json" >&2
+      exit 1
+    }
+    session_dir=${file%/events.jsonl}
+    fallback_id=${session_dir##*/}
+    jq -cn --arg start "$start" --arg end "$end" --arg fallback_id "$fallback_id" \
+      --slurpfile meta "$summary" "$rfc3339"'
+      ($start | instant) as $since
+      | ($end | instant) as $until
+      | ($meta[0] // {}) as $meta
+      | reduce inputs as $line ({first: null, first_instant: null, session_id: null, relationships: []};
+          (($line.ts // "") | instant) as $at
+          | if $at != null and $at >= $since and $at < $until
+               and (.first_instant == null or $at < .first_instant)
+            then .first = $line.ts | .first_instant = $at else . end
+          | if ($line.session_id // "") != "" then .session_id = $line.session_id else . end
+          | if ($line.session_relationship // "") != ""
+            then .relationships += [$line.session_relationship] else . end)
+      | select(.first != null)
+      | select((.relationships | length) == 0 or all(.relationships[]; . == "primary"))
+      | ($meta.info.cwd // $meta.git_root_dir // null) as $cwd
+      | ($meta.info.id // .session_id // $fallback_id) as $id
+      | select(($id | type) == "string" and $id != "")
+      | { id: $id, time: .first, agent: "grok",
+          title: ("grok in " + (($cwd // "") | split("/") | last | select(. != "") // "a workspace")),
+          cwd: $cwd, branch: ($meta.head_branch // null), remote: ($meta.git_remotes[0] // null) }' \
+      "$file"
+  done < "$paths"
 } > "$raw"
 
 with_repo < "$raw" > "$out"

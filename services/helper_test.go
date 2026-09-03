@@ -232,7 +232,7 @@ func collect(t *testing.T, base *services.Base, date, records string) *sources.D
 // trust records the digest so a test that exercises execution is not blocked by the gate.
 func trust(t *testing.T, base *services.Base) {
 	t.Helper()
-	if _, err := core.WriteTrust(t.Context(), base.Root(), testClock); err != nil {
+	if _, err := core.WriteTrust(t.Context(), base.Config, testClock); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -20,6 +20,10 @@ const (
 	FieldTime  = "time"
 	FieldTitle = "title"
 	FieldURL   = "url"
+	// FieldCategory and FieldVisibility are optional retrieval roles. They stay in the open
+	// projected field map so context can apply policy without hiding the evidence value.
+	FieldCategory   = "category"
+	FieldVisibility = "visibility"
 )
 
 // ConfigVersion is the fkf.yaml contract frozen for the v1 line. It is deliberately separate
@@ -46,6 +50,9 @@ type FieldDefinition struct {
 	Cardinality Cardinality `json:"cardinality" yaml:"cardinality"`
 	Relation    bool        `json:"relation,omitempty" yaml:"relation,omitempty"`
 	Examples    []string    `json:"examples,omitempty" yaml:"examples,omitempty"`
+	// Weight is an optional lexical-ranking multiplier. Zero means use the stable default
+	// for the field name, so existing v1 bases keep their ranking contract unchanged.
+	Weight int `json:"weight,omitempty" yaml:"weight,omitempty"`
 }
 
 // FieldSchema is the base's open semantic dictionary. Keys are user-chosen field and relation
@@ -56,6 +63,10 @@ const (
 	MaxFieldDescriptionLength = 512
 	MaxFieldExamples          = 8
 	MaxFieldExampleLength     = 512
+	MaxFieldWeight            = 100
+	DefaultIDFieldWeight      = 10
+	DefaultTitleFieldWeight   = 5
+	DefaultFieldWeight        = 1
 )
 
 var (
@@ -76,6 +87,25 @@ func ValidateEntityScheme(value string) error {
 	default:
 		return nil
 	}
+}
+
+// ValidateEntityURI admits only canonical entity URIs. Unlike ValidateRelationValue it does
+// not accept files or external URLs: identity declarations must name a graph entity node.
+func ValidateEntityURI(value string) error {
+	if value == "" || strings.TrimSpace(value) != value || strings.ContainsAny(value, " \t\r\n") {
+		return errors.New("must be a non-empty canonical entity URI with no whitespace")
+	}
+	match := entityReferencePattern.FindStringSubmatch(value)
+	if match == nil {
+		return errors.New("must be an entity URI of the form scheme:identity")
+	}
+	if err := ValidateEntityScheme(match[1]); err != nil {
+		return err
+	}
+	if err := validateCanonicalEntityIdentity(match[2]); err != nil {
+		return fmt.Errorf("entity identity: %w", err)
+	}
+	return nil
 }
 
 // Allows reports whether a projected scalar count satisfies the declaration.
@@ -271,6 +301,8 @@ func ValidateFieldSchema(schema FieldSchema) error {
 			return fmt.Errorf("schema.%s.description is %d bytes; expected at most %d", name, len(definition.Description), MaxFieldDescriptionLength)
 		case len(definition.Examples) > MaxFieldExamples:
 			return fmt.Errorf("schema.%s.examples has %d entries; expected at most %d", name, len(definition.Examples), MaxFieldExamples)
+		case definition.Weight < 0 || definition.Weight > MaxFieldWeight:
+			return fmt.Errorf("schema.%s.weight is %d; expected 1..%d when declared", name, definition.Weight, MaxFieldWeight)
 		}
 		if definition.Cardinality != CardinalityOne && definition.Cardinality != CardinalityOptional && definition.Cardinality != CardinalityMany {
 			return fmt.Errorf("schema.%s.cardinality %q must be one, optional, or many", name, definition.Cardinality)
@@ -299,12 +331,29 @@ func ValidateFieldSchema(schema FieldSchema) error {
 	if eventTime, exists := schema[FieldTime]; exists && eventTime.Relation {
 		return errors.New("schema.time must not be a relation")
 	}
-	for _, name := range []string{FieldTime, FieldTitle, FieldURL} {
+	for _, name := range []string{FieldTime, FieldTitle, FieldURL, FieldCategory, FieldVisibility} {
 		if definition, exists := schema[name]; exists && !definition.Cardinality.MaxOne() {
 			return fmt.Errorf("schema.%s.cardinality must be one or optional because fkf consumes one scalar", name)
 		}
 	}
 	return nil
+}
+
+// Weight returns one field's configured lexical multiplier, or the stable well-known
+// default. Unknown fields use the ordinary weight because authored relations may be absent
+// from an older stored document's semantic subset.
+func (s FieldSchema) Weight(name string) int {
+	if definition, exists := s[name]; exists && definition.Weight > 0 {
+		return definition.Weight
+	}
+	switch name {
+	case FieldID:
+		return DefaultIDFieldWeight
+	case FieldTitle:
+		return DefaultTitleFieldWeight
+	default:
+		return DefaultFieldWeight
+	}
 }
 
 // Names returns the semantic names in deterministic order.
@@ -487,7 +536,7 @@ func (m FieldMap) EvalStrings(name string, value any) []string {
 // before accepting a record; the simpler read helpers can then rely on stored documents having
 // crossed this typed boundary already.
 func (m FieldMap) EvalField(name string, value any) ([]string, error) {
-	return m.evalField(name, value, ScalarString)
+	return m.evalField(name, value, CardinalityMany, ScalarString)
 }
 
 // EvalRelation projects relation values without trimming or otherwise normalizing provider
@@ -495,14 +544,35 @@ func (m FieldMap) EvalField(name string, value any) ([]string, error) {
 // identity: changing even one byte would make the stored graph mean something the provider did
 // not emit.
 func (m FieldMap) EvalRelation(name string, value any) ([]string, error) {
-	return m.evalField(name, value, exactScalarString)
+	return m.evalField(name, value, CardinalityMany, exactScalarString)
 }
 
-func (m FieldMap) evalField(name string, value any, scalar func(any) (string, bool)) ([]string, error) {
+// EvalDeclaredField projects one field under its schema declaration. Empty provider strings
+// mean "not present" for optional and many fields, while a required identity must explain the
+// actual defect instead of reporting the empty string as a non-scalar value.
+func (m FieldMap) EvalDeclaredField(
+	name string, value any, definition FieldDefinition,
+) ([]string, error) {
+	scalar := ScalarString
+	if definition.Relation {
+		scalar = exactScalarString
+	}
+	return m.evalField(name, value, definition.Cardinality, scalar)
+}
+
+func (m FieldMap) evalField(
+	name string, value any, cardinality Cardinality, scalar func(any) (string, bool),
+) ([]string, error) {
 	var values []string
 	seen := map[string]struct{}{}
 	for _, fieldPath := range m[name] {
 		for _, selected := range fieldPath.Eval(value) {
+			if text, isString := selected.(string); isString && strings.TrimSpace(text) == "" {
+				if cardinality == CardinalityOne {
+					return nil, fmt.Errorf("path %s selected an empty identity", fieldPath)
+				}
+				continue
+			}
 			projected, ok := scalar(selected)
 			if !ok {
 				return nil, fmt.Errorf("path %s selected a %T; fields project only JSON scalars", fieldPath, selected)

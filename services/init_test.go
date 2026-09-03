@@ -22,6 +22,7 @@ func TestBaseAgentsTemplateRoutesToSkillsWithoutRepeatingThem(t *testing.T) {
 	for _, required := range []string{
 		".agents/skills/fkf-use/SKILL.md",
 		".agents/skills/fkf-learn/SKILL.md",
+		".agents/skills/daily-brief/SKILL.md",
 		"untrusted data",
 		"fkf trust",
 		"tests/",
@@ -58,11 +59,15 @@ func TestInitCreatesACompleteTrustedBase(t *testing.T) {
 	}
 	for _, expected := range []string{
 		core.ConfigFileName, ".gitignore", ".gitattributes", core.BaseAgentsFile, "CLAUDE.md",
+		filepath.Join("evals", "queries.yaml"),
+		core.GraphFile, core.GraphDstFile, core.GraphOffsetsFile, core.GraphMetaFile, core.GraphGenerationFile,
 		filepath.FromSlash(core.BaseSkillsDir + "/fkf-use/SKILL.md"),
 		filepath.FromSlash(core.BaseSkillsDir + "/fkf-learn/SKILL.md"),
+		filepath.FromSlash(core.BaseSkillsDir + "/daily-brief/SKILL.md"),
 		filepath.Join(core.BaseBinDir, "git-log-json.sh"),
 		filepath.Join(core.BaseBinDir, "agent-sessions.sh"),
 		filepath.Join(core.BaseBinDir, "agent-memory-files.sh"),
+		filepath.Join(core.BaseBinDir, "agent-memory-body.sh"),
 		filepath.Join(core.BaseBinDir, "fkf-hook.sh"),
 	} {
 		if _, err := os.Stat(filepath.Join(root, expected)); err != nil {
@@ -84,7 +89,7 @@ func TestInitCreatesACompleteTrustedBase(t *testing.T) {
 		}
 	}
 	// A base fkf just wrote is trusted here, so `fkf sync` works without a second command.
-	if err := core.RequireTrust(t.Context(), root); err != nil {
+	if err := core.RequireTrust(t.Context(), mustLoadCoreConfig(t, root)); err != nil {
 		t.Fatalf("RequireTrust(t.Context(), ) = %v, want init to trust what it wrote", err)
 	}
 	// The file it wrote has to be one this build accepts, or the preset is a lie.
@@ -98,6 +103,13 @@ func TestInitCreatesACompleteTrustedBase(t *testing.T) {
 	if config.Sync != core.DefaultSync() {
 		t.Fatalf("sync = %+v, want every default spelled out and unchanged", config.Sync)
 	}
+	if _, err := services.SummarizeGraph(t.Context(), openBase(t, root, nil)); err != nil {
+		t.Fatalf("init left its derived graph stale: %v", err)
+	}
+	evaluation, err := services.Evaluate(t.Context(), openBase(t, root, nil))
+	if err != nil || !evaluation.Passed || evaluation.PassedQueries != 1 {
+		t.Fatalf("starter retrieval evaluation = %+v, %v; want one runnable baseline", evaluation, err)
+	}
 	if len(report.Next) != 7 {
 		t.Fatalf("next = %v, want the seven printed steps", report.Next)
 	}
@@ -106,8 +118,10 @@ func TestInitCreatesACompleteTrustedBase(t *testing.T) {
 	helpers := "fkf config helpers --refresh --base " + quotedRoot
 	trustAfterEdit := "fkf trust --all --base " + quotedRoot
 	sync := "fkf sync --base " + quotedRoot + " --days 7"
+	harness := "fkf harness install --all --base " + quotedRoot
+	schedule := "fkf schedule install --base " + quotedRoot
 	joined := strings.Join(report.Next, "\n")
-	for _, command := range []string{status, helpers, trustAfterEdit, sync} {
+	for _, command := range []string{status, helpers, trustAfterEdit, sync, harness, schedule} {
 		if !strings.Contains(joined, command) {
 			t.Fatalf("next = %v, want the path-qualified command %q", report.Next, command)
 		}
@@ -119,30 +133,109 @@ func TestInitCreatesACompleteTrustedBase(t *testing.T) {
 	}
 }
 
-func TestInitDefaultsToMinimalAndDemoUsesTheSameConfiguration(t *testing.T) {
+func TestInitDefaultsToMinimalAndDemoDeclaresItsSyntheticSources(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		demo int
+		name     string
+		demo     int
+		declared int
 	}{
 		{name: "ordinary"},
-		{name: "demo", demo: 2},
+		{name: "demo", demo: 2, declared: 6},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			isolate(t)
-			root := filepath.Join(t.TempDir(), "brain")
-			report, err := services.Init(t.Context(), services.InitRequest{
-				Path: root, Demo: test.demo, SkipGit: true,
-			}, clock)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if report.Preset != services.PresetMinimal || report.Declared != 0 || report.Enabled != 0 {
-				t.Fatalf("report = %+v, want the minimal zero-source configuration", report)
-			}
-			if test.demo > 0 && (report.Demo == nil || report.Demo.Days != test.demo) {
-				t.Fatalf("demo = %+v, want %d synthetic days", report.Demo, test.demo)
-			}
+			assertMinimalInit(t, test.demo, test.declared)
 		})
+	}
+}
+
+func assertMinimalInit(t *testing.T, demo, declared int) {
+	t.Helper()
+	isolate(t)
+	root := filepath.Join(t.TempDir(), "brain")
+	report, err := services.Init(t.Context(), services.InitRequest{Path: root, Demo: demo, SkipGit: true}, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Preset != services.PresetMinimal || report.Declared != declared || report.Enabled != 0 {
+		t.Fatalf("report = %+v, want %d disabled source(s)", report, declared)
+	}
+	if demo == 0 {
+		return
+	}
+	if report.Demo == nil || report.Demo.Days != demo {
+		t.Fatalf("demo = %+v, want %d synthetic days", report.Demo, demo)
+	}
+	assertDemoInit(t, root, report, declared)
+}
+
+func assertDemoInit(t *testing.T, root string, report *services.InitReport, declared int) {
+	t.Helper()
+	base := openBase(t, root, nil)
+	wantSources := slices.Clone(report.Demo.Sources)
+	slices.Sort(wantSources)
+	if got := base.Config.SourceNames(); !slices.Equal(got, wantSources) {
+		t.Fatalf("declared sources = %v, want demo sources %v", got, wantSources)
+	}
+	for _, source := range base.Config.Sources {
+		if source.Enabled || len(source.Requires) != 1 || source.Requires[0] != "fkf-demo-json.sh" ||
+			len(source.Run) < 1 || source.Run[0] != "fkf-demo-json.sh" {
+			t.Fatalf("demo source = %+v, want one disabled synthetic-helper command", source)
+		}
+	}
+	helper := filepath.Join(root, core.BaseBinDir, "fkf-demo-json.sh")
+	if info, err := os.Stat(helper); err != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("demo helper mode = %v, %v; want 0700", info, err)
+	}
+	status, err := services.Report(t.Context(), base, services.StatusRequest{SkipGitAudit: true})
+	if err != nil || len(status.Sources) != declared {
+		t.Fatalf("demo status = %+v, %v; want all six declarations", status, err)
+	}
+	assertDemoSyncAndTrust(t, base, declared)
+}
+
+func assertDemoSyncAndTrust(t *testing.T, base *services.Base, declared int) {
+	t.Helper()
+	planned, err := services.Sync(t.Context(), base, services.SyncRequest{Date: "2026-05-01", DryRun: true})
+	if err != nil || len(planned.Units) != declared {
+		t.Fatalf("demo dry run = %+v, %v; want all six disabled sources planned", planned, err)
+	}
+	for _, unit := range planned.Units {
+		if unit.Outcome != services.OutcomePlanned || !strings.Contains(unit.Command, "fkf-demo-json.sh") {
+			t.Fatalf("demo dry-run unit = %+v, want a non-executed synthetic-helper plan", unit)
+		}
+	}
+	trust, err := services.Trust(t.Context(), base, false, true)
+	if err != nil || len(trust.Commands) != declared {
+		t.Fatalf("demo trust = %+v, %v; want all six declarations", trust, err)
+	}
+}
+
+func TestInitRefreshRebuildsWikiThenGraph(t *testing.T) {
+	isolate(t)
+	root := filepath.Join(t.TempDir(), "brain")
+	request := services.InitRequest{Path: root, Preset: services.PresetMinimal, SkipGit: true}
+	if _, err := services.Init(t.Context(), request, clock); err != nil {
+		t.Fatal(err)
+	}
+	base := openBase(t, root, nil)
+	if _, err := services.CreateNew(base, services.NewRequest{
+		Kind: services.NewKindWiki, Slug: "fresh-page", Title: "Fresh page", Tags: []string{"fresh"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := services.SummarizeGraph(t.Context(), base); err == nil {
+		t.Fatal("authored wiki change did not make the graph stale before init refresh")
+	}
+
+	if _, err := services.Init(t.Context(), request, clock); err != nil {
+		t.Fatal(err)
+	}
+	base = openBase(t, root, nil)
+	if _, err := services.Build(t.Context(), base, "wiki", true); err != nil {
+		t.Fatalf("init refresh left the wiki index stale: %v", err)
+	}
+	if _, err := services.SummarizeGraph(t.Context(), base); err != nil {
+		t.Fatalf("init refresh left the graph stale: %v", err)
 	}
 }
 
@@ -237,7 +330,7 @@ func TestInitFailureLeavesCreationRetryable(t *testing.T) {
 			t.Fatalf("retry did not complete %s: %v", expected, statErr)
 		}
 	}
-	if err := core.RequireTrust(t.Context(), root); err != nil {
+	if err := core.RequireTrust(t.Context(), mustLoadCoreConfig(t, root)); err != nil {
 		t.Fatalf("retry left the base untrusted: %v", err)
 	}
 }
@@ -245,15 +338,24 @@ func TestInitFailureLeavesCreationRetryable(t *testing.T) {
 func TestInitFailureBeforeCompletionLeavesNoTrustRecord(t *testing.T) {
 	isolate(t)
 	root := filepath.Join(t.TempDir(), "brain")
-	// A directory at a generated-file target passes the scaffold directory preflight but makes
-	// the demo's final atomic graph replacement fail. That puts the failure after every helper
-	// has been installed and immediately before the trust step.
-	if err := os.MkdirAll(filepath.Join(root, core.GraphFile), core.BaseDirMode); err != nil {
+	ownerFile := filepath.Join(root, "owner.txt")
+	if err := os.MkdirAll(root, core.BaseDirMode); err != nil {
 		t.Fatal(err)
 	}
-	_, err := services.Init(t.Context(), services.InitRequest{
+	if err := os.WriteFile(ownerFile, []byte("keep me\n"), core.BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	// A directory at a generated-file target passes the scaffold directory preflight but makes
+	// the demo publication preflight fail. That puts the failure after every helper has been
+	// installed and the complete demo has been built in staging, immediately before trust.
+	graphPath := filepath.Join(root, core.GraphFile)
+	if err := os.MkdirAll(graphPath, core.BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	request := services.InitRequest{
 		Path: root, SkipGit: true, Demo: 1,
-	}, clock)
+	}
+	_, err := services.Init(t.Context(), request, clock)
 	if err == nil {
 		t.Fatal("Init() succeeded despite a directory occupying graph.tsv")
 	}
@@ -267,6 +369,45 @@ func TestInitFailureBeforeCompletionLeavesNoTrustRecord(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(root, core.ConfigFileName)); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("failed init left its creation marker: %v", statErr)
+	}
+	if got := mustRead(t, ownerFile); got != "keep me\n" {
+		t.Fatalf("failed init changed the pre-existing owner file: %q", got)
+	}
+	for _, created := range []string{
+		filepath.Join(core.BaseBinDir, "fkf-hook.sh"),
+		filepath.Join(core.BaseBinDir, "fkf-demo-json.sh"),
+		core.GraphGenerationFile,
+	} {
+		if _, statErr := os.Lstat(filepath.Join(root, created)); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("failed init left invocation-created %s behind: %v", created, statErr)
+		}
+	}
+	for _, layer := range []string{string(core.LayerEvents), string(core.LayerWiki)} {
+		entries, readErr := os.ReadDir(filepath.Join(root, layer))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("failed init left %s entries behind: %v", layer, entries)
+		}
+	}
+
+	if err := os.Remove(graphPath); err != nil {
+		t.Fatal(err)
+	}
+	report, err := services.Init(t.Context(), request, clock)
+	if err != nil {
+		t.Fatalf("retry Init(--demo) error = %v", err)
+	}
+	if !report.Created || !report.Trusted || report.Demo == nil || report.Demo.Days != 1 {
+		t.Fatalf("retry report = %+v, want a complete trusted one-day demo", report)
+	}
+	verified, err := services.Verify(t.Context(), openBase(t, root, nil))
+	if err != nil || !verified.OK {
+		t.Fatalf("retry Verify() = %+v, %v", verified, err)
+	}
+	if got := mustRead(t, ownerFile); got != "keep me\n" {
+		t.Fatalf("successful retry changed the pre-existing owner file: %q", got)
 	}
 }
 
@@ -290,7 +431,7 @@ func TestInitDoesNotAutoTrustExecutionInputsItDidNotCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	state, err := core.ReadTrust(t.Context(), root)
+	state, err := core.ReadTrust(t.Context(), mustLoadCoreConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +464,7 @@ func TestInitDoesNotAutoTrustPreexistingSourceTestHooks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
-	state, err := core.ReadTrust(t.Context(), root)
+	state, err := core.ReadTrust(t.Context(), mustLoadCoreConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,11 +526,14 @@ func TestInitRefusesUnsafeTestsTreesBeforeWriting(t *testing.T) {
 	}
 }
 
-// assertSourcesAreComplete holds every preset entry to the one source shape: a collection
-// command and the fields.id its records are addressed by.
+// assertSourcesAreComplete holds record-producing preset entries to the one source shape: a
+// collection command and fields.id. A tasks source writes validated Markdown instead.
 func assertSourcesAreComplete(t *testing.T, preset string, config *core.Config) {
 	t.Helper()
 	for name, source := range config.Sources {
+		if source.Layer == core.LayerTasks {
+			continue
+		}
 		if source.Fields.Path(core.FieldID).IsZero() {
 			t.Fatalf("%s collector %s declares no fields.id: %+v", preset, name, source)
 		}
@@ -413,7 +557,7 @@ func TestEveryPresetProducesALoadableConfiguration(t *testing.T) {
 			assertSourcesAreComplete(t, preset, config)
 			if preset == services.PresetPersonal {
 				history := config.Sources["shell-commands"]
-				if history == nil || !history.Fields.Path(core.FieldTitle).IsZero() || slices.Contains(history.Run, "command") {
+				if history == nil || history.Fields.Path(core.FieldTitle).IsZero() || slices.Contains(history.Run, "command") {
 					t.Fatalf("personal shell history must project activity metadata without raw command text: %+v", history)
 				}
 			}
@@ -450,7 +594,6 @@ func TestInitTwiceIsANoOpDiff(t *testing.T) {
 	if err := os.WriteFile(ownerHook, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	before := snapshot(t, root)
 	staleSkillFile := filepath.Join(root, filepath.FromSlash(core.BaseSkillsDir), "fkf-use", "removed-upstream.md")
 	if err := os.WriteFile(staleSkillFile, []byte("obsolete bundled resource\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -464,6 +607,12 @@ func TestInitTwiceIsANoOpDiff(t *testing.T) {
 		[]byte("my-own-rule\n\n"+mustRead(t, filepath.Join(root, ".gitignore"))), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	evalPath := filepath.Join(root, "evals", "queries.yaml")
+	ownerEval := strings.Replace(mustRead(t, evalPath), "durable-knowledge-entrypoint", "owner-entrypoint", 1)
+	if err := os.WriteFile(evalPath, []byte(ownerEval), core.BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshot(t, root)
 
 	report, err := services.Init(t.Context(), request, clock)
 	if err != nil {
@@ -481,6 +630,9 @@ func TestInitTwiceIsANoOpDiff(t *testing.T) {
 	}
 	if after[core.BaseAgentsFile] != "# mine\n" {
 		t.Fatal("init overwrote the base's own AGENTS.md")
+	}
+	if after[filepath.ToSlash(filepath.Join("evals", "queries.yaml"))] != ownerEval {
+		t.Fatal("init refresh overwrote the base-owned retrieval evaluation set")
 	}
 	if !strings.Contains(after[".gitignore"], "my-own-rule") {
 		t.Fatal("the refresh dropped a rule the owner added outside the managed block")
@@ -722,7 +874,7 @@ func TestThirtyDayDemoKeepsAnOversizedPinAuditable(t *testing.T) {
 			pack.Receipt.Dropped)
 	}
 	tiny, err := services.BuildContext(t.Context(), base, services.ContextRequest{
-		Query: "retrieval", Budget: 256, Pins: []string{"projects/fkf-rebuild.md"},
+		Query: "retrieval", Budget: 260, Pins: []string{"projects/fkf-rebuild.md"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -783,9 +935,6 @@ func TestDemoIsValidAtBothEndsOfTheTimezoneRange(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			previous := time.Local
-			time.Local = location
-			t.Cleanup(func() { time.Local = previous })
 
 			root := filepath.Join(t.TempDir(), "demo")
 			now := time.Date(2026, 8, 25, 12, 0, 0, 0, location)
@@ -809,7 +958,9 @@ func TestDemoBuildsDerivedFilesWithoutTheIndexLayer(t *testing.T) {
 	if _, err := services.WriteDemo(t.Context(), base, 2); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{core.GraphFile, core.GraphMetaFile} {
+	for _, name := range []string{
+		core.GraphFile, core.GraphDstFile, core.GraphOffsetsFile, core.GraphMetaFile, core.GraphGenerationFile,
+	} {
 		if _, err := os.Stat(filepath.Join(base.Root(), name)); err != nil {
 			t.Fatalf("demo did not build root %s without index/: %v", name, err)
 		}
@@ -821,19 +972,22 @@ func TestTrustPrintsTheCommandsBeforeRecordingThem(t *testing.T) {
   dormant:
     enabled: false
     layer: events
+    auth: [dormant, auth, status]
     run: [dormant, --json]
     test: [dormant-check.sh]
     fields:
       id: .id
       time: .t
+      title: .id
 `
 	base := newBase(t, config, nil)
 	report, err := services.Trust(t.Context(), base, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Commands) != 2 || len(report.Commands[0].Run) == 0 || len(report.Commands[0].Test) == 0 || len(report.Commands[1].Body) == 0 {
-		t.Fatalf("commands = %+v, want every declared run:/test:/body: line", report.Commands)
+	if len(report.Commands) != 2 || len(report.Commands[0].Auth) == 0 || len(report.Commands[0].Run) == 0 ||
+		len(report.Commands[0].Test) == 0 || len(report.Commands[1].Body) == 0 {
+		t.Fatalf("commands = %+v, want every declared auth:/run:/test:/body: line", report.Commands)
 	}
 	if report.Commands[0].Name != "dormant" || report.Commands[0].Enabled || report.Commands[1].Name != "synthetic" || !report.Commands[1].Enabled {
 		t.Fatalf("commands = %+v, want disabled and enabled state disclosed in stable name order", report.Commands)
@@ -867,10 +1021,10 @@ func TestTrustRecordsTheExactPlanItDiscloses(t *testing.T) {
 	if len(report.Commands) != 1 || !slices.Contains(report.Commands[0].Run, "reviewed-cli") {
 		t.Fatalf("commands = %+v, want the opened plan that was disclosed", report.Commands)
 	}
-	if err := core.RequireTrustConfig(t.Context(), base.Config); err != nil {
+	if err := core.RequireTrust(t.Context(), base.Config); err != nil {
 		t.Fatalf("disclosed plan was not trusted: %v", err)
 	}
-	if err := core.RequireTrust(t.Context(), base.Root()); !errors.Is(err, core.ErrUntrusted) {
+	if err := core.RequireTrust(t.Context(), mustLoadCoreConfig(t, base.Root())); !errors.Is(err, core.ErrUntrusted) {
 		t.Fatalf("changed disk plan error = %v, want it to remain untrusted", err)
 	}
 }
@@ -884,6 +1038,15 @@ func mustRead(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func mustLoadCoreConfig(t *testing.T, root string) *core.Config {
+	t.Helper()
+	config, err := core.LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return config
 }
 
 func snapshot(t *testing.T, root string) map[string]string {

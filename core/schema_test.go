@@ -17,10 +17,18 @@ import (
 func TestConfigSchemaDescribesWhatTheLoaderEnforces(t *testing.T) {
 	schema := ConfigSchema()
 	properties, _ := schema["properties"].(map[string]any)
+	assertConfigSchemaRoot(t, schema, properties)
+	assertConfigSchemaSync(t, properties)
+	assertConfigSchemaLayers(t, properties)
+	assertConfigSchemaSources(t, properties)
+}
+
+func assertConfigSchemaRoot(t *testing.T, schema, properties map[string]any) {
+	t.Helper()
 	if properties == nil {
 		t.Fatal("the schema has no properties")
 	}
-	for _, key := range []string{"fkf", "name", "schema", "layers", "sources", "sync", "bin"} {
+	for _, key := range []string{"fkf", "name", "schema", "layers", "identities", "sources", "sync", "bin"} {
 		if _, ok := properties[key]; !ok {
 			t.Fatalf("the schema omits %q, so an editor would flag a valid file", key)
 		}
@@ -34,6 +42,10 @@ func TestConfigSchemaDescribesWhatTheLoaderEnforces(t *testing.T) {
 	if schema["additionalProperties"] != false {
 		t.Fatal("the schema must be closed: the loader rejects unknown keys")
 	}
+}
+
+func assertConfigSchemaSync(t *testing.T, properties map[string]any) {
+	t.Helper()
 	sync := mustSchemaObject(t, properties["sync"], "sync")
 	syncProperties := mustSchemaObject(t, sync["properties"], "sync properties")
 	indexAge := mustSchemaObject(t, syncProperties["index_max_age_hours"], "index_max_age_hours")
@@ -45,6 +57,10 @@ func TestConfigSchemaDescribesWhatTheLoaderEnforces(t *testing.T) {
 	if concurrency["maximum"] != MaxSyncConcurrency {
 		t.Fatalf("concurrency maximum = %v, want loader maximum %d", concurrency["maximum"], MaxSyncConcurrency)
 	}
+}
+
+func assertConfigSchemaLayers(t *testing.T, properties map[string]any) {
+	t.Helper()
 	layersEntry, ok := properties["layers"].(map[string]any)
 	if !ok {
 		t.Fatal("the schema does not describe layers as an object")
@@ -55,6 +71,10 @@ func TestConfigSchemaDescribesWhatTheLoaderEnforces(t *testing.T) {
 			t.Fatalf("the schema omits the %s layer", layer)
 		}
 	}
+}
+
+func assertConfigSchemaSources(t *testing.T, properties map[string]any) {
+	t.Helper()
 	sources := mustSchemaObject(t, properties["sources"], "sources")
 	sourceNames := mustSchemaObject(t, sources["propertyNames"], "source property names")
 	if sourceNames["maxLength"] != MaxSourceNameLength {
@@ -63,15 +83,23 @@ func TestConfigSchemaDescribesWhatTheLoaderEnforces(t *testing.T) {
 	source := mustSchemaObject(t, sources["additionalProperties"], "source")
 	sourceProperties := mustSchemaObject(t, source["properties"], "source properties")
 	required, _ := source["required"].([]string)
-	if strings.Join(required, ",") != "run,fields" {
-		t.Fatalf("the source shape requires %v; the loader requires run and fields", required)
+	if strings.Join(required, ",") != "run" || source["allOf"] == nil {
+		t.Fatalf("the source shape requires %v with conditional layer rules; tasks omit fields while collected JSON requires them", required)
 	}
 	assertSchemaDescriptionHasPlaceholders(t, source, "run", RunPlaceholders)
 	assertSchemaDescriptionHasPlaceholders(t, source, "test", TestPlaceholders)
+	auth := mustSchemaObject(t, sourceProperties["auth"], "auth")
+	if auth["minItems"] != 1 || strings.Contains(fmt.Sprint(auth["description"]), "{{") {
+		t.Fatalf("auth schema = %v, want non-empty literal argv with no placeholders", auth)
+	}
 	if !strings.Contains(description(t, source, "body"), "{{id}}") {
 		t.Fatal("the body description must say it has to name {{id}}")
 	}
 	fields := mustSchemaObject(t, sourceProperties["fields"], "fields")
+	requiredFields, _ := fields["required"].([]string)
+	if !reflect.DeepEqual(requiredFields, []string{FieldID, FieldTitle}) {
+		t.Fatalf("field-map required fields = %v, want id and title (events conditionally adds time)", requiredFields)
+	}
 	fieldNames := mustSchemaObject(t, fields["propertyNames"], "field names")
 	if fieldNames["maxLength"] != MaxFieldNameLength || fields["maxProperties"] != MaxFields {
 		t.Fatalf("field-map bounds = name %v, fields %v; want %d and %d",
@@ -90,6 +118,19 @@ func TestConfigSchemaDescribesWhatTheLoaderEnforces(t *testing.T) {
 	}
 	if _, open := fields["additionalProperties"].(map[string]any); !open {
 		t.Fatal("the fields map is closed; user-defined semantic projections must be allowed")
+	}
+	rootFields := mustSchemaObject(t, properties["schema"], "root schema")
+	fieldDefinition := mustSchemaObject(t, rootFields["additionalProperties"], "field definition")
+	fieldDefinitionProperties := mustSchemaObject(t, fieldDefinition["properties"], "field definition properties")
+	weight := mustSchemaObject(t, fieldDefinitionProperties["weight"], "field weight")
+	if weight["minimum"] != 1 || weight["maximum"] != MaxFieldWeight {
+		t.Fatalf("field weight bounds = %v..%v, want 1..%d", weight["minimum"], weight["maximum"], MaxFieldWeight)
+	}
+	recency := mustSchemaObject(t, sourceProperties["recency"], "source recency")
+	recencyProperties := mustSchemaObject(t, recency["properties"], "source recency properties")
+	halfLife := mustSchemaObject(t, recencyProperties["half_life_days"], "recency half life")
+	if halfLife["minimum"] != 1 || halfLife["maximum"] != MaxRecencyHalfLifeDays {
+		t.Fatalf("recency bounds = %v..%v, want 1..%d", halfLife["minimum"], halfLife["maximum"], MaxRecencyHalfLifeDays)
 	}
 	if _, exists := sourceProperties["lookup"]; exists {
 		t.Fatal("the schema still publishes the removed lookup-only execution surface")
@@ -228,7 +269,10 @@ func TestSchemaPropertyNamesMatchTheDecoder(t *testing.T) {
 		schemaAt []string
 	}{
 		{"fileConfig", fileConfig{}, []string{"properties"}},
+		{"FieldDefinition", FieldDefinition{}, []string{"properties", "schema", "additionalProperties", "properties"}},
+		{"fileIdentity", fileIdentity{}, []string{"properties", "identities", "additionalProperties", "properties"}},
 		{"fileSource", fileSource{}, []string{"properties", "sources", "additionalProperties", "properties"}},
+		{"fileRecency", fileRecency{}, []string{"properties", "sources", "additionalProperties", "properties", "recency", "properties"}},
 		{"fileSync", fileSync{}, []string{"properties", "sync", "properties"}},
 	} {
 		declared := yamlTagNames(shape.value)

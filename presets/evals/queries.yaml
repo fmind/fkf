@@ -1,0 +1,18 @@
+fkf: 1
+k: 10
+recall_threshold: 1
+
+# This runnable baseline proves that the base's curated entry point is retrievable. Replace or
+# extend it with exact evidence URIs for the owner's real journeys:
+# - Take my last meeting notes.
+# - What was my meeting with an organisation about?
+# - What did I do yesterday and this week?
+# - Who is a declared collaborator?
+# - Prepare my day.
+# - What changed in a repository this week?
+queries:
+  - name: durable-knowledge-entrypoint
+    question: Wiki
+    window: {}
+    expected_uris: [wiki/index.md]
+    forbidden_uris: []

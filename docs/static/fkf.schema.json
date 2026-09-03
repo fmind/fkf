@@ -16,6 +16,55 @@
       "description": "Configuration contract marker. v1 accepts exactly fkf: 1.",
       "type": "integer"
     },
+    "identities": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "aliases": {
+            "description": "Exact entity URIs, emails, or provider logins that resolve to canonical.",
+            "items": {
+              "maxLength": 320,
+              "minLength": 1,
+              "pattern": "^(?:[a-z][a-z0-9+.-]*:[^\\s]+|[A-Za-z0-9][A-Za-z0-9._+@-]*)$",
+              "type": "string"
+            },
+            "minItems": 1,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "canonical": {
+            "description": "Canonical entity URI using an open non-reserved scheme.",
+            "pattern": "^[a-z][a-z0-9+.-]*:[^\\s]+$",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Optional classification used by graph and people views.",
+            "enum": [
+              "person",
+              "organization",
+              "repository"
+            ],
+            "type": "string"
+          },
+          "owner": {
+            "default": false,
+            "description": "Marks the one owning person, omitted from ambient people discovery and expansion.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "canonical",
+          "aliases"
+        ],
+        "type": "object"
+      },
+      "description": "Declared exact aliases for canonical people, organizations, and repositories.",
+      "propertyNames": {
+        "maxLength": 63,
+        "pattern": "^[a-z0-9][a-z0-9-]*$"
+      },
+      "type": "object"
+    },
     "layers": {
       "additionalProperties": false,
       "description": "Explicit activation. A disabled layer is not created, listed, served, or scanned.",
@@ -81,6 +130,12 @@
             "default": false,
             "description": "Values are canonical fkf URIs transcribed as graph edges of this field name.",
             "type": "boolean"
+          },
+          "weight": {
+            "description": "Optional lexical-ranking multiplier. Defaults to 10 for id, 5 for title, and 1 for every other field.",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
           }
         },
         "required": [
@@ -104,7 +159,124 @@
     "sources": {
       "additionalProperties": {
         "additionalProperties": false,
+        "allOf": [
+          {
+            "else": {
+              "required": [
+                "fields"
+              ]
+            },
+            "if": {
+              "properties": {
+                "layer": {
+                  "const": "tasks"
+                }
+              },
+              "required": [
+                "layer"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "records"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "fields"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "body"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "bodies"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "recency"
+                    ]
+                  }
+                ]
+              },
+              "properties": {
+                "window": {
+                  "const": true
+                }
+              },
+              "required": [
+                "window"
+              ]
+            }
+          },
+          {
+            "if": {
+              "anyOf": [
+                {
+                  "not": {
+                    "required": [
+                      "layer"
+                    ]
+                  }
+                },
+                {
+                  "properties": {
+                    "layer": {
+                      "const": "events"
+                    }
+                  }
+                }
+              ]
+            },
+            "then": {
+              "properties": {
+                "fields": {
+                  "required": [
+                    "id",
+                    "time",
+                    "title"
+                  ]
+                }
+              }
+            }
+          }
+        ],
         "properties": {
+          "auth": {
+            "description": "Optional direct argv that checks provider login readiness before collection. It accepts no placeholders; stdout and stderr are discarded and never logged.",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "prefixItems": [
+              {
+                "description": "Literal executable: a bare name resolved on PATH or an absolute machine-local path outside the base.",
+                "minLength": 1,
+                "not": {
+                  "pattern": "\\{\\{"
+                },
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "bodies": {
+            "default": "none",
+            "description": "Rebuildable body-cache policy: none never stores, cache stores after explicit read --body, and sync also prefetches missing bodies during collection.",
+            "enum": [
+              "none",
+              "cache",
+              "sync"
+            ],
+            "type": "string"
+          },
           "body": {
             "description": "Argv (never a shell string) fetching one record's body on demand. Must name {{id}} and may name any declared field plus {{base}} or {{home}}.",
             "items": {
@@ -147,10 +319,29 @@
                 }
               ]
             },
-            "description": "Associates root schema names with provider paths. id and event time are required; every declared value is indexed lexically and relation fields are transcribed into the graph.",
+            "description": "Associates root schema names with provider paths. id and title are required, plus time for events; every declared value is indexed lexically and relation fields are transcribed into the graph.",
             "maxProperties": 64,
-            "minProperties": 1,
+            "minProperties": 2,
             "properties": {
+              "category": {
+                "oneOf": [
+                  {
+                    "description": "Optional authorship role: created, received, or saved; at most one scalar. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                    "pattern": "^\\.",
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "description": "Optional authorship role: created, received, or saved; at most one scalar. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                      "pattern": "^\\.",
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                ]
+              },
               "id": {
                 "oneOf": [
                   {
@@ -192,13 +383,13 @@
               "title": {
                 "oneOf": [
                   {
-                    "description": "Suggested human-readable label; at most one scalar. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                    "description": "Required meaningful human-readable subject line; at most one scalar. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
                     "pattern": "^\\.",
                     "type": "string"
                   },
                   {
                     "items": {
-                      "description": "Suggested human-readable label; at most one scalar. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                      "description": "Required meaningful human-readable subject line; at most one scalar. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
                       "pattern": "^\\.",
                       "type": "string"
                     },
@@ -226,6 +417,25 @@
                     "type": "array"
                   }
                 ]
+              },
+              "visibility": {
+                "oneOf": [
+                  {
+                    "description": "Optional audience role: private, shared, or public; at most one scalar. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                    "pattern": "^\\.",
+                    "type": "string"
+                  },
+                  {
+                    "items": {
+                      "description": "Optional audience role: private, shared, or public; at most one scalar. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
+                      "pattern": "^\\.",
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "minItems": 1,
+                    "type": "array"
+                  }
+                ]
               }
             },
             "propertyNames": {
@@ -233,7 +443,8 @@
               "pattern": "^[a-z][a-z0-9_-]*$"
             },
             "required": [
-              "id"
+              "id",
+              "title"
             ],
             "type": "object"
           },
@@ -252,10 +463,11 @@
           },
           "layer": {
             "default": "events",
-            "description": "events files one document per day under events/; index files one point-in-time document under index/.",
+            "description": "events files one JSON document per day; index files one point-in-time JSON document; tasks writes bounded Markdown session traces.",
             "enum": [
               "events",
-              "index"
+              "index",
+              "tasks"
             ],
             "type": "string"
           },
@@ -263,6 +475,21 @@
             "description": "Least time between two invocations of THIS source across the whole sync. Retry spaces the attempts of one failing call; this spaces every call, which is what a provider's rate limit actually counts.",
             "pattern": "^(0|([0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h))+)$",
             "type": "string"
+          },
+          "recency": {
+            "additionalProperties": false,
+            "properties": {
+              "half_life_days": {
+                "description": "Source-local exponential recency half-life; undated records receive no bonus.",
+                "maximum": 3650,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "half_life_days"
+            ],
+            "type": "object"
           },
           "records": {
             "description": "Path to the records inside each decoded document or page. A jq subset: .key, .a.b, [n], [], .\"odd key\".",
@@ -356,13 +583,12 @@
           },
           "window": {
             "default": false,
-            "description": "Render run: ONCE for the whole requested range — {{start}}/{{end}} span every day being collected, not one — and bucket the records it returns into one document per day by each record's own declared fields.time. Only an events source may declare it: a whole-range collection buckets by day, and an index source has no day.",
+            "description": "Render run: ONCE for the whole requested range — {{start}}/{{end}} span every day being collected, not one. Events bucket records by fields.time; tasks sources must enable it and import completed session traces; index sources reject it.",
             "type": "boolean"
           }
         },
         "required": [
-          "run",
-          "fields"
+          "run"
         ],
         "type": "object"
       },

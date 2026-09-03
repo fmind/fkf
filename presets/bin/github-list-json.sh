@@ -94,6 +94,7 @@ while [ "$page_number" -le "$max_pages" ]; do
     *)
       jq -c '.[] | {
         nameWithOwner: .full_name,
+        title: .full_name,
         url: .html_url,
         repository_uri: ("repo:github.com/" + .full_name),
         updatedAt: .updated_at,

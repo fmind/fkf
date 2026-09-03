@@ -42,7 +42,7 @@ description = "Build the fkf binary"
 # skills/ and presets/ are embedded by embed.go, so editing either must invalidate the build.
 sources = ["go.mod", "go.sum", "embed.go", "skills/**/*", "presets/**/*", "**/*.go"]
 outputs = ["bin/fkf"]
-run = "go build -o bin/fkf ./cmd/fkf"
+run = 'go build -ldflags "-X github.com/fmind/fkf/core.version=$(git describe --tags --always)" -o bin/fkf ./cmd/fkf'
 
 [tasks.benchmark]
 description = "Measure the supported 100k-record and 500k-edge envelope"
@@ -73,7 +73,7 @@ env = { HUGO_ENABLEGITINFO = "false" }
 run = [
   "rm -rf docs/tmp/check",
   "hugo build --source docs --destination tmp/check --baseURL http://localhost/ --logLevel warn --panicOnWarning --printPathWarnings",
-  "FKF_DOCS_BUILD_DIR=\"$PWD/docs/tmp/check\" go test ./services -run '^TestDocumentationDistributionContracts$' -count=1",
+  "FKF_DOCS_BUILD_DIR=\"$PWD/docs/tmp/check\" go test ./internal/checks -run '^TestDocumentationDistributionContracts$' -count=1",
   "lychee --offline --root-dir docs/tmp/check --no-progress 'docs/tmp/check/**/*.html'",
 ]
 
@@ -110,7 +110,7 @@ run = "git ls-files -z '*.md' ':!:docs/**' | xargs -0 lychee --offline --no-prog
 
 [tasks."check:notices"]
 description = "Verify legal notices match the runtime and linked Go modules"
-run = "go test ./services -run '^TestThirdPartyNoticesAreCurrent$' -count=1"
+run = "go test ./internal/checks -run '^TestThirdPartyNoticesAreCurrent$' -count=1"
 
 [tasks."check:lint"]
 alias = "cl"
@@ -130,7 +130,8 @@ run = "trivy --config trivy.yaml fs ."
 
 [tasks."check:shell"]
 description = "Lint every shipped and release shell helper"
-run = "shellcheck -S warning install.sh presets/bin/* scripts/release-notes"
+# Filter by language: presets/bin also contains reviewed jq programs.
+run = "find presets/bin -maxdepth 1 -type f -name '*.sh' -print0 | xargs -0 shellcheck -S warning install.sh scripts/release-notes"
 
 [tasks."check:vuln"]
 alias = "cv"
@@ -176,7 +177,7 @@ run = "go run ./cmd/fkf config schema > docs/static/fkf.schema.json"
 
 [tasks."generate:notices"]
 description = "Rewrite legal notices for the runtime and linked Go modules"
-run = "go test ./services -run '^TestThirdPartyNoticesAreCurrent$' -count=1 -args -update-third-party-notices"
+run = "go test ./internal/checks -run '^TestThirdPartyNoticesAreCurrent$' -count=1 -args -update-third-party-notices"
 
 [tasks."release:build"]
 description = "Build release archives into dist/ with GoReleaser"

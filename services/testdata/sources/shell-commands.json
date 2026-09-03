@@ -4,6 +4,7 @@
     "cwd": "/home/marc/fkf",
     "exit": 0,
     "duration": 812345678,
-    "time": "2026-05-04T09:05:00Z"
+    "time": "2026-05-04T09:05:00Z",
+    "subject": "git status"
   }
 ]

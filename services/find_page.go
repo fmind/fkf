@@ -7,12 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash"
-	"os"
-	"path"
 	"sort"
 
 	"github.com/fmind/fkf/core"
-	"github.com/fmind/fkf/sources"
 )
 
 // FindPosition is the last primary item returned by a bounded find page. It is deliberately
@@ -56,40 +53,47 @@ func FindBounded(
 	limit int,
 	after FindPosition,
 ) (*BoundedFindResult, error) {
-	if err := checkContext(ctx); err != nil {
-		return nil, err
-	}
 	if limit <= 0 || limit > MaxFindPageLimit {
 		return nil, fmt.Errorf("bounded find limit must be between 1 and %d", MaxFindPageLimit)
 	}
 	if err := validateFindPosition(after, counting); err != nil {
 		return nil, err
 	}
-	if err := validateFindRequest(base, filter); err != nil {
-		return nil, err
-	}
-	filter.Grep = normalizeTerms(filter.Grep)
-	selected, err := resolveEventDates(base, filter)
+	selected, err := prepareFindScan(ctx, base, &filter)
 	if err != nil {
 		return nil, err
 	}
 
 	scan := &boundedFindScan{
-		ctx: ctx, base: base, filter: filter, counting: counting, after: after,
-		capacity: limit + 1, result: &FindResult{Window: filter.Window},
-		digest: sha256.New(),
+		counting: counting, after: after, capacity: limit + 1,
+		result: &FindResult{Window: filter.Window, Index: filter.index}, digest: sha256.New(),
+	}
+	engine := &findScanEngine{
+		ctx: ctx, base: base, filter: filter, counting: counting, result: scan.result,
+		onPage: scan.addPage, onRecord: scan.addRecord, onVolume: scan.addVolume,
 	}
 	_, _ = scan.digest.Write([]byte("fkf-bounded-find-v1\x00"))
 	if err := scan.hashValue("window", filter.Window); err != nil {
 		return nil, err
 	}
-	if filter.selects() && !counting {
-		if err := scan.scanPages(); err != nil {
-			return nil, err
-		}
+	scanErr := engine.scan(selected)
+	if filter.afterScan != nil {
+		filter.afterScan()
 	}
-	if err := scan.scanRecords(selected); err != nil {
-		return nil, err
+	current, generationErr := findIndexInputsCurrent(ctx, base, filter)
+	if generationErr != nil {
+		return nil, generationErr
+	}
+	if !current {
+		if filter.generationRetries >= 2 {
+			return nil, fmt.Errorf("find inputs kept changing while they were read; retry after the writer finishes")
+		}
+		return FindBounded(
+			ctx, base, findScanRetry(filter, LexicalIndexFallbackStale), counting, limit, after,
+		)
+	}
+	if scanErr != nil {
+		return nil, scanErr
 	}
 	if err := scan.hashValue("counters", struct {
 		Scanned int `json:"scanned"`
@@ -144,9 +148,6 @@ func validateFindPosition(position FindPosition, counting bool) error {
 }
 
 type boundedFindScan struct {
-	ctx      context.Context
-	base     *Base
-	filter   FindFilter
 	counting bool
 	after    FindPosition
 	capacity int
@@ -246,198 +247,6 @@ func dayVolumeBefore(left, right DayVolume) bool {
 
 func dayVolumeAfter(volume DayVolume, after FindPosition) bool {
 	return volume.Date == "" || volume.Date < after.Date
-}
-
-func (scan *boundedFindScan) scanPages() error {
-	terms := scan.filter.pageTerms()
-	if len(terms) == 0 || scan.filter.recordOnly() {
-		return nil
-	}
-	for _, layer := range []core.Layer{core.LayerWiki, core.LayerProjects} {
-		if !scan.filter.wants(layer) || !scan.base.Store.Enabled(layer) {
-			continue
-		}
-		if err := scan.scanFlatPages(layer, terms); err != nil {
-			return err
-		}
-	}
-	if scan.filter.wants(core.LayerTasks) && scan.base.Store.Enabled(core.LayerTasks) {
-		if err := scan.scanTaskPages(terms); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (scan *boundedFindScan) scanFlatPages(layer core.Layer, terms []string) error {
-	directory, err := scan.base.Store.Dir(layer)
-	if err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(directory)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("list %s: %w", directory, err)
-	}
-	for _, entry := range entries {
-		if err := checkContext(scan.ctx); err != nil {
-			return err
-		}
-		if entry.IsDir() || path.Ext(entry.Name()) != core.MarkdownExtension {
-			continue
-		}
-		page, err := ReadPageContext(scan.ctx, scan.base, path.Join(string(layer), entry.Name()))
-		if err != nil {
-			return err
-		}
-		if hit, matched := scorePage(page, terms); matched {
-			hit.Layer = layer
-			if err := scan.addPage(hit); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func (scan *boundedFindScan) scanTaskPages(terms []string) error {
-	directory, err := scan.base.Store.Dir(core.LayerTasks)
-	if err != nil {
-		return err
-	}
-	dates, err := readDateDirectories(directory)
-	if err != nil {
-		return err
-	}
-	for index := len(dates) - 1; index >= 0; index-- {
-		date := dates[index]
-		if !scan.filter.Window.Contains(date) {
-			continue
-		}
-		slugs, err := readSubdirectories(path.Join(directory, date))
-		if err != nil {
-			return err
-		}
-		for _, slug := range slugs {
-			if err := checkContext(scan.ctx); err != nil {
-				return err
-			}
-			uri := path.Join(string(core.LayerTasks), date, slug, core.TaskTraceFile)
-			if !scan.base.Exists(uri) {
-				continue
-			}
-			page, err := ReadPageContext(scan.ctx, scan.base, uri)
-			if err != nil {
-				return err
-			}
-			if hit, matched := scorePage(page, terms); matched {
-				hit.Layer, hit.Date, hit.Slug = core.LayerTasks, date, slug
-				if err := scan.addPage(hit); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func (scan *boundedFindScan) scanRecords(selected []string) error {
-	for index := len(selected) - 1; index >= 0; index-- {
-		volume, err := scan.scanDay(selected[index])
-		if err != nil {
-			return err
-		}
-		if scan.counting && volume.Total > 0 {
-			if err := scan.addVolume(volume); err != nil {
-				return err
-			}
-		}
-	}
-	if !scan.filter.selects() || !scan.filter.scansIndex(scan.base) {
-		return nil
-	}
-	volume, err := scan.scanIndex()
-	if err != nil {
-		return err
-	}
-	if scan.counting && volume.Total > 0 {
-		return scan.addVolume(volume)
-	}
-	return nil
-}
-
-func (scan *boundedFindScan) scanDay(date string) (DayVolume, error) {
-	volume := DayVolume{Date: date, Sources: []SourceCount{}}
-	names, err := scan.base.DayDocuments(date)
-	if err != nil {
-		return volume, err
-	}
-	for _, name := range names {
-		if len(scan.filter.Sources) > 0 && !contains(scan.filter.Sources, name) {
-			continue
-		}
-		matched, err := scan.scanDocument(sources.EventDocumentURI(date, name))
-		if err != nil {
-			return volume, err
-		}
-		if matched > 0 {
-			volume.Total += matched
-			volume.Sources = append(volume.Sources, SourceCount{Source: name, Count: matched})
-		}
-	}
-	return volume, nil
-}
-
-func (scan *boundedFindScan) scanIndex() (DayVolume, error) {
-	volume := DayVolume{Sources: []SourceCount{}}
-	names, err := scan.base.IndexDocuments()
-	if err != nil {
-		return volume, err
-	}
-	for _, name := range names {
-		if len(scan.filter.Sources) > 0 && !contains(scan.filter.Sources, name) {
-			continue
-		}
-		matched, err := scan.scanDocument(sources.IndexDocumentURI(name))
-		if err != nil {
-			return volume, err
-		}
-		if matched > 0 {
-			volume.Total += matched
-			volume.Sources = append(volume.Sources, SourceCount{Source: name, Count: matched})
-		}
-	}
-	return volume, nil
-}
-
-func (scan *boundedFindScan) scanDocument(uri string) (int, error) {
-	if err := checkContext(scan.ctx); err != nil {
-		return 0, err
-	}
-	document, err := scan.base.ReadDocumentContext(scan.ctx, uri)
-	if err != nil {
-		return 0, err
-	}
-	scan.result.Scanned += document.Count
-	matched := 0
-	for _, record := range document.Records {
-		if err := checkContext(scan.ctx); err != nil {
-			return 0, err
-		}
-		if !matchesRecord(map[string]any(record), scan.filter) {
-			continue
-		}
-		matched++
-		scan.result.Matched++
-		if !scan.counting {
-			if err := scan.addRecord(project(document, record)); err != nil {
-				return 0, err
-			}
-		}
-	}
-	return matched, nil
 }
 
 func (scan *boundedFindScan) compose(limit int) *FindPosition {

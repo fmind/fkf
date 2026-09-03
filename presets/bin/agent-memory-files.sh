@@ -6,6 +6,7 @@
 #   Claude Code  ~/.claude/projects/<cwd>/memory/*.md   MEMORY.md index plus one file per topic
 #   Codex CLI    ~/.codex/memories/**/*.md              MEMORY.md, raw memories, rollout summaries
 #   Gemini CLI   ~/.gemini/tmp/<project>/memory/*.md    per-project memory, MEMORY.md index
+#   Grok CLI     ~/.grok/memory/**/*.md                  project memory and dated session findings
 # Those files are where an agent's decisions and insights land today, per tool and per project,
 # unversioned and invisible to every other harness; a record here is what lets the fkf-learn skill
 # find them and promote the durable ones into the base.
@@ -65,10 +66,14 @@ trap 'rm -f "$paths" "$raw" "$found" "$preview"' EXIT
   touched "$HOME/.claude/projects" '*/memory/*' claude
   touched "$HOME/.codex/memories" '*' codex
   touched "$HOME/.gemini/tmp" '*/memory/*' gemini
+  touched "$HOME/.grok/memory" '*' grok
 } > "$paths"
 while IFS="$(printf '\t')" read -r file mtime agent; do
   title=$(title_of "$file")
   [ -n "$title" ] || title=$(basename "$file" .md)
+  # Titles cross the evidence boundary. Keep one deterministic, printable line rather than
+  # letting frontmatter controls or a whole heading become terminal output and ranking text.
+  title=$(printf '%s' "$title" | jq -Rsr 'gsub("[[:cntrl:]]"; " ") | gsub("[[:space:]]+"; " ") | sub("^ "; "") | sub(" $"; "") | .[0:160]')
   jq -cn --arg id "$file" --arg time "$mtime" --arg title "$title" --arg agent "$agent" \
     '{id: $id, time: ($time | tonumber | floor | todate), title: $title, agent: $agent}'
 done < "$paths" > "$raw"

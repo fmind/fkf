@@ -49,11 +49,11 @@ schema:
     examples: [person:email/user@example.test, actor:github.com/login]
 ```
 
-`id` is required and must be `one`. Event sources also map `time`; `time`, `title`, and `url` are scalar presentation fields and therefore use `one` or `optional`. All other names are base-defined. A field name states a role such as `participant`, `author`, or `reviewer`; a URI value states an identity namespace such as `person:email/...` or `actor:github.com/...`. FKF never merges those identities.
+`id` is required and must be `one`. Every collected source also maps `title`, and event sources map `time`; a new record must yield one meaningful title even when its schema cardinality is `optional` for envelope compatibility. `time`, `title`, and `url` are scalar presentation fields and therefore use `one` or `optional`. All other names are base-defined. A field name states a role such as `participant`, `author`, or `reviewer`; a URI value states an identity namespace such as `person:email/...` or `actor:github.com/...`. FKF merges identities only through explicit root or authored-page aliases.
 
 ## Source mappings
 
-A source maps provider paths into the shared dictionary. Only `id` and event `time` are structural; every other mapping refers to a field already declared under root `schema:`.
+A source maps provider paths into the shared dictionary. `id`, `title`, and event `time` are required projections; every mapping refers to a field already declared under root `schema:`.
 
 ```yaml
 sources:

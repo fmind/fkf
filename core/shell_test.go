@@ -48,9 +48,10 @@ func TestRunCLIRemovesRuntimeStartupLoaders(t *testing.T) {
 	for _, key := range []string{
 		"BASH_ENV", "ENV", "ZDOTDIR", "fish_function_path",
 		"PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONINSPECT",
-		"NODE_OPTIONS", "NODE_PATH", "PERL5OPT", "PERL5LIB", "RUBYOPT", "RUBYLIB",
+		"NODE_OPTIONS", "NODE_PATH", "PERL5OPT", "PERL5LIB", "PERLLIB",
+		"RUBYOPT", "RUBYLIB", "RUBYGEMS_GEMDEPS", "GEM_PATH",
 		"JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS",
-		"LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+		"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
 		"DYLD_FALLBACK_LIBRARY_PATH", "GCONV_PATH", "LUA_INIT", "R_PROFILE_USER",
 	} {
 		t.Setenv(key, "wiki/startup")
@@ -70,8 +71,9 @@ func TestRunCLIRemovesRuntimeStartupLoaders(t *testing.T) {
 	}
 	for _, key := range []string{
 		"BASH_ENV", "ENV", "ZDOTDIR", "fish_function_path",
-		"PYTHONPATH", "NODE_OPTIONS", "PERL5OPT", "RUBYOPT", "JAVA_TOOL_OPTIONS",
-		"LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "GCONV_PATH", "LUA_INIT", "R_PROFILE_USER",
+		"PYTHONPATH", "NODE_OPTIONS", "PERL5OPT", "PERLLIB", "RUBYOPT", "RUBYGEMS_GEMDEPS", "GEM_PATH",
+		"JAVA_TOOL_OPTIONS", "LD_PRELOAD", "LD_AUDIT", "DYLD_INSERT_LIBRARIES", "GCONV_PATH",
+		"LUA_INIT", "R_PROFILE_USER",
 	} {
 		if _, found := childValues[key]; found {
 			t.Errorf("child environment retains runtime startup loader %s", key)
@@ -91,7 +93,11 @@ func TestRunCLIRemovesConfigRootsThatCouldResolveInsideTheCommandDirectory(t *te
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv("XDG_CONFIG_HOME", test.value)
-			output, err := RunCLI(t.Context(), []string{"sh", "-c", `printf '%s' "${XDG_CONFIG_HOME-unset}"`}, root, time.Second)
+			ctx, err := WithCommandEnvironmentForRoot(t.Context(), nil, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			output, err := RunCLI(ctx, []string{"sh", "-c", `printf '%s' "${XDG_CONFIG_HOME-unset}"`}, root, time.Second)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -102,9 +108,28 @@ func TestRunCLIRemovesConfigRootsThatCouldResolveInsideTheCommandDirectory(t *te
 	}
 
 	t.Setenv("XDG_CONFIG_HOME", outside)
-	output, err := RunCLI(t.Context(), []string{"sh", "-c", `printf '%s' "$XDG_CONFIG_HOME"`}, root, time.Second)
+	ctx, err := WithCommandEnvironmentForRoot(t.Context(), nil, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := RunCLI(ctx, []string{"sh", "-c", `printf '%s' "$XDG_CONFIG_HOME"`}, root, time.Second)
 	if err != nil || output != outside {
 		t.Fatalf("safe XDG_CONFIG_HOME = %q, %v; want provider configuration preserved", output, err)
+	}
+}
+
+func TestRunCLIAtFilesystemRootPreservesProviderHomeWithoutAForbiddenRoot(t *testing.T) {
+	home := t.TempDir()
+	config := filepath.Join(t.TempDir(), "config")
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", config)
+	output, err := RunCLI(t.Context(), []string{"sh", "-c", `printf '%s|%s' "$HOME" "$XDG_CONFIG_HOME"`},
+		DeclaredCommandDirectory, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output != home+"|"+config {
+		t.Fatalf("provider roots = %q, want %q; cwd must not become an implicit forbidden root", output, home+"|"+config)
 	}
 }
 
@@ -137,6 +162,31 @@ func TestRunCLIBoundedLimitsStdoutAndStderrIndependently(t *testing.T) {
 		if !errors.Is(err, ErrCLIOutputTooLarge) {
 			t.Fatalf("RunCLIBounded(%q) error = %v", script, err)
 		}
+	}
+}
+
+func TestBoundedBufferStopsAcknowledgingExcessBytes(t *testing.T) {
+	buffer := &boundedBuffer{limit: 4}
+	written, err := buffer.Write([]byte("123456"))
+	if written != 4 || !errors.Is(err, ErrCLIOutputTooLarge) {
+		t.Fatalf("first Write() = %d, %v; want 4 and ErrCLIOutputTooLarge", written, err)
+	}
+	written, err = buffer.Write([]byte("789"))
+	if written != 0 || !errors.Is(err, ErrCLIOutputTooLarge) {
+		t.Fatalf("second Write() = %d, %v; want 0 and ErrCLIOutputTooLarge", written, err)
+	}
+	if buffer.String() != "1234" {
+		t.Fatalf("buffer = %q, want the bounded prefix", buffer.String())
+	}
+}
+
+func TestRunCLIBoundedReportsTruncationBeforeCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	_, err := RunCLIBounded(ctx, []string{"sh", "-c", `while :; do printf '123456789'; done`},
+		"", "", time.Minute, 8)
+	if !errors.Is(err, ErrCLIOutputTooLarge) {
+		t.Fatalf("RunCLIBounded() error = %v, want truncation to win over cancellation", err)
 	}
 }
 
@@ -206,15 +256,15 @@ func TestRunCLIRemovesRelativePATHEntriesFromTheChild(t *testing.T) {
 	}
 }
 
-// TestRunCLIStdinFeedsTheDocument covers the one caller that needs it: a `?jq=` URI hands a
-// stored document to jq on stdin, so the expression stays one argv element with no shell.
-func TestRunCLIStdinFeedsTheDocument(t *testing.T) {
-	output, err := RunCLIStdin(context.Background(), []string{"sh", "-c", "cat"}, "", `{"a":1}`, time.Second)
+func TestRunCLIBoundedFeedsStdin(t *testing.T) {
+	output, err := RunCLIBounded(
+		context.Background(), []string{"sh", "-c", "cat"}, "", `{"a":1}`, time.Second, MaxCLIOutputBytes,
+	)
 	if err != nil {
-		t.Fatalf("RunCLIStdin() error = %v", err)
+		t.Fatalf("RunCLIBounded() error = %v", err)
 	}
 	if output != `{"a":1}` {
-		t.Fatalf("RunCLIStdin() = %q, want the document echoed back", output)
+		t.Fatalf("RunCLIBounded() = %q, want the document echoed back", output)
 	}
 }
 
@@ -257,6 +307,22 @@ func TestRunCLIFailureKeepsProviderStderrPrivate(t *testing.T) {
 	}
 	if len(err.Error()) > 128 {
 		t.Fatalf("RunCLI() diagnostic is unexpectedly unbounded: %d bytes", len(err.Error()))
+	}
+}
+
+func TestRunCLIQuietFailureReturnsTheErrorWithoutLoggingIt(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	ctx := WithQuietCommandFailure(t.Context())
+	_, err := RunCLI(ctx, []string{"sh", "-c", "exit 7"}, "", time.Second)
+	if err == nil || !strings.Contains(err.Error(), "status 7") {
+		t.Fatalf("RunCLI() error = %v, want the safe exit status", err)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("quiet command failure logged %q", logs.String())
 	}
 }
 

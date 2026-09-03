@@ -1,0 +1,16 @@
+[
+  {
+    "id": "codex:fixture-session",
+    "harness": "codex",
+    "sid": "fixture-session",
+    "first_at": "2026-05-04T08:00:00Z",
+    "last_at": "2026-05-04T09:15:00Z",
+    "cwd": "/workspace/fkf",
+    "repo": "fmind/fkf",
+    "model": "gpt-fixture",
+    "requests": ["Implement the bounded session trace source."],
+    "files": [" M services/session_trace.go"],
+    "verification": ["go test ./services -run SessionTrace"],
+    "last_assistant": "Implemented the source and ran its focused tests."
+  }
+]

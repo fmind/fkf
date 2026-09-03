@@ -1,0 +1,11 @@
+[
+  {
+    "id": "document-notes-1",
+    "at": "2026-05-04T09:00:00Z",
+    "title": "Retrieval boundary review - Notes by Gemini",
+    "url": "https://docs.google.com/document/d/document-notes-1/edit",
+    "owner_uris": ["person:email/owner@example.test"],
+    "attachment_uris": ["document:drive.google.com/document-notes-1"],
+    "meeting_uris": ["events/2026-05-04/google-calendar-events.json#engineering@example.test%7Eevt_a1b2c3"]
+  }
+]

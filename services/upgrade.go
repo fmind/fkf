@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -36,6 +37,8 @@ type UpgradeReport struct {
 	Current  string `json:"current"`
 	Path     string `json:"path"`
 	Updated  bool   `json:"updated"`
+	// PrecededBy names the different executable an ordinary `fkf` lookup would run instead.
+	PrecededBy string `json:"preceded_by,omitempty"`
 }
 
 type releaseFetcher interface {
@@ -70,7 +73,10 @@ func upgradeWith(
 	if err := validateReleaseVersion(latest); err != nil {
 		return nil, err
 	}
-	report := &UpgradeReport{Previous: currentVersion, Current: latest, Path: executable}
+	report := &UpgradeReport{
+		Previous: currentVersion, Current: latest, Path: executable,
+		PrecededBy: precedingFKF(executable),
+	}
 	if versionAtLeast(currentVersion, latest) {
 		report.Current = currentVersion
 		return report, nil
@@ -122,6 +128,26 @@ func upgradeWith(
 	}
 	report.Updated = true
 	return report, nil
+}
+
+func precedingFKF(target string) string {
+	candidate, err := exec.LookPath("fkf")
+	if err != nil && !errors.Is(err, exec.ErrDot) {
+		return ""
+	}
+	candidate, err = filepath.Abs(candidate)
+	if err != nil {
+		return ""
+	}
+	candidateInfo, err := os.Stat(candidate)
+	if err != nil {
+		return ""
+	}
+	targetInfo, err := os.Stat(target)
+	if err != nil || os.SameFile(candidateInfo, targetInfo) {
+		return ""
+	}
+	return candidate
 }
 
 func (curlReleaseFetcher) Latest(ctx context.Context) (string, error) {

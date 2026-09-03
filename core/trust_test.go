@@ -11,6 +11,30 @@ import (
 	"time"
 )
 
+func TestTrustStateFailsClosedWithoutHomeOrXDGState(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	temporary := t.TempDir()
+	t.Setenv("TMPDIR", temporary)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ConfigFileName), []byte(withTestContract("name: t\n")), BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := StateDir(); got != "" {
+		t.Fatalf("StateDir() = %q, want no shared temporary fallback", got)
+	}
+	if _, err := ReadTrust(t.Context(), trustTestConfig(t, root)); err == nil || !strings.Contains(err.Error(), "HOME or XDG_STATE_HOME") {
+		t.Fatalf("ReadTrust() error = %v, want a missing state-root refusal", err)
+	}
+	if _, err := WriteTrust(t.Context(), trustTestConfig(t, root), time.Now()); err == nil || !strings.Contains(err.Error(), "HOME or XDG_STATE_HOME") {
+		t.Fatalf("WriteTrust() error = %v, want a missing state-root refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(temporary, "fkf")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("trust operation created the shared temporary fallback: %v", err)
+	}
+}
+
 func TestTrustBoundariesRefuseAPreCancelledContextWithoutWritingState(t *testing.T) {
 	stateRoot := filepath.Join(t.TempDir(), "state")
 	t.Setenv("XDG_STATE_HOME", stateRoot)
@@ -25,12 +49,12 @@ func TestTrustBoundariesRefuseAPreCancelledContextWithoutWritingState(t *testing
 		name string
 		run  func() error
 	}{
-		{name: "config digest", run: func() error { _, err := ConfigDigest(ctx, root); return err }},
+		{name: "config digest", run: func() error { _, err := ConfigDigest(ctx, trustTestConfig(t, root)); return err }},
 		{name: "bin scripts", run: func() error { _, err := BinScripts(ctx, root); return err }},
-		{name: "trust items", run: func() error { _, err := TrustItems(ctx, root); return err }},
-		{name: "read trust", run: func() error { _, err := ReadTrust(ctx, root); return err }},
-		{name: "write trust", run: func() error { _, err := WriteTrust(ctx, root, time.Now()); return err }},
-		{name: "require trust", run: func() error { return RequireTrust(ctx, root) }},
+		{name: "trust items", run: func() error { _, err := TrustItems(ctx, trustTestConfig(t, root)); return err }},
+		{name: "read trust", run: func() error { _, err := ReadTrust(ctx, trustTestConfig(t, root)); return err }},
+		{name: "write trust", run: func() error { _, err := WriteTrust(ctx, trustTestConfig(t, root), time.Now()); return err }},
+		{name: "require trust", run: func() error { return RequireTrust(ctx, trustTestConfig(t, root)) }},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -54,7 +78,7 @@ func TestConfigDigestCoversTheBinScripts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ConfigFileName), []byte(withTestContract("name: t\n")), BaseFileMode); err != nil {
 		t.Fatal(err)
 	}
-	before, err := ConfigDigest(t.Context(), root)
+	before, err := ConfigDigest(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +89,7 @@ func TestConfigDigestCoversTheBinScripts(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho v1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	added, err := ConfigDigest(t.Context(), root)
+	added, err := ConfigDigest(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +99,7 @@ func TestConfigDigestCoversTheBinScripts(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho v2\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	edited, err := ConfigDigest(t.Context(), root)
+	edited, err := ConfigDigest(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +116,7 @@ func TestConfigDigestCoversTheSourceTestScripts(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, ConfigFileName), []byte(withTestContract("name: t\n")), BaseFileMode); err != nil {
 		t.Fatal(err)
 	}
-	before, err := ConfigDigest(t.Context(), root)
+	before, err := ConfigDigest(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +128,7 @@ func TestConfigDigestCoversTheSourceTestScripts(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), BaseFileMode); err != nil {
 		t.Fatal(err)
 	}
-	added, err := ConfigDigest(t.Context(), root)
+	added, err := ConfigDigest(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +138,7 @@ func TestConfigDigestCoversTheSourceTestScripts(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	edited, err := ConfigDigest(t.Context(), root)
+	edited, err := ConfigDigest(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,14 +148,14 @@ func TestConfigDigestCoversTheSourceTestScripts(t *testing.T) {
 	if err := os.Chmod(script, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	armed, err := ConfigDigest(t.Context(), root)
+	armed, err := ConfigDigest(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if armed == edited {
 		t.Fatal("making tests/fixtures/source-check.sh executable left the digest unchanged")
 	}
-	items, err := TrustItems(t.Context(), root)
+	items, err := TrustItems(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,10 +205,10 @@ func TestTestScriptsRefusesSymlinksAtEveryDepth(t *testing.T) {
 			if _, err := TestScripts(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
 				t.Fatalf("TestScripts() error = %v, want the symlink refused", err)
 			}
-			if _, err := ConfigDigest(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
+			if _, err := ConfigDigest(t.Context(), trustTestConfig(t, root)); !errors.Is(err, ErrUnsafePath) {
 				t.Fatalf("ConfigDigest() error = %v, want the tests/ refusal to reach trust", err)
 			}
-			if err := RequireTrust(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
+			if err := RequireTrust(t.Context(), trustTestConfig(t, root)); !errors.Is(err, ErrUnsafePath) {
 				t.Fatalf("RequireTrust() error = %v, want the tests/ refusal to reach execution", err)
 			}
 		})
@@ -231,7 +255,7 @@ func TestTrustDiffKeepsBinAndTestsDistinctAcrossTestHookChanges(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, BaseBinDir, "shared.sh"), []byte("echo one\n"), BaseFileMode); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := WriteTrust(t.Context(), root, time.Now()); err != nil {
+	if _, err := WriteTrust(t.Context(), trustTestConfig(t, root), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(root, BaseTestsDir), BaseDirMode); err != nil {
@@ -243,7 +267,7 @@ func TestTrustDiffKeepsBinAndTestsDistinctAcrossTestHookChanges(t *testing.T) {
 		if err := mutate(); err != nil {
 			t.Fatal(err)
 		}
-		state, err := ReadTrust(t.Context(), root)
+		state, err := ReadTrust(t.Context(), trustTestConfig(t, root))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -252,7 +276,7 @@ func TestTrustDiffKeepsBinAndTestsDistinctAcrossTestHookChanges(t *testing.T) {
 		}) {
 			t.Fatalf("changes = %+v, want one %s test/shared.sh change", state.Changes, want)
 		}
-		if _, err := WriteTrust(t.Context(), root, time.Now()); err != nil {
+		if _, err := WriteTrust(t.Context(), trustTestConfig(t, root), time.Now()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -288,7 +312,7 @@ func TestBinScriptsRefusesASymlinkedFile(t *testing.T) {
 	if _, err := BinScripts(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
 		t.Fatalf("BinScripts(t.Context(), ) error = %v, want the symlink refused", err)
 	}
-	if _, err := ConfigDigest(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
+	if _, err := ConfigDigest(t.Context(), trustTestConfig(t, root)); !errors.Is(err, ErrUnsafePath) {
 		t.Fatalf("ConfigDigest(t.Context(), ) error = %v, want the refusal to reach the trust gate", err)
 	}
 }
@@ -309,14 +333,14 @@ func TestConfigDigestCoversTheExecutableBit(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho shadow\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	before, err := ConfigDigest(t.Context(), root)
+	before, err := ConfigDigest(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(script, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	after, err := ConfigDigest(t.Context(), root)
+	after, err := ConfigDigest(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,14 +366,14 @@ func TestConfigDigestCoversNestedBinScripts(t *testing.T) {
 	if err := os.WriteFile(sourced, []byte("echo v1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	before, err := ConfigDigest(t.Context(), root)
+	before, err := ConfigDigest(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(sourced, []byte("echo pwned\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	after, err := ConfigDigest(t.Context(), root)
+	after, err := ConfigDigest(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,14 +413,14 @@ func TestConfigDigestTreatsKnowledgeAsDataNotAnExecutionDefinition(t *testing.T)
 	if err := os.WriteFile(page, []byte("# One\n"), BaseFileMode); err != nil {
 		t.Fatal(err)
 	}
-	before, err := ConfigDigest(t.Context(), root)
+	before, err := ConfigDigest(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(page, []byte("# Two\n"), BaseFileMode); err != nil {
 		t.Fatal(err)
 	}
-	after, err := ConfigDigest(t.Context(), root)
+	after, err := ConfigDigest(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,10 +453,10 @@ func TestBinScriptsRefusesASymlinkedBinDirectory(t *testing.T) {
 		t.Fatalf("BinScripts(t.Context(), ) error = %v, want it refused as an unsafe path", err)
 	}
 	// And the refusal reaches the gate, so nothing runs against such a base.
-	if _, err := ConfigDigest(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
+	if _, err := ConfigDigest(t.Context(), trustTestConfig(t, root)); !errors.Is(err, ErrUnsafePath) {
 		t.Fatalf("ConfigDigest(t.Context(), ) error = %v, want the refusal to reach the trust gate", err)
 	}
-	if err := RequireTrust(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
+	if err := RequireTrust(t.Context(), trustTestConfig(t, root)); !errors.Is(err, ErrUnsafePath) {
 		t.Fatalf("RequireTrust(t.Context(), ) error = %v, want the refusal to reach every command that executes", err)
 	}
 }
@@ -459,8 +483,8 @@ func TestTrustRecordsPerItemDigestsAndDiffsThem(t *testing.T) {
 	root := t.TempDir()
 	config := "name: t\nlayers: {events: true, index: true, tasks: true, projects: true, wiki: true}\n" +
 		"sources:\n" +
-		"  kept:\n    enabled: true\n    layer: events\n    run: [echo, \"[]\"]\n    fields:\n      id: .id\n      time: .t\n" +
-		"  moved:\n    enabled: true\n    layer: events\n    run: [echo, \"[]\"]\n    fields:\n      id: .id\n      time: .t\n"
+		"  kept:\n    enabled: true\n    layer: events\n    run: [echo, \"[]\"]\n    fields:\n      id: .id\n      time: .t\n      title: .title\n" +
+		"  moved:\n    enabled: true\n    layer: events\n    run: [echo, \"[]\"]\n    fields:\n      id: .id\n      time: .t\n      title: .title\n"
 	write := func(body string) {
 		if err := os.WriteFile(filepath.Join(root, ConfigFileName), []byte(withTestContract(body)), 0o600); err != nil {
 			t.Fatal(err)
@@ -474,23 +498,23 @@ func TestTrustRecordsPerItemDigestsAndDiffsThem(t *testing.T) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\necho one\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := WriteTrust(t.Context(), root, time.Now()); err != nil {
+	if _, err := WriteTrust(t.Context(), trustTestConfig(t, root), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 
 	// Three edits a reviewer must be able to tell apart: one command's text moved, one script
 	// gained the bit that decides whether PATH picks it up, and one source appeared.
 	write(config +
-		"  added:\n    enabled: true\n    layer: events\n    run: [curl, http://evil.test]\n    fields:\n      id: .id\n      time: .t\n")
+		"  added:\n    enabled: true\n    layer: events\n    run: [curl, http://evil.test]\n    fields:\n      id: .id\n      time: .t\n      title: .title\n")
 	moved := strings.Replace(config, "  moved:\n    enabled: true\n    layer: events\n    run: [echo, \"[]\"]",
 		"  moved:\n    enabled: true\n    layer: events\n    run: [echo, \"[1]\"]", 1)
 	write(moved +
-		"  added:\n    enabled: true\n    layer: events\n    run: [curl, http://evil.test]\n    fields:\n      id: .id\n      time: .t\n")
+		"  added:\n    enabled: true\n    layer: events\n    run: [curl, http://evil.test]\n    fields:\n      id: .id\n      time: .t\n      title: .title\n")
 	if err := os.Chmod(script, 0o700); err != nil {
 		t.Fatal(err)
 	}
 
-	state, err := ReadTrust(t.Context(), root)
+	state, err := ReadTrust(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,6 +551,7 @@ sources:
     fields:
       id: .id
       time: .t
+      title: .title
 `
 	policies := map[string]string{
 		"timeout":      "    timeout: 5s\n",
@@ -559,6 +584,10 @@ func TestTrustSourceDigestCoversSourceTestHook(t *testing.T) {
 	if sourceDigest(without) == sourceDigest(with) {
 		t.Fatal("adding a source test hook left the execution trust digest unchanged")
 	}
+	withAuth := &Source{Name: "source", Run: []string{"collect.sh"}, Auth: []string{"provider", "auth", "status"}}
+	if sourceDigest(without) == sourceDigest(withAuth) {
+		t.Fatal("adding a source auth probe left the execution trust digest unchanged")
+	}
 }
 
 func TestTrustSourceDigestCoversBodyFieldPaths(t *testing.T) {
@@ -571,6 +600,7 @@ sources:
     fields:
       id: .id
       time: .t
+      title: .title
       project: [.project, .fallback]
       topic: .topic
     body: [cli, view, "{{id}}", --project, "{{project}}"]
@@ -628,6 +658,7 @@ sources:
     fields:
       id: .id
       time: .t
+      title: .title
 `
 	if err := os.WriteFile(path, []byte(withTestContract(config)), BaseFileMode); err != nil {
 		t.Fatal(err)
@@ -654,12 +685,13 @@ sources:
     fields:
       id: .id
       time: .time
+      title: .title
       topic: .topic
 `)
 	if err := os.WriteFile(path, []byte(config), BaseFileMode); err != nil {
 		t.Fatal(err)
 	}
-	before, err := ConfigDigest(t.Context(), root)
+	before, err := ConfigDigest(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -670,7 +702,7 @@ sources:
 	if err := os.WriteFile(path, []byte(semanticOnly), BaseFileMode); err != nil {
 		t.Fatal(err)
 	}
-	if after, err := ConfigDigest(t.Context(), root); err != nil || after != before {
+	if after, err := ConfigDigest(t.Context(), trustTestConfig(t, root)); err != nil || after != before {
 		t.Fatalf("semantic-only configuration edit digest = %q, %v, want unchanged %q", after, err, before)
 	}
 
@@ -678,14 +710,14 @@ sources:
 	if err := os.WriteFile(path, []byte(executionChange), BaseFileMode); err != nil {
 		t.Fatal(err)
 	}
-	if after, err := ConfigDigest(t.Context(), root); err != nil || after == before {
+	if after, err := ConfigDigest(t.Context(), trustTestConfig(t, root)); err != nil || after == before {
 		t.Fatalf("execution edit digest = %q, %v, want a new digest", after, err)
 	}
 }
 
 func trustSourceDigest(t *testing.T, root, name string) string {
 	t.Helper()
-	items, err := TrustItems(t.Context(), root)
+	items, err := TrustItems(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -709,7 +741,7 @@ func TestTrustDiffIsAbsentUntilItCanBeHonest(t *testing.T) {
 		[]byte(withTestContract("name: t\nlayers: {events: true}\nsources: {}\n")), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	never, err := ReadTrust(t.Context(), root)
+	never, err := ReadTrust(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +749,7 @@ func TestTrustDiffIsAbsentUntilItCanBeHonest(t *testing.T) {
 		t.Fatalf("changes = %+v, want none for a base that was never trusted", never.Changes)
 	}
 	// A record from an older build: the aggregate digest only.
-	state, err := WriteTrust(t.Context(), root, time.Now())
+	state, err := WriteTrust(t.Context(), trustTestConfig(t, root), time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -728,7 +760,7 @@ func TestTrustDiffIsAbsentUntilItCanBeHonest(t *testing.T) {
 	if err := os.WriteFile(state.Path, withoutItems, BaseFileMode); err != nil {
 		t.Fatal(err)
 	}
-	old, err := ReadTrust(t.Context(), root)
+	old, err := ReadTrust(t.Context(), trustTestConfig(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -738,4 +770,13 @@ func TestTrustDiffIsAbsentUntilItCanBeHonest(t *testing.T) {
 	if len(old.Changes) != 0 {
 		t.Fatalf("changes = %+v, want none when the stored record predates per-item digests", old.Changes)
 	}
+}
+
+func trustTestConfig(t *testing.T, root string) *Config {
+	t.Helper()
+	config, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return config
 }

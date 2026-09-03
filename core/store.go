@@ -74,16 +74,19 @@ const (
 // Generated graph filenames live at the base root. They remain outside every typed layer so
 // listings cannot confuse rebuildable cache data with collected or authored content.
 const (
-	GraphFile         = "graph.tsv"
-	GraphMetaFile     = "graph.meta.json"
-	TaskTraceFile     = "TASKS.md"
-	BaseAgentsFile    = "AGENTS.md"
-	BaseSkillsDir     = ".agents/skills"
-	BaseBinDir        = "bin"
-	BaseTestsDir      = "tests"
-	ConfigFileName    = "fkf.yaml"
-	LocalConfigName   = "fkf.local.yaml"
-	MarkdownExtension = ".md"
+	GraphFile           = "graph.tsv"
+	GraphDstFile        = "graph.dst.tsv"
+	GraphOffsetsFile    = "graph.offsets.tsv"
+	GraphMetaFile       = "graph.meta.json"
+	GraphGenerationFile = "graph.generation.json"
+	TaskTraceFile       = "TASKS.md"
+	BaseAgentsFile      = "AGENTS.md"
+	BaseSkillsDir       = ".agents/skills"
+	BaseBinDir          = "bin"
+	BaseTestsDir        = "tests"
+	ConfigFileName      = "fkf.yaml"
+	LocalConfigName     = "fkf.local.yaml"
+	MarkdownExtension   = ".md"
 )
 
 // ErrNotAddressable reports a base-relative path outside the published URI grammar. The CLI
@@ -208,7 +211,10 @@ func addressableBasePath(relative string) bool {
 	// The root graph files are addressable but are not a layer: there is nothing to enable or
 	// browse. Both the rows and their integrity metadata resolve through the Store internally.
 	return cleaned == GraphFile ||
+		cleaned == GraphDstFile ||
+		cleaned == GraphOffsetsFile ||
 		cleaned == GraphMetaFile ||
+		cleaned == GraphGenerationFile ||
 		cleaned == ConfigFileName ||
 		cleaned == BaseAgentsFile
 }
@@ -224,7 +230,8 @@ type relationFileCapabilities struct {
 func relationFilePath(relative string) (relationFileCapabilities, bool) {
 	parts := strings.Split(relative, "/")
 	switch {
-	case relative == ConfigFileName, relative == GraphFile:
+	case relative == ConfigFileName, relative == GraphFile,
+		relative == GraphDstFile, relative == GraphOffsetsFile:
 		return relationFileCapabilities{}, true
 	case relative == BaseAgentsFile:
 		return relationFileCapabilities{Fragment: true}, true
@@ -249,8 +256,9 @@ func relationFilePath(relative string) (relationFileCapabilities, bool) {
 }
 
 func notAddressable(relative string) error {
-	return fmt.Errorf("%w: %s (a base addresses the published shapes under the %s layers, plus %s, %s, %s and %s)",
-		ErrNotAddressable, relative, LayerNames(), GraphFile, GraphMetaFile, ConfigFileName, BaseAgentsFile)
+	return fmt.Errorf("%w: %s (a base addresses the published shapes under the %s layers, plus %s, %s, %s, %s, %s and %s)",
+		ErrNotAddressable, relative, LayerNames(), GraphFile, GraphDstFile, GraphOffsetsFile,
+		GraphMetaFile, ConfigFileName, BaseAgentsFile)
 }
 
 // addressableLayerPath is deliberately a closed grammar. A layer directory may contain

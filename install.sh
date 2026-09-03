@@ -128,6 +128,12 @@ mv -f "$staged_install" "$install_dir/fkf"
 staged_install=
 
 printf 'Installed %s to %s/fkf\n' "$version" "$install_dir"
+installed_fkf=$install_dir/fkf
+resolved_fkf=$(command -v fkf 2>/dev/null || true)
+if [ -n "$resolved_fkf" ] && [ "$resolved_fkf" != "$installed_fkf" ] && ! [ "$resolved_fkf" -ef "$installed_fkf" ]; then
+	printf 'Warning: %s precedes %s on PATH; invoke %s or reorder PATH.\n' \
+		"$resolved_fkf" "$installed_fkf" "$installed_fkf" >&2
+fi
 case ":${PATH:-}:" in
 *":$install_dir:"*) ;;
 *) printf 'Add %s to PATH to run fkf.\n' "$install_dir" ;;

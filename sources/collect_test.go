@@ -2,6 +2,7 @@ package sources_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -120,14 +121,16 @@ func TestCollectStoresRecordsWholeWithTheirFieldMap(t *testing.T) {
 }
 
 func TestCollectedEventKeepsItsOriginalWindowAcrossTimezoneChanges(t *testing.T) {
-	original := time.Local
-	time.Local = time.UTC
-	t.Cleanup(func() { time.Local = original })
+	location, err := time.LoadLocation("Pacific/Apia")
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := time.Date(2026, 5, 4, 12, 0, 0, 0, location)
 
 	source := mustSource(t, logSource)
-	runner := &fakeRunner{stdout: `[{"id":"a1","t":"2026-05-04T12:30:00Z"}]`}
+	runner := &fakeRunner{stdout: `[{"id":"a1","t":"2026-05-03T12:30:00Z","subject":"Timezone evidence"}]`}
 	document, err := sources.Collect(t.Context(), runner, source, testEnvironment(t),
-		sources.DayWindow(testDay), time.Minute, testDay)
+		sources.DayWindow(day), time.Minute, testDay)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,13 +143,8 @@ func TestCollectedEventKeepsItsOriginalWindowAcrossTimezoneChanges(t *testing.T)
 		t.Fatal(err)
 	}
 
-	location, err := time.LoadLocation("Pacific/Apia")
-	if err != nil {
-		t.Fatal(err)
-	}
-	time.Local = location
 	if err := sources.VerifyRecords(document); err != nil {
-		t.Fatalf("VerifyRecords() after moving the base from UTC to Pacific/Apia: %v", err)
+		t.Fatalf("VerifyRecords() with stored Pacific/Apia bounds under the process timezone: %v", err)
 	}
 }
 
@@ -207,10 +205,59 @@ func TestCollectEnforcesDeclaredCardinalityAndRelationURIs(t *testing.T) {
 
 	// A record identity may itself be a URL. Only the file-path head participates in scheme
 	// classification; the fragment remains an opaque canonical record identity.
-	output := `[{"ids":["a"],"time":"2026-05-04T09:00:00Z","author":"events/2026-08-22/rss.json#https://example.test/post"}]`
+	output := `[{"ids":["a"],"time":"2026-05-04T09:00:00Z","titles":["URL-shaped identity"],"author":"events/2026-08-22/rss.json#https://example.test/post"}]`
 	if _, err := sources.Collect(t.Context(), &fakeRunner{stdout: output}, source,
 		testEnvironment(t), sources.DayWindow(testDay), time.Minute, testDay); err != nil {
 		t.Fatalf("Collect() rejected a URL-shaped record fragment: %v", err)
+	}
+}
+
+func TestCollectTreatsEmptyMappedStringsByDeclaredCardinality(t *testing.T) {
+	source := mustSource(t, `    enabled: true
+    layer: events
+    run: [cli]
+    fields:
+      id: .id
+      time: .time
+      title: .title
+      participants: .participants[]
+`)
+	document, err := sources.Collect(t.Context(), &fakeRunner{stdout: `[
+  {"id":"a","time":"2026-05-04T09:00:00Z","title":"Record","participants":["", "actor:github.com/fmind"]}
+]`}, source, testEnvironment(t), sources.DayWindow(testDay), time.Minute, testDay)
+	if err != nil {
+		t.Fatalf("Collect() error = %v; optional and many empty strings must be absent", err)
+	}
+	if document.Count != 1 {
+		t.Fatalf("document count = %d, want 1", document.Count)
+	}
+}
+
+func TestCollectRequiresAControlFreeMeaningfulTitle(t *testing.T) {
+	source := mustSource(t, `    enabled: true
+    layer: events
+    run: [cli]
+    fields:
+      id: .id
+      time: .time
+      title: .title
+`)
+	for name, title := range map[string]string{
+		"empty": "", "control": "unsafe\nheading",
+	} {
+		t.Run(name, func(t *testing.T) {
+			encoded, err := json.Marshal([]map[string]string{{
+				"id": "a", "time": "2026-05-04T09:00:00Z", "title": title,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = sources.Collect(t.Context(), &fakeRunner{stdout: string(encoded)}, source,
+				testEnvironment(t), sources.DayWindow(testDay), time.Minute, testDay)
+			if !errors.Is(err, sources.ErrIncomplete) || !strings.Contains(err.Error(), "title") {
+				t.Fatalf("Collect() error = %v, want title contract refusal", err)
+			}
+		})
 	}
 }
 
@@ -252,6 +299,7 @@ func TestVerifyRecordsRejectsANonCanonicalStoredSourceName(t *testing.T) {
     run: [cli]
     fields:
       id: .id
+      title: .id
 `)
 	for _, test := range []struct {
 		name, source, want string
@@ -372,6 +420,11 @@ func TestCollectFailsTheWholeDay(t *testing.T) {
 			wantMessage: "field id projects 0 values; schema cardinality one",
 		},
 		{
+			name: "a record with an empty declared id", yaml: logSource,
+			stdout:      `[{"id":"","t":"2026-05-04T09:00:00Z"}]`,
+			wantMessage: "empty identity",
+		},
+		{
 			name: "a log record with no timestamp", yaml: logSource,
 			stdout:      `[{"id":"a1"}]`,
 			wantMessage: "field time projects 0 values; schema cardinality one",
@@ -459,9 +512,10 @@ func TestBuildRunCommandSubstitutesOnlyWhatFkfControls(t *testing.T) {
     fields:
       id: .id
       time: .t
+      title: .id
 `)
 	env := sources.Environment{Root: "/base", Env: map[string]string{"PATH": "/usr/bin"}}
-	command := sources.BuildRunCommand(source, env, sources.DayWindow(testDay), time.Minute)
+	command := mustBuildRunCommand(t, source, env, sources.DayWindow(testDay), time.Minute)
 	want := []string{"cli", "2026-05-04", "2026-05-05", "2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z", "/base"}
 	if !slices.Equal(command.Argv, want) {
 		t.Fatalf("argv = %v, want direct argv %v", command.Argv, want)
@@ -479,20 +533,42 @@ func TestBuildRunCommandPassesFilesystemPlaceholdersAsOpaqueArguments(t *testing
     fields:
       id: .id
       time: .t
+      title: .id
 `)
 	env := sources.Environment{
 		Root: "/tmp/brain; touch pwned ' quote",
 		Env:  map[string]string{"PATH": "/usr/bin"},
 	}
-	command := sources.BuildRunCommand(source, env, sources.DayWindow(testDay), time.Minute)
+	command := mustBuildRunCommand(t, source, env, sources.DayWindow(testDay), time.Minute)
 	if command.Argv[1] != env.Root || command.Argv[2] != "/tmp/home $(touch nope)/repos" {
 		t.Fatalf("path argv = %q, %q; want hostile paths passed as data", command.Argv[1], command.Argv[2])
 	}
 }
 
+func TestCollectFailsPlanningAHomePlaceholderWithoutHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	source := mustSource(t, `    enabled: true
+    layer: events
+    run: [cli, "{{home}}"]
+    fields:
+      id: .id
+      time: .t
+      title: .id
+`)
+	runner := &fakeRunner{stdout: `[{"id":"a","t":"2026-05-04T09:00:00Z"}]`}
+	_, err := sources.Collect(t.Context(), runner, source, testEnvironment(t),
+		sources.DayWindow(testDay), time.Minute, testDay)
+	if err == nil || !strings.Contains(err.Error(), "HOME") {
+		t.Fatalf("Collect() error = %v, want {{home}} planning to fail without HOME", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("runner calls = %d, want planning to fail before execution", len(runner.calls))
+	}
+}
+
 func TestBuildRunCommandNeverParsesShellSyntax(t *testing.T) {
 	source := mustSource(t, logSource)
-	command := sources.BuildRunCommand(source, testEnvironment(t), sources.DayWindow(testDay), time.Minute)
+	command := mustBuildRunCommand(t, source, testEnvironment(t), sources.DayWindow(testDay), time.Minute)
 	if command.Argv[0] != "cli" {
 		t.Fatalf("command = %+v, want the declared executable invoked directly", command)
 	}
@@ -501,7 +577,7 @@ func TestBuildRunCommandNeverParsesShellSyntax(t *testing.T) {
 func TestBuildRunCommandCopiesTheResolvedEnvironment(t *testing.T) {
 	source := &core.Source{Run: []string{"git", "log"}}
 	env := sources.Environment{Root: "/base", Env: map[string]string{"PATH": "/base/bin:/usr/bin"}}
-	command := sources.BuildRunCommand(source, env, sources.DayWindow(testDay), time.Minute)
+	command := mustBuildRunCommand(t, source, env, sources.DayWindow(testDay), time.Minute)
 	if len(command.Env) != 1 || command.Env["PATH"] != "/base/bin:/usr/bin" {
 		t.Fatalf("environment = %v, want only the resolved PATH override", command.Env)
 	}
@@ -513,7 +589,7 @@ func TestBuildRunCommandCopiesTheResolvedEnvironment(t *testing.T) {
 
 func TestSourceTimeoutOverridesTheBaseDefault(t *testing.T) {
 	source := mustSource(t, logSource+"    timeout: 5s\n")
-	command := sources.BuildRunCommand(source, testEnvironment(t), sources.DayWindow(testDay), time.Minute)
+	command := mustBuildRunCommand(t, source, testEnvironment(t), sources.DayWindow(testDay), time.Minute)
 	if command.Timeout != 5*time.Second {
 		t.Fatalf("timeout = %v, want the source's own 5s", command.Timeout)
 	}
@@ -527,6 +603,7 @@ const bodySource = `    enabled: true
     fields:
       id: .id
       time: .t
+      title: .id
       repo: .repo
       project: [.project.key, .fallback_project]
     body: [gh, pr, view, "{{id}}", --repo, "{{repo}}", --project, "{{project}}"]
@@ -560,6 +637,29 @@ func TestFetchBodySubstitutesIntoArgvAndNeverAShell(t *testing.T) {
 	}
 }
 
+func TestFetchBodyFailsPlanningAHomePlaceholderWithoutHome(t *testing.T) {
+	t.Setenv("HOME", "")
+	source := mustSource(t, `    enabled: true
+    layer: events
+    run: [cli]
+    fields:
+      id: .id
+      time: .t
+      title: .id
+    body: [cli, "{{home}}", "{{id}}"]
+`)
+	runner := &fakeRunner{stdout: "body"}
+	_, _, err := sources.FetchBody(t.Context(), runner, source,
+		source.Fields, testEnvironment(t),
+		sources.Record{"id": "a"}, time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "HOME") {
+		t.Fatalf("FetchBody() error = %v, want {{home}} planning to fail without HOME", err)
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("runner calls = %d, want planning to fail before execution", len(runner.calls))
+	}
+}
+
 func TestFetchBodyKeepsStaticPlaceholdersAheadOfSameNamedFields(t *testing.T) {
 	source := mustSource(t, strings.Replace(bodySource,
 		"      project: [.project.key, .fallback_project]\n",
@@ -585,7 +685,7 @@ func TestFetchBodyKeepsStaticPlaceholdersAheadOfSameNamedFields(t *testing.T) {
 func TestFetchBodyRefusesAnOptionOrInvisibleIdBeforeExec(t *testing.T) {
 	source := mustSource(t, bodySource)
 	runner := &fakeRunner{stdout: "never reached"}
-	for _, id := range []string{"--help", "-Rattacker/repo", "a\tb", "a\nb", "a\u200bb"} {
+	for _, id := range []string{"--help", "-Rattacker/repo", "@response-file", "a\tb", "a\nb", "a\u200bb"} {
 		record := sources.Record{
 			"id": id, "repo": "fmind/fkf", "fallback_project": "knowledge",
 			"t": "2026-05-04T00:00:00Z",
@@ -750,7 +850,7 @@ func TestCollectWindowBucketsRecordsByTheirOwnDeclaredDay(t *testing.T) {
 // suite happens to run in rather than assuming UTC.
 func dayBounds(t *testing.T, date string) struct{ start, end time.Time } {
 	t.Helper()
-	day, err := sources.ParseDay(date)
+	day, err := sources.ParseDayInLocation(date, testDay.Location())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -791,13 +891,11 @@ func TestCollectWindowBucketsDateOnlyEventTimeByCivilDate(t *testing.T) {
 	if err != nil {
 		t.Skipf("no tzdata for America/New_York on this system: %v", err)
 	}
-	previous := time.Local
-	time.Local = loc
-	t.Cleanup(func() { time.Local = previous })
 	source := mustSource(t, windowedSource)
 	runner := &fakeRunner{stdout: `[{"id":"all-day","t":"2026-05-04","subject":"all-day event"}]`}
+	now := time.Date(2026, 5, 10, 12, 0, 0, 0, loc)
 	documents, err := sources.CollectWindow(t.Context(), runner, source, testEnvironment(t),
-		sources.Window{}, []string{"2026-05-04"}, time.Minute, testDay)
+		sources.Window{}, []string{"2026-05-04"}, time.Minute, now)
 	if err != nil {
 		t.Fatalf("CollectWindow() rejected a date-only record belonging to its civil day west of UTC: %v", err)
 	}

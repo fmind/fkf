@@ -72,12 +72,6 @@ func (b *Base) RequireLayer(layer core.Layer) error {
 	return nil
 }
 
-// ReadFile loads one base-relative file under the given bound, applying confinement and
-// layer activation. Every read in fkf goes through it.
-func (b *Base) ReadFile(relative string, limit int64) ([]byte, error) {
-	return b.ReadFileContext(context.Background(), relative, limit)
-}
-
 // ReadFileContext loads one bounded base-relative file with cooperative cancellation.
 func (b *Base) ReadFileContext(ctx context.Context, relative string, limit int64) ([]byte, error) {
 	absolute, err := b.Store.Resolve(relative)
@@ -85,11 +79,6 @@ func (b *Base) ReadFileContext(ctx context.Context, relative string, limit int64
 		return nil, err
 	}
 	return core.ReadFileLimitContext(ctx, absolute, limit)
-}
-
-// ReadDocument loads one stored collection document by its base-relative URI.
-func (b *Base) ReadDocument(relative string) (*sources.Document, error) {
-	return b.ReadDocumentContext(context.Background(), relative)
 }
 
 // ReadDocumentContext loads and verifies one stored document with cooperative cancellation.
@@ -191,8 +180,8 @@ func (b *Base) DayDocuments(date string) ([]string, error) {
 	return names, nil
 }
 
-// IndexDocuments lists every collected point-in-time document under index/. Graph caches live at
-// the base root, so source names never collide with generated files.
+// IndexDocuments lists every collected point-in-time document under index/. Hidden files are
+// reserved for rebuildable caches and never become source names or published evidence URIs.
 func (b *Base) IndexDocuments() ([]string, error) {
 	if err := b.RequireLayer(core.LayerIndex); err != nil {
 		return nil, err
@@ -210,7 +199,7 @@ func (b *Base) IndexDocuments() ([]string, error) {
 	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
 		names = append(names, strings.TrimSuffix(entry.Name(), ".json"))
@@ -222,7 +211,7 @@ func (b *Base) IndexDocuments() ([]string, error) {
 // RequireTrust is the gate before anything a base declares is executed. Read commands never
 // call it, because they execute nothing and so need no trust.
 func (b *Base) RequireTrust(ctx context.Context) error {
-	return core.RequireTrustConfig(ctx, b.Config)
+	return core.RequireTrust(ctx, b.Config)
 }
 
 // Timeout resolves the effective per-command timeout for one source.

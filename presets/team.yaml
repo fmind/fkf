@@ -1,4 +1,14 @@
 sources:
+  # Session traces may contain personal repository prompts, so a team base never enables this
+  # source implicitly. Enable it only when the shared boundary is meant to retain those traces.
+  agent-session-traces:
+    enabled: false
+    layer: tasks
+    requires: [agent-session-trace.sh, agent-prompt-filter.jq, find, git, jq, xargs]
+    window: true
+    run: [agent-session-trace.sh, "{{start}}", "{{end}}"]
+    install: mise use -g jq@latest
+
   # A team base declares only an explicitly organization-scoped snapshot. It starts disabled:
   # replacing the sentinel and enabling it is the reviewed disclosure decision.
   # When the team account differs from your personal one, launch fkf with GH_CONFIG_DIR in the
@@ -7,12 +17,14 @@ sources:
     enabled: false
     layer: index
     requires: [github-list-json.sh, gh, jq]
+    auth: [gh, auth, status]
     # Replace the sentinel with this base's one organization before enabling. Using /user/repos
     # here would cross the team boundary by also collecting the operator's personal repositories.
     format: ndjson
     run: [github-list-json.sh, org-repositories, REPLACE_WITH_ORG]
     fields:
       id: .nameWithOwner
+      title: .title
       url: .url
       repo: .nameWithOwner
       repository: .repository_uri

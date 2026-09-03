@@ -24,18 +24,18 @@ sources:
     run: [collect-active.sh]
     test: [check-active.sh, --fixture, "{{base}}/fixtures"]
     timeout: 7s
-    fields: {id: .id}
+    fields: {id: .id, title: .id}
   dormant:
     enabled: false
     layer: index
     run: [collect-dormant.sh]
     test: [check-dormant.sh, --test]
-    fields: {id: .id}
+    fields: {id: .id, title: .id}
   untested:
     enabled: true
     layer: index
     run: [collect-untested.sh]
-    fields: {id: .id}
+    fields: {id: .id, title: .id}
 `
 
 func TestSourceTestsSelectEnabledDeclaredHooksByDefault(t *testing.T) {

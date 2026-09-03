@@ -81,7 +81,10 @@ func TestSources(ctx context.Context, base *Base, request SourceTestRequest) (*S
 			return report, err
 		}
 		resultStarted := base.Now()
-		command := sources.BuildTestCommand(source, base.Env, base.Config.Sync.Timeout)
+		command, err := sources.BuildTestCommand(source, base.Env, base.Config.Sync.Timeout)
+		if err != nil {
+			return report, err
+		}
 		result := SourceTestResult{
 			Source: source.Name, Enabled: source.Enabled, Command: command.Display(), Outcome: SourceTestPassed,
 		}

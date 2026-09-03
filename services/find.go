@@ -26,12 +26,22 @@ import (
 
 // FindFilter is the whole filter surface.
 type FindFilter struct {
-	Sources []string
-	Layers  []core.Layer
-	Window  Window
-	Grep    []string
-	Where   []WhereClause
-	Limit   int
+	Sources           []string
+	Layers            []core.Layer
+	Window            Window
+	Grep              []string
+	Where             []WhereClause
+	Limit             int
+	Bodies            bool
+	identity          *IdentityResolver
+	bodyManifest      *BodyManifest
+	candidateURIs     map[string]struct{}
+	index             *LexicalIndexUse
+	indexInputs       []LexicalInputFile
+	indexDigest       string
+	indexFallback     string
+	generationRetries int
+	afterScan         func()
 }
 
 // selects reports whether the filter actually narrows anything. A bare `fkf find` is "what
@@ -84,6 +94,14 @@ func (f FindFilter) pageTerms() []string {
 	return normalizeTerms(slices.Clone(f.Grep))
 }
 
+func (f FindFilter) admitsCandidate(uri string) bool {
+	if f.candidateURIs == nil {
+		return true
+	}
+	_, found := f.candidateURIs[uri]
+	return found
+}
+
 // WhereClause is one `path=value` equality over a record, using the same jq subset the
 // configuration uses so a filter is pasteable into jq.
 type WhereClause struct {
@@ -106,15 +124,17 @@ func ParseWhere(argument string) (WhereClause, error) {
 
 // FindRecord is one matching record, stamped with everything needed to cite it.
 type FindRecord struct {
-	URI    string              `json:"uri"`
-	Source string              `json:"source"`
-	Date   string              `json:"date,omitempty"`
-	Time   string              `json:"time,omitempty"`
-	Title  string              `json:"title,omitempty"`
-	URL    string              `json:"url,omitempty"`
-	Fields map[string][]string `json:"fields,omitempty"`
-	Body   bool                `json:"body,omitempty"`
-	Record sources.Record      `json:"record,omitempty"`
+	URI        string              `json:"uri"`
+	Source     string              `json:"source"`
+	Date       string              `json:"date,omitempty"`
+	Time       string              `json:"time,omitempty"`
+	Title      string              `json:"title,omitempty"`
+	URL        string              `json:"url,omitempty"`
+	Fields     map[string][]string `json:"fields,omitempty"`
+	Body       bool                `json:"body,omitempty"`
+	BodyCached bool                `json:"body_cached,omitempty"`
+	Record     sources.Record      `json:"record,omitempty"`
+	relations  map[string]struct{}
 }
 
 // SourceCount is one source's volume within one day.
@@ -146,6 +166,23 @@ type FindResult struct {
 	Scanned   int  `json:"scanned"`
 	Matched   int  `json:"matched"`
 	Truncated bool `json:"truncated,omitempty"`
+	// Index names the derived candidate path for lexical searches. Results and counters still
+	// come from exact Go matching over durable evidence; this field only explains the fast or
+	// fallback execution path.
+	Index *LexicalIndexUse `json:"index,omitempty"`
+}
+
+// CompactFindResult removes provider payloads and the internal date-selection list from a
+// delivered result. URIs, projected fields, counts, and the explicit window remain sufficient
+// to cite and reproduce the search; --raw is the opt-in diagnostic form that keeps both.
+func CompactFindResult(result *FindResult) {
+	if result == nil {
+		return
+	}
+	result.Days = nil
+	for index := range result.Records {
+		result.Records[index].Record = nil
+	}
 }
 
 // DefaultFindDays is what a query with neither a window nor a filter falls back to: the last
@@ -181,23 +218,22 @@ func resolveEventDates(base *Base, filter FindFilter) ([]string, error) {
 
 // Find scans the base under the filter.
 func Find(ctx context.Context, base *Base, filter FindFilter, counting bool) (*FindResult, error) {
-	if err := checkContext(ctx); err != nil {
+	selected, err := prepareFindScan(ctx, base, &filter)
+	if err != nil {
 		return nil, err
 	}
-	if err := validateFindRequest(base, filter); err != nil {
-		return nil, err
-	}
-	filter.Grep = normalizeTerms(filter.Grep)
+	return findPrepared(ctx, base, filter, counting, selected)
+}
+
+func findPrepared(
+	ctx context.Context, base *Base, filter FindFilter, counting bool, selected []string,
+) (*FindResult, error) {
 	// Validated against every DECLARED source, not only the enabled ones: a document already
 	// on disk from a source since disabled is still real evidence, and `--source` has to keep
 	// finding it. What it must never do is silently return "0 of 0 record(s)" for a name that
 	// was simply mistyped — `github-prs` for `github-pull-requests` looked exactly like an
 	// empty base, which for an agent is a false claim about the user's own history.
-	selected, err := resolveEventDates(base, filter)
-	if err != nil {
-		return nil, err
-	}
-	result := &FindResult{Window: filter.Window, Days: selected}
+	result := &FindResult{Window: filter.Window, Days: selected, Index: filter.index}
 	limit := filter.resultLimit()
 	if counting {
 		// A zero limit is the CLI count default and remains exhaustive. MCP supplies an
@@ -205,33 +241,54 @@ func Find(ctx context.Context, base *Base, filter FindFilter, counting bool) (*F
 		// must continue to keep Scanned and Matched truthful for the requested window.
 		limit = filter.Limit
 	}
-	// The Markdown layers are scanned before the records so the record limit cannot truncate
-	// them away, and only when the filter selects: a bare `fkf find` is "what arrived lately",
-	// which is a question about dated records alone.
-	if filter.selects() && !counting {
-		if err := scanPages(ctx, base, filter, result); err != nil {
-			return nil, err
+	scan := &findScanEngine{
+		ctx: ctx, base: base, filter: filter, counting: counting, result: result,
+	}
+	scan.onPage = func(hit SearchHit) error {
+		result.Pages = append(result.Pages, hit)
+		return nil
+	}
+	scan.onRecord = func(record FindRecord) error {
+		if limit > 0 && len(result.Records) >= limit {
+			result.Truncated = true
+			return nil
 		}
+		result.Records = append(result.Records, record)
+		return nil
 	}
-	if err := scanFindDays(ctx, base, selected, filter, counting, limit, result); err != nil {
-		return nil, err
+	scan.onVolume = func(volume DayVolume) error {
+		appendCountVolume(result, volume, limit)
+		return nil
 	}
-	// The index has no date, so no window bounds it: an index document is the state
-	// of things now. It is scanned only when the filter selects, and after the dated days, so
-	// a bare listing keeps its recency order and a search reaches the whole base.
-	// !result.Truncated is deliberate and is NOT a way to skip the layer: once the record limit
-	// is full there is nowhere to put an index match, and scanning anyway would read every index
-	// document to discard the result. An explicit `--layer index` never reaches here truncated,
-	// because no event day was scanned to fill the limit. Count mode is different: it keeps
-	// scanning after its output slice fills so its complete Scanned and Matched totals stay true.
-	if err := scanFindIndex(ctx, base, filter, counting, limit, result); err != nil {
-		return nil, err
+	scanErr := scan.scan(selected)
+	if filter.afterScan != nil {
+		filter.afterScan()
+	}
+	current, generationErr := findIndexInputsCurrent(ctx, base, filter)
+	if generationErr != nil {
+		return nil, generationErr
+	}
+	if !current {
+		if filter.generationRetries >= 2 {
+			return nil, fmt.Errorf("find inputs kept changing while they were read; retry after the writer finishes")
+		}
+		return Find(ctx, base, findScanRetry(filter, LexicalIndexFallbackStale), counting)
+	}
+	if scanErr != nil {
+		return nil, scanErr
+	}
+	SortSearchHits(result.Pages)
+	if limit > 0 && len(result.Pages) > limit {
+		result.Pages = result.Pages[:limit]
 	}
 	finishFindResult(result, counting)
 	return result, nil
 }
 
 func validateFindRequest(base *Base, filter FindFilter) error {
+	if filter.Bodies && len(filter.Grep) == 0 {
+		return fmt.Errorf("%w: --bodies requires at least one search term", core.ErrConfig)
+	}
 	for _, term := range filter.Grep {
 		if strings.TrimSpace(term) == "" {
 			return fmt.Errorf("%w: --grep terms must contain non-whitespace text", core.ErrConfig)
@@ -251,34 +308,6 @@ func validateFindRequest(base *Base, filter FindFilter) error {
 		}
 	}
 	return requireKnown("source", filter.Sources, base.Config.SourceNames())
-}
-
-func scanFindDays(
-	ctx context.Context, base *Base, selected []string, filter FindFilter, counting bool, limit int, result *FindResult,
-) error {
-	for index := len(selected) - 1; index >= 0; index-- {
-		if err := checkContext(ctx); err != nil {
-			return err
-		}
-		volume, err := scanDay(ctx, base, selected[index], filter, counting, limit, result)
-		if err != nil {
-			return err
-		}
-		if counting && volume.Total > 0 {
-			appendCountVolume(result, volume, limit)
-		}
-		if result.Truncated && !counting {
-			break
-		}
-	}
-	return nil
-}
-
-func scanFindIndex(ctx context.Context, base *Base, filter FindFilter, counting bool, limit int, result *FindResult) error {
-	if filter.selects() && (!result.Truncated || counting) && filter.scansIndex(base) {
-		return scanIndex(ctx, base, filter, counting, limit, result)
-	}
-	return nil
 }
 
 // appendCountVolume bounds only the materialized count rows. Reaching the limit exactly is
@@ -309,76 +338,6 @@ func finishFindResult(result *FindResult, counting bool) {
 	SortFindRecords(result.Records)
 }
 
-// scanPages folds wiki, projects, and tasks into the same result using the shared page scorer.
-// The window bounds task pages; a wiki concept or project
-// is true today whatever --since said, and excluding it because it has no date would answer a
-// different question than the one asked.
-func scanPages(ctx context.Context, base *Base, filter FindFilter, result *FindResult) error {
-	terms := filter.pageTerms()
-	if len(terms) == 0 || filter.recordOnly() {
-		return nil
-	}
-	if err := scanUndatedPages(ctx, base, filter, terms, result); err != nil {
-		return err
-	}
-	if err := scanTaskPages(ctx, base, filter, terms, result); err != nil {
-		return err
-	}
-	SortSearchHits(result.Pages)
-	// --limit bounds each half on its own. Sharing one budget would mean a base with a year of
-	// records could never show a page, which is the failure this whole scan exists to remove.
-	limit := filter.resultLimit()
-	if limit > 0 && len(result.Pages) > limit {
-		result.Pages = result.Pages[:limit]
-	}
-	return nil
-}
-
-func scanUndatedPages(ctx context.Context, base *Base, filter FindFilter, terms []string, result *FindResult) error {
-	// Each layer is scanned whole and the bound is applied once, over the merged list: a
-	// per-layer cap would let a low-scoring wiki page survive while a better project page,
-	// ranked below its own layer's cap, never reached the comparison.
-	for _, layer := range []core.Layer{core.LayerWiki, core.LayerProjects} {
-		if err := checkContext(ctx); err != nil {
-			return err
-		}
-		if !filter.wants(layer) || !base.Store.Enabled(layer) {
-			continue
-		}
-		hits, err := SearchPages(ctx, base, layer, terms, PageFilter{})
-		if err != nil {
-			return err
-		}
-		result.Pages = append(result.Pages, hits.Hits...)
-	}
-	return nil
-}
-
-func scanTaskPages(ctx context.Context, base *Base, filter FindFilter, terms []string, result *FindResult) error {
-	// Tasks are gathered inside the same function rather than returned from early, because the
-	// sort and the bound below apply to the MERGED list. Returning here when the tasks layer was
-	// off left the wiki and project hits in layer order and unbounded — a base without tasks got
-	// a different ranking, and a different length, from the same query.
-	if filter.wants(core.LayerTasks) && base.Store.Enabled(core.LayerTasks) {
-		traces, err := ListTasks(ctx, base, filter.Window, 0)
-		if err != nil {
-			return err
-		}
-		for _, trace := range traces.Traces {
-			if err := checkContext(ctx); err != nil {
-				return err
-			}
-			hit, matched := scorePage(trace.page, terms)
-			if !matched {
-				continue
-			}
-			hit.Layer, hit.Date, hit.Slug = core.LayerTasks, trace.Date, trace.Slug
-			result.Pages = append(result.Pages, hit)
-		}
-	}
-	return nil
-}
-
 // SortSearchHits orders hits by score, then by URI, so the same base and the same terms
 // always produce the same list. Retrieval is reproducible or it is not evidence.
 func SortSearchHits(hits []SearchHit) {
@@ -388,99 +347,6 @@ func SortSearchHits(hits []SearchHit) {
 		}
 		return hits[i].URI < hits[j].URI
 	})
-}
-
-// scanIndex folds the point-in-time documents into the same result. They carry no date, so
-// they are reported under an empty DayVolume date rather than pretending to belong to a day.
-func scanIndex(ctx context.Context, base *Base, filter FindFilter, counting bool, limit int, result *FindResult) error {
-	if !base.Store.Enabled(core.LayerIndex) {
-		return nil
-	}
-	names, err := base.IndexDocuments()
-	if err != nil {
-		return err
-	}
-	volume := DayVolume{Sources: []SourceCount{}}
-	for _, name := range names {
-		if err := checkContext(ctx); err != nil {
-			return err
-		}
-		if len(filter.Sources) > 0 && !contains(filter.Sources, name) {
-			continue
-		}
-		document, err := base.ReadDocumentContext(ctx, sources.IndexDocumentURI(name))
-		if err != nil {
-			return err
-		}
-		matched, err := matchDocument(ctx, document, filter)
-		if err != nil {
-			return err
-		}
-		result.Scanned += document.Count
-		result.Matched += len(matched)
-		if len(matched) > 0 {
-			volume.Total += len(matched)
-			volume.Sources = append(volume.Sources, SourceCount{Source: name, Count: len(matched)})
-		}
-		if counting {
-			continue
-		}
-		for _, record := range matched {
-			if limit > 0 && len(result.Records) >= limit {
-				result.Truncated = true
-				return nil
-			}
-			result.Records = append(result.Records, record)
-		}
-	}
-	if counting && volume.Total > 0 {
-		appendCountVolume(result, volume, limit)
-	}
-	return nil
-}
-
-// scanDay opens one day's documents and folds their matches into the result. It is separate
-// from Find because the window-first rule is the interesting half and it stays readable only
-// while the per-day work lives somewhere else.
-func scanDay(ctx context.Context, base *Base, date string, filter FindFilter, counting bool, limit int, result *FindResult) (DayVolume, error) {
-	volume := DayVolume{Date: date, Sources: []SourceCount{}}
-	names, err := base.DayDocuments(date)
-	if err != nil {
-		return volume, err
-	}
-	for _, name := range names {
-		if err := checkContext(ctx); err != nil {
-			return volume, err
-		}
-		if len(filter.Sources) > 0 && !contains(filter.Sources, name) {
-			continue
-		}
-		document, err := base.ReadDocumentContext(ctx, sources.EventDocumentURI(date, name))
-		if err != nil {
-			return volume, err
-		}
-		matched, err := matchDocument(ctx, document, filter)
-		if err != nil {
-			return volume, err
-		}
-		result.Scanned += document.Count
-		result.Matched += len(matched)
-		if len(matched) > 0 {
-			volume.Total += len(matched)
-			volume.Sources = append(volume.Sources, SourceCount{Source: name, Count: len(matched)})
-		}
-		if counting {
-			continue
-		}
-		for _, record := range matched {
-			if limit > 0 && len(result.Records) >= limit {
-				result.Truncated = true
-				return volume, nil
-			}
-			result.Records = append(result.Records, record)
-		}
-	}
-	return volume, nil
 }
 
 func selectDates(dates []string, filter FindFilter) []string {
@@ -500,25 +366,12 @@ func (f FindFilter) hasPredicate() bool {
 	return f.selects()
 }
 
-func matchDocument(ctx context.Context, document *sources.Document, filter FindFilter) ([]FindRecord, error) {
-	matched := make([]FindRecord, 0, len(document.Records))
-	for _, record := range document.Records {
-		if err := checkContext(ctx); err != nil {
-			return nil, err
-		}
-		values := map[string]any(record)
-		projected := project(document, record)
-		if !matchesRecord(values, filter) {
-			continue
-		}
-		matched = append(matched, projected)
-	}
-	return matched, nil
-}
-
 func project(document *sources.Document, record sources.Record) FindRecord {
 	values := map[string]any(record)
-	projected := FindRecord{Source: document.Source, Date: document.Date, Body: document.Body, Record: record}
+	projected := FindRecord{
+		Source: document.Source, Date: document.Date, Body: document.Body, Record: record,
+		relations: make(map[string]struct{}),
+	}
 	projected.URI, _ = document.RecordURI(record)
 	if raw, ok := document.Fields.EvalString(core.FieldTime, values); ok {
 		if parsed, err := sources.ParseRecordTime(raw); err == nil {
@@ -528,6 +381,9 @@ func project(document *sources.Document, record sources.Record) FindRecord {
 	projected.Title, _ = document.Fields.EvalString(core.FieldTitle, values)
 	projected.URL, _ = document.Fields.EvalString(core.FieldURL, values)
 	for _, name := range document.Fields.Names() {
+		if definition, found := document.Schema[name]; found && definition.Relation {
+			projected.relations[name] = struct{}{}
+		}
 		if core.IsWellKnownField(name) {
 			continue
 		}
@@ -541,23 +397,24 @@ func project(document *sources.Document, record sources.Record) FindRecord {
 	return projected
 }
 
-func matchesRecord(values map[string]any, filter FindFilter) bool {
+func matchesRecord(values map[string]any, body string, filter FindFilter) bool {
 	for _, clause := range filter.Where {
-		if !matchesWhere(values, clause) {
+		if !matchesWhere(values, clause, filter.identity) {
 			return false
 		}
 	}
 	for _, term := range filter.Grep {
-		if !grepRecord(values, term) {
+		if !grepRecordIdentity(values, term, filter.identity) &&
+			(!filter.Bodies || !strings.Contains(strings.ToLower(body), strings.ToLower(term))) {
 			return false
 		}
 	}
 	return true
 }
 
-func matchesWhere(values map[string]any, clause WhereClause) bool {
+func matchesWhere(values map[string]any, clause WhereClause, resolver *IdentityResolver) bool {
 	for _, selected := range clause.Path.EvalStrings(values) {
-		if strings.EqualFold(selected, clause.Value) {
+		if strings.EqualFold(selected, clause.Value) || sameResolvedIdentity(selected, clause.Value, resolver) {
 			return true
 		}
 	}
@@ -567,17 +424,59 @@ func matchesWhere(values map[string]any, clause WhereClause) bool {
 // grepRecord matches scalar leaf values only, never keys or stringified compounds. Matching
 // keys made `--grep author` return every record from every source that happens to have an
 // author field; stringifying objects would make formatting syntax part of the search surface.
-func grepRecord(value any, term string) bool {
+func grepRecordIdentity(value any, term string, resolver *IdentityResolver) bool {
 	needle := strings.ToLower(term)
+	canonical := ""
+	if resolver != nil {
+		if identity, found := resolver.Exact(term); found {
+			canonical = identity.Canonical
+		}
+	}
 	found := false
 	walkScalarLeaves(value, func(text string) bool {
-		if strings.Contains(strings.ToLower(text), needle) {
+		if strings.Contains(strings.ToLower(text), needle) ||
+			(canonical != "" && resolver.Canonical(text) == canonical) {
 			found = true
 			return false
 		}
 		return true
 	})
 	return found
+}
+
+func sameResolvedIdentity(left, right string, resolver *IdentityResolver) bool {
+	if resolver == nil {
+		return false
+	}
+	identity, found := resolver.Exact(right)
+	return found && resolver.Canonical(left) == identity.Canonical
+}
+
+func canonicalizeFindRecord(record *FindRecord, resolver *IdentityResolver) {
+	if record == nil || resolver == nil {
+		return
+	}
+	for name, values := range record.Fields {
+		if _, relation := record.relations[name]; !relation {
+			continue
+		}
+		canonical := make([]string, len(values))
+		for index, value := range values {
+			canonical[index] = resolver.Canonical(value)
+		}
+		record.Fields[name] = canonical
+	}
+}
+
+func recordRelationValues(record FindRecord) []string {
+	values := []string{}
+	for _, name := range sortedContextFieldNames(record.Fields) {
+		if _, relation := record.relations[name]; !relation {
+			continue
+		}
+		values = append(values, record.Fields[name]...)
+	}
+	return values
 }
 
 func walkScalarLeaves(value any, visit func(string) bool) bool {

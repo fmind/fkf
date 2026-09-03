@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -39,6 +40,47 @@ Body text with a [link](../projects/p.md) and an ![image](img.png).
 	}
 	if len(page.Links) != 2 {
 		t.Fatalf("links = %v, want the inline link and the image", page.Links)
+	}
+}
+
+func TestParsePageRendersUnquotedYAMLScalars(t *testing.T) {
+	page, err := services.ParsePage("wiki/2026.md", []byte(`---
+type: insight
+title: 2026
+description: 20.26
+date: 2026-08-28
+tags: [2026, retrieval]
+---
+
+# Fallback title
+`), testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Title != "2026" || page.Description != "20.26" || page.Date != "2026-08-28" ||
+		strings.Join(page.Tags, ",") != "2026,retrieval" {
+		t.Fatalf("page = %+v, want YAML number and timestamp scalars rendered instead of dropped", page)
+	}
+}
+
+func TestParsePageCarriesValidityWindows(t *testing.T) {
+	page, err := services.ParsePage("wiki/current.md", []byte(`---
+type: decision
+title: Current decision
+valid_from: 2026-05-01
+valid_until: 2026-06-01
+relations:
+  supersedes: [wiki/old.md]
+---
+
+# Current decision
+`), testClock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.ValidFrom != "2026-05-01" || page.ValidUntil != "2026-06-01" ||
+		!slices.Equal(page.Relations["supersedes"], []string{"wiki/old.md"}) {
+		t.Fatalf("page validity = %+v / %+v", page, page.Relations)
 	}
 }
 
@@ -135,7 +177,7 @@ tags: [markdown]
 	if !report.OK || report.Errors != 0 {
 		t.Fatalf("strict validation = %+v, want an ordinary Markdown tooltip accepted", report)
 	}
-	page, err := services.ReadPage(base, "wiki/example.md")
+	page, err := services.ReadPageContext(t.Context(), base, "wiki/example.md")
 	if err != nil {
 		t.Fatal(err)
 	}

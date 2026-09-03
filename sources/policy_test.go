@@ -31,7 +31,7 @@ func TestPolicyRunnerRetriesOnlyTheDeclaredFailure(t *testing.T) {
 	runner := sources.RunnerFunc(func(context.Context, sources.Command) (string, error) {
 		calls++
 		if calls < 3 {
-			return "", errors.New("boom: rate limit exceeded")
+			return "", core.NewCommandFailure(errors.New("synthetic provider failure"), "rate limit exceeded")
 		}
 		return "[]", nil
 	})
@@ -63,6 +63,26 @@ func TestPolicyRunnerRetriesOnlyTheDeclaredFailure(t *testing.T) {
 	// attempts into far longer than the source declared.
 	if len(waits) != 2 || waits[0] != 10*time.Millisecond || waits[1] != 20*time.Millisecond {
 		t.Fatalf("waits = %v, want [10ms 20ms]", waits)
+	}
+}
+
+func TestPolicyRunnerDoesNotMatchFkfWrapperText(t *testing.T) {
+	calls := 0
+	runner := sources.RunnerFunc(func(context.Context, sources.Command) (string, error) {
+		calls++
+		return "", errors.New("fkf wrapper: rate limit exceeded")
+	})
+	source := &core.Source{
+		Name: "s", Retry: core.RetryPolicy{Attempts: 3, On: []string{"rate limit exceeded"}},
+	}
+	policy := sources.NewPolicyRunner(runner, source)
+	policy.Sleep = noSleep(&[]time.Duration{})
+
+	if _, err := policy.Run(t.Context(), sources.Command{}); err == nil {
+		t.Fatal("Run() succeeded, want the wrapper failure to propagate")
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1; retry.on may consult only command failure evidence", calls)
 	}
 }
 
@@ -278,7 +298,7 @@ func TestPacerSpacesRetriesAndConcurrentUnitsAtTheInvocationBoundary(t *testing.
 		calls++
 		if command.Argv[0] == "retry" && retryCalls == 0 {
 			retryCalls++
-			return "", errors.New("transient provider failure")
+			return "", core.NewCommandFailure(errors.New("synthetic provider failure"), "transient")
 		}
 		return "[]", nil
 	})

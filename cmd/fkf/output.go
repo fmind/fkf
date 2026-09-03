@@ -227,6 +227,11 @@ func writeJSON(writer io.Writer, result any) error {
 func writeJSONLines(writer io.Writer, result any) error {
 	encoder := json.NewEncoder(writer)
 	encoder.SetEscapeHTML(false)
+	// Context is one budgeted report, like day and timeline. Keeping its items and receipt in
+	// one compact record makes the bytes the service accounted for the bytes actually emitted.
+	if _, ok := result.(*services.ContextPack); ok {
+		return encoder.Encode(result)
+	}
 	if stream, ok := streamOf(result); ok {
 		for index := range stream.Len() {
 			if err := encoder.Encode(stream.Index(index).Interface()); err != nil {
@@ -278,8 +283,6 @@ func readStreamOf(result any) (reflect.Value, bool) {
 			return reflect.ValueOf(typed.Records), true
 		}
 		return reflect.ValueOf(typed.Volumes), true
-	case *services.ContextPack:
-		return reflect.ValueOf(typed.Items), true
 	case *services.Neighbourhood:
 		return reflect.ValueOf(typed.Edges), true
 	case *services.NodeListing:
@@ -308,6 +311,8 @@ func operationStreamOf(result any) (reflect.Value, bool) {
 	case *services.SourceTestReport:
 		return reflect.ValueOf(typed.Sources), true
 	case *services.ValidationReport:
+		return reflect.ValueOf(typed.Issues), true
+	case *services.RecordTitleReport:
 		return reflect.ValueOf(typed.Issues), true
 	case *services.Status:
 		if len(typed.Findings) > 0 {

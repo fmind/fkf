@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -36,6 +37,11 @@ func TestGraphSnapshotRefusesAFIFOBeforeOpenCanBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := syscall.Mkfifo(graphPath, uint32(core.BaseFileMode)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGraphGenerationState(
+		filepath.Join(root, core.GraphGenerationFile), graphGenerationCurrent, strings.Repeat("0", 64),
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -79,6 +85,43 @@ func TestValidatedGraphCacheKeepsOneFileGenerationAcrossScans(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Src != oldEdge.Src {
 		t.Fatalf("snapshot scan = %+v, want only the validated old generation", got)
+	}
+}
+
+func TestValidatedGraphCacheRejectsSameStatArtifactsFromAnotherGeneration(t *testing.T) {
+	root := t.TempDir()
+	config := internalTestContract + "name: snapshot\nlayers: {events: true, index: true, tasks: true, projects: true, wiki: true}\nsources: {}\n"
+	if err := os.WriteFile(filepath.Join(root, core.ConfigFileName), []byte(config), core.BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	base, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generatedAt := time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
+	writeSnapshotTestGraph(t, base, []Edge{{
+		Src: "tag:aaa", Dst: "tag:one", Kind: EdgeTag, Via: "frontmatter:tags",
+	}}, generatedAt)
+	metaPath, err := base.Store.Resolve(core.GraphMetaFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstMeta, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Equal-length identifiers and one generated_at preserve the output size and mtime. Restoring
+	// only the first metadata file simulates a reader observing a mixed multi-rename generation.
+	writeSnapshotTestGraph(t, base, []Edge{{
+		Src: "tag:bbb", Dst: "tag:two", Kind: EdgeTag, Via: "frontmatter:tags",
+	}}, generatedAt)
+	if err := os.WriteFile(metaPath, firstMeta, core.BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	_, err = SummarizeGraph(t.Context(), base)
+	if err == nil || !strings.Contains(err.Error(), "generation marker does not match metadata") {
+		t.Fatalf("mixed graph generation error = %v, want generation-marker rejection", err)
 	}
 }
 
@@ -169,16 +212,69 @@ func TestValidatedGraphCacheRejectsAnInPlaceChangeDuringTheRead(t *testing.T) {
 	}
 }
 
+func TestScanValidatedGraphCacheRejectsAnInPlaceChangeBeforeReturning(t *testing.T) {
+	root := t.TempDir()
+	config := internalTestContract + "name: snapshot\nlayers: {events: true, index: true, tasks: true, projects: true, wiki: true}\nsources: {}\n"
+	if err := os.WriteFile(filepath.Join(root, core.ConfigFileName), []byte(config), core.BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	base, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generatedAt := time.Date(2026, 8, 24, 8, 0, 0, 0, time.UTC)
+	oldEdge := Edge{Src: "tag:old", Dst: "tag:cache", Kind: EdgeTag, Via: "frontmatter:tags"}
+	writeSnapshotTestGraph(t, base, []Edge{oldEdge}, generatedAt)
+
+	newEdge := Edge{
+		Src: "tag:new", Dst: "tag:cache", Kind: EdgeTag,
+		Via: "frontmatter:tags", Indexed: generatedAt.Format(time.RFC3339),
+	}
+	var replacement bytes.Buffer
+	if err := EncodeEdges(&replacement, []Edge{newEdge}); err != nil {
+		t.Fatal(err)
+	}
+	graphPath, err := base.Store.Resolve(core.GraphFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated := false
+	_, err = scanValidatedGraphCache(t.Context(), base, func(Edge) error {
+		if mutated {
+			return nil
+		}
+		mutated = true
+		file, err := os.OpenFile(graphPath, os.O_WRONLY, 0)
+		if err != nil {
+			return err
+		}
+		if _, err := file.WriteAt(replacement.Bytes(), 0); err != nil {
+			_ = file.Close()
+			return err
+		}
+		if err := file.Close(); err != nil {
+			return err
+		}
+		return os.Chtimes(graphPath, generatedAt.Add(time.Second), generatedAt.Add(time.Second))
+	})
+	if !mutated {
+		t.Fatal("validated graph scan did not visit its row")
+	}
+	if err == nil || !strings.Contains(err.Error(), "graph.tsv changed during the read") {
+		t.Fatalf("scanValidatedGraphCache() error = %v, want in-place mutation rejection", err)
+	}
+}
+
 func writeSnapshotTestGraph(t *testing.T, base *Base, edges []Edge, generatedAt time.Time) {
 	t.Helper()
-	inputsDigest, err := graphInputSHA256(t.Context(), base)
+	inputs, err := readGraphInputState(t.Context(), base)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for index := range edges {
 		edges[index].Indexed = generatedAt.Format(time.RFC3339)
 	}
-	meta, err := NewEdgeListMeta(edges, generatedAt, inputsDigest)
+	meta, err := NewEdgeListMeta(edges, generatedAt, inputs.SHA256, inputs.Files...)
 	if err != nil {
 		t.Fatal(err)
 	}

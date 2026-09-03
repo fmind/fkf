@@ -83,7 +83,7 @@ Initialization creates:
 - `fkf.yaml`, with `fkf: 1`, a root semantic schema, all source defaults, and no secrets;
 - five enabled layers: `events/`, `index/`, `tasks/`, `projects/`, and `wiki/`;
 - managed blocks in `.gitignore` and `.gitattributes`;
-- a minimal base-specific `AGENTS.md` and the copied `fkf-use` and `fkf-learn` skills;
+- a minimal base-specific `AGENTS.md` and the copied `fkf-use`, `fkf-learn`, and `daily-brief` skills;
 - non-overwriting Claude bridges;
 - helpers required by initially enabled sources and the session-start hook under trust-digested `bin/`;
 - a git repository with owner-only files.
@@ -111,6 +111,10 @@ schema:
     cardinality: many
     relation: true
     examples: [person:email/user@example.test, actor:github.com/login]
+  owner:
+    description: Person or account assigned to the record.
+    cardinality: many
+    relation: true
 
 sources:
   github-pull-requests:
@@ -118,18 +122,21 @@ sources:
     layer: events
     requires: [github-search-json.sh, gh, jq]
     window: true
-    run: [github-search-json.sh, prs, author, "{{start}}", "{{end}}"]
+    run: [github-search-json.sh, prs, assignee, "{{start}}", "{{end}}"]
     fields:
       id: .url
       time: .updatedAt
       title: .title
       repo: .repository.nameWithOwner
       repository: .repository_uri
+      owner: [".assignee_uris[]"]
       participant: [".participant_uris[]"]
     body: [gh, pr, view, "{{id}}", --repo, "{{repo}}", --json, "body,comments"]
 ```
 
 The field name states the role; the URI states the identity namespace. `participant` is unambiguous where `people` is not, while values can distinguish an email person from a GitHub actor. FKF validates and transcribes those choices without merging identities or inferring relationships.
+
+Every collected source maps `title`, and every new record must produce a non-empty, control-free value. A metadata source uses the provider's natural subject; a content-first helper derives one stable line, at most 160 characters, while leaving the full text behind `body:`.
 
 Keep direct provider argv in `run:`. Move pipelines and expansion to a `.sh` or `.py` helper under `bin/`; use Python when structured or stateful logic would be clearer. The helper's shebang selects its interpreter, so the same base works on a Mac whose interactive shell is Zsh and on a Linux host using Bash or Fish.
 
@@ -169,14 +176,14 @@ Every result prints a URI accepted by `read`. Generic `--grep` and `--where` rep
 
 ## Connect an agent
 
-Use the base's session-start hook for the first compact repository-scoped pack and the read-only MCP server for later questions:
+Install the managed harness bridges for the first compact repository-scoped pack and the read-only MCP server for later questions:
 
 ```bash
-~/brain/bin/fkf-hook.sh claude
-claude mcp add --transport stdio --scope user fkf -- fkf mcp serve --base ~/brain
+fkf --base ~/brain harness print claude
+fkf --base ~/brain harness install --all
 ```
 
-The server exposes bounded `context`, `find`, `list`, `read`, and `graph` operations. It cannot write, collect, or fetch record bodies. Pageable calls return opaque cursors bound to the normalized effective query and result snapshot. `--base` is required so the launch command states the disclosure boundary.
+`print` lets you inspect the exact integration first. `install` pins the current executable and absolute base in every managed entry, and wraps base-owned hook execution in a trust check. The server exposes bounded `context`, `find`, `day`, `timeline`, `list`, `read`, and `graph` operations. It cannot write, collect, or fetch record bodies. Pageable calls return opaque cursors bound to the normalized effective query and result snapshot. `--base` is required so the launch command states the disclosure boundary.
 
 Keep the base's `AGENTS.md` minimal and specific to that base. FKF instructions belong in the copied skills, and reusable custom workflows belong in their own `.agents/skills/<name>/` packages.
 

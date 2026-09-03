@@ -21,6 +21,62 @@ func blockBeginMarker(command string) string {
 	return blockMarkerPrefix + " — regenerate with `" + command + "`; edits between the markers are lost -->"
 }
 
+type markedBlockMarkers struct {
+	begin, beginPrefix string
+	end, endPrefix     string
+}
+
+type markedBlockRegion struct {
+	begin   int
+	end     int
+	present bool
+}
+
+func parseMarkedBlockRegion(content string, markers markedBlockMarkers) (markedBlockRegion, error) {
+	var begins, ends []int
+	noncanonicalBegin, noncanonicalEnd := false, false
+	offset := 0
+	for _, chunk := range strings.SplitAfter(content, "\n") {
+		line := strings.TrimSuffix(chunk, "\n")
+		lineEnd := offset + len(line)
+		if strings.Contains(line, markers.beginPrefix) {
+			if line == markers.begin {
+				begins = append(begins, offset)
+			} else {
+				noncanonicalBegin = true
+			}
+		}
+		if strings.Contains(line, markers.endPrefix) {
+			if line == markers.end {
+				ends = append(ends, lineEnd)
+			} else {
+				noncanonicalEnd = true
+			}
+		}
+		offset += len(chunk)
+	}
+	switch {
+	case noncanonicalBegin:
+		return markedBlockRegion{}, fmt.Errorf("managed block has a non-canonical begin marker; replace it with %q", markers.begin)
+	case noncanonicalEnd:
+		return markedBlockRegion{}, fmt.Errorf("managed block has a non-canonical end marker; replace it with %q", markers.end)
+	case len(begins) > 1:
+		return markedBlockRegion{}, errors.New("managed block has more than one canonical begin marker")
+	case len(ends) > 1:
+		return markedBlockRegion{}, errors.New("managed block has more than one canonical end marker")
+	case len(begins) == 0 && len(ends) == 1:
+		return markedBlockRegion{}, fmt.Errorf("managed block end marker %q has no matching begin marker", markers.end)
+	case len(begins) == 0:
+		return markedBlockRegion{}, nil
+	case len(ends) == 0:
+		return markedBlockRegion{}, fmt.Errorf("managed block begin marker has no matching end marker %q", markers.end)
+	case ends[0] < begins[0]+len(markers.begin):
+		return markedBlockRegion{}, fmt.Errorf("managed block end marker %q has no matching begin marker before it", markers.end)
+	default:
+		return markedBlockRegion{begin: begins[0], end: ends[0], present: true}, nil
+	}
+}
+
 // replaceMarkedBlock swaps the exact canonical region carried by block and leaves everything
 // else exactly as written. Accepting a marker by prefix would silently preserve an obsolete
 // command spelling, contrary to the one-generation base contract.
@@ -29,20 +85,19 @@ func replaceMarkedBlock(existing, block, defaultHeading string) (string, error) 
 	if !ok || !strings.HasPrefix(beginMarker, blockMarkerPrefix) {
 		return "", errors.New("generated block has no canonical begin marker")
 	}
-	if strings.Count(block, beginMarker) != 1 || strings.Count(block, blockEndMarker) != 1 {
+	markers := markedBlockMarkers{
+		begin: beginMarker, beginPrefix: blockMarkerPrefix,
+		end: blockEndMarker, endPrefix: blockEndMarker,
+	}
+	generated, err := parseMarkedBlockRegion(block, markers)
+	if err != nil || !generated.present || generated.begin != 0 || strings.TrimSpace(block[generated.end:]) != "" {
 		return "", errors.New("generated block does not contain exactly one canonical marker pair")
 	}
-	canonicalBegins := strings.Count(existing, beginMarker)
-	allBegins := strings.Count(existing, blockMarkerPrefix)
-	ends := strings.Count(existing, blockEndMarker)
-	switch {
-	case canonicalBegins > 1:
-		return "", errors.New("managed block has more than one canonical begin marker")
-	case allBegins > canonicalBegins:
-		return "", fmt.Errorf("managed block has a non-canonical begin marker; replace it with %q", beginMarker)
-	case canonicalBegins == 0 && ends > 0:
-		return "", fmt.Errorf("managed block end marker %q has no matching begin marker", blockEndMarker)
-	case canonicalBegins == 0:
+	region, err := parseMarkedBlockRegion(existing, markers)
+	if err != nil {
+		return "", err
+	}
+	if !region.present {
 		if strings.TrimSpace(existing) == "" {
 			existing = defaultHeading
 		}
@@ -50,18 +105,7 @@ func replaceMarkedBlock(existing, block, defaultHeading string) (string, error) 
 			existing += "\n"
 		}
 		return existing + "\n" + block, nil
-	case ends == 0:
-		// With no closing boundary there is no honest way to tell generated text from the
-		// owner's narrative. Refuse instead of guessing and deleting everything to EOF.
-		return "", fmt.Errorf("managed block begin marker has no matching end marker %q; restore the end marker before regenerating", blockEndMarker)
-	case ends > 1:
-		return "", errors.New("managed block has more than one end marker")
 	}
-	begin := strings.Index(existing, beginMarker)
-	end := strings.Index(existing, blockEndMarker)
-	if end < begin+len(beginMarker) {
-		return "", fmt.Errorf("managed block end marker %q has no matching begin marker before it", blockEndMarker)
-	}
-	tail := strings.TrimPrefix(existing[end+len(blockEndMarker):], "\n")
-	return existing[:begin] + block + tail, nil
+	tail := strings.TrimPrefix(existing[region.end:], "\n")
+	return existing[:region.begin] + block + tail, nil
 }

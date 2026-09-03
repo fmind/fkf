@@ -54,6 +54,27 @@ func TestHelpersReportAndExplicitRefreshTouchOnlyShippedHelpers(t *testing.T) {
 	}
 }
 
+func TestHelperContentDoesNotDriftWhenOnlyItsModeChanges(t *testing.T) {
+	isolate(t)
+	root := filepath.Join(t.TempDir(), "brain")
+	if _, err := services.Init(t.Context(), services.InitRequest{
+		Path: root, Preset: services.PresetMinimal, SkipGit: true,
+	}, clock); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(root, core.BaseBinDir, "fkf-hook.sh")
+	if err := os.Chmod(hook, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := services.InspectHelpers(t.Context(), openBase(t, root, nil), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Current != 1 || report.Drifted != 0 {
+		t.Fatalf("report = %+v, want byte-identical helper current; status owns mode diagnostics", report)
+	}
+}
+
 func TestDisabledSourcesDoNotRequireOrMaterializeOfficialHelpers(t *testing.T) {
 	isolate(t)
 	root := filepath.Join(t.TempDir(), "brain")

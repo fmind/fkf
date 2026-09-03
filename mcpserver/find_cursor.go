@@ -24,12 +24,10 @@ type findCursor struct {
 	continued bool
 }
 
-// A find cursor carries the last result URI, unlike the fixed-size offset cursors. The shared
-// MCP response ceiling is therefore its natural input bound: every cursor that can have left
-// this server in a successful response is guaranteed to fit, including maximum-length source
-// and Markdown filename components. The final response gate remains the stricter combined-size
-// check because it accounts for the result's duplicated text and structured representations.
-const maxFindCursorBytes = int(core.MaxNarrativeBytes)
+// A find cursor carries the last result URI, unlike the fixed-size offset cursors. Keep its
+// encoder and decoder at the published tool-schema bound so the server never emits a token its
+// next request rejects. An unusually long record identity must be narrowed through the CLI.
+const maxFindCursorBytes = maxInputTextLength
 
 func openFindCursor(raw string, query any) (findCursor, error) {
 	querySHA256, err := jsonSHA256(query)

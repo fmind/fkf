@@ -269,12 +269,82 @@ func TestReadBodyRunsTheDeclaredArgvAndStoresNothing(t *testing.T) {
 		t.Fatalf("calls = %+v, want one argv execution", runner.calls)
 	}
 	// Nothing fetched is ever stored: the document on disk is unchanged.
-	document, err := base.ReadDocument("events/2026-05-04/synthetic.json")
+	document, err := base.ReadDocumentContext(t.Context(), "events/2026-05-04/synthetic.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, present := document.Records[0]["body"]; present {
 		t.Fatal("a fetched body was written into the base")
+	}
+}
+
+func TestReadBodyCachesByPolicyAndReusesItOffline(t *testing.T) {
+	config := strings.Replace(baseConfig,
+		"    body: [cli, view, \"{{id}}\"]\n",
+		"    body: [cli, view, \"{{id}}\"]\n    bodies: cache\n", 1)
+	runner := &fakeRunner{responses: map[string]string{"": "cached meeting body"}}
+	base := newBase(t, config, runner)
+	trust(t, base)
+	collect(t, base, "2026-05-04", dayOne)
+	uri := "events/2026-05-04/synthetic.json#a1"
+
+	first, err := services.Read(t.Context(), base, uri, services.ReadOptions{Body: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.BodyState != "fetched-and-cached" || len(runner.calls) != 1 {
+		t.Fatalf("first read = %+v, calls = %d", first, len(runner.calls))
+	}
+
+	// A cached read is an offline stored read: it neither executes nor needs a current trust
+	// record after execution-affecting configuration changes.
+	base.Runner = &fakeRunner{err: errUnavailable{}}
+	second, err := services.Read(t.Context(), base, uri, services.ReadOptions{Body: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Body != "cached meeting body" || second.BodyState != "cached" {
+		t.Fatalf("second read = %+v", second)
+	}
+	if _, err := os.Stat(filepath.Join(base.Root(), services.BodiesDirectory, "manifest.json")); err != nil {
+		t.Fatalf("body manifest: %v", err)
+	}
+}
+
+func TestFindBodiesSearchesOnlyTheVerifiedOfflineCache(t *testing.T) {
+	config := strings.Replace(baseConfig,
+		"    body: [cli, view, \"{{id}}\"]\n",
+		"    body: [cli, view, \"{{id}}\"]\n    bodies: cache\n", 1)
+	runner := &fakeRunner{responses: map[string]string{"": "unique-body-phrase"}}
+	base := newBase(t, config, runner)
+	trust(t, base)
+	collect(t, base, "2026-05-04", dayOne)
+	uri := "events/2026-05-04/synthetic.json#a1"
+	if _, err := services.Read(t.Context(), base, uri, services.ReadOptions{Body: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	without, err := services.Find(t.Context(), base, services.FindFilter{
+		Grep: []string{"unique-body-phrase"}, Limit: services.NoFindLimit,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(without.Records) != 0 {
+		t.Fatalf("ordinary find unexpectedly searched bodies: %+v", without.Records)
+	}
+	before := len(runner.calls)
+	with, err := services.Find(t.Context(), base, services.FindFilter{
+		Grep: []string{"unique-body-phrase"}, Bodies: true, Limit: services.NoFindLimit,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(with.Records) != 1 || with.Records[0].URI != uri || !with.Records[0].BodyCached {
+		t.Fatalf("find --bodies = %+v", with.Records)
+	}
+	if len(runner.calls) != before {
+		t.Fatalf("offline body search executed %d extra command(s)", len(runner.calls)-before)
 	}
 }
 
@@ -419,6 +489,12 @@ func TestReadGraphArtifactsRequireOneValidatedGeneration(t *testing.T) {
 	if err != nil || meta.Kind != "index" || !strings.Contains(string(meta.Selection), `"sha256"`) {
 		t.Fatalf("Read(%s) = %+v, %v; want validated matching metadata", metaURI, meta, err)
 	}
+	for _, uri := range []string{core.GraphDstFile, core.GraphOffsetsFile} {
+		artifact, err := services.Read(t.Context(), base, uri, services.ReadOptions{})
+		if err != nil || artifact.Kind != "file" || artifact.Text == "" {
+			t.Fatalf("Read(%s) = %+v, %v; want validated seek-artifact bytes", uri, artifact, err)
+		}
+	}
 
 	for _, test := range []struct {
 		name   string
@@ -460,7 +536,7 @@ func TestReadGraphArtifactsRequireOneValidatedGeneration(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			base := contextBase(t)
 			test.mutate(t, base)
-			for _, uri := range []string{graphURI, metaURI} {
+			for _, uri := range []string{graphURI, core.GraphDstFile, core.GraphOffsetsFile, metaURI} {
 				if _, err := services.Read(t.Context(), base, uri, services.ReadOptions{}); err == nil ||
 					!strings.Contains(err.Error(), "invalid derived graph cache") {
 					t.Errorf("Read(%s) error = %v, want the shared graph-cache validation failure", uri, err)

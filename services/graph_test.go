@@ -128,8 +128,8 @@ func TestBuildGraphWritesGranularSHA256Manifest(t *testing.T) {
 	if err := json.Unmarshal(encoded, &meta); err != nil {
 		t.Fatal(err)
 	}
-	if meta["schema_version"] != float64(2) || meta["extractor_version"] != float64(1) {
-		t.Fatalf("metadata versions = schema %v, extractor %v; want 2 and 1", meta["schema_version"], meta["extractor_version"])
+	if meta["schema_version"] != float64(3) || meta["extractor_version"] != float64(2) {
+		t.Fatalf("metadata versions = schema %v, extractor %v; want 3 and 2", meta["schema_version"], meta["extractor_version"])
 	}
 	for _, retired := range []string{"documents_sha256", "inputs_sha256"} {
 		if _, found := meta[retired]; found {
@@ -155,11 +155,13 @@ func TestBuildGraphWritesGranularSHA256Manifest(t *testing.T) {
 		}
 	}
 	outputs, ok := manifest["outputs"].(map[string]any)
-	if !ok || len(outputs) != 1 {
-		t.Fatalf("metadata sha256.outputs = %v, want only graph.tsv", manifest["outputs"])
+	if !ok || len(outputs) != 3 {
+		t.Fatalf("metadata sha256.outputs = %v, want the three seek artifacts", manifest["outputs"])
 	}
-	if value, found := outputs[core.GraphFile].(string); !found || len(value) != sha256.Size*2 {
-		t.Fatalf("metadata output graph.tsv = %v, want a lowercase SHA-256 digest", outputs[core.GraphFile])
+	for _, uri := range []string{core.GraphFile, core.GraphDstFile, core.GraphOffsetsFile} {
+		if value, found := outputs[uri].(string); !found || len(value) != sha256.Size*2 {
+			t.Fatalf("metadata output %s = %v, want a lowercase SHA-256 digest", uri, outputs[uri])
+		}
 	}
 }
 
@@ -210,7 +212,7 @@ func TestGraphNamesEveryChangedInputComponent(t *testing.T) {
 			return base
 		}},
 		{name: "index", mutate: func(t *testing.T, base *services.Base) *services.Base {
-			document, err := base.ReadDocument("index/snapshot.json")
+			document, err := base.ReadDocumentContext(t.Context(), "index/snapshot.json")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1124,6 +1126,8 @@ func TestNodeKind(t *testing.T) {
 		"HTTPS://x.test":                   "url",
 		"events/2026-05-04/s.json#a":       "event",
 		"graph.tsv":                        "derived",
+		"graph.dst.tsv":                    "derived",
+		"graph.offsets.tsv":                "derived",
 		"derived/graph.tsv":                "file",
 		"customer:crm.example/123":         "customer",
 		"index/github-repositories.json#a": "index",

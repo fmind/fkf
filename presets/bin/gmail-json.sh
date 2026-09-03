@@ -37,6 +37,11 @@ while IFS= read -r id; do
 done < "$tmp/ids"
 
 jq -c --argjson start_ms "$start_ms" --argjson end_ms "$end_ms" '
+  # Mail subjects may contain invisible formatting copied from HTML or a rich-text editor.
+  def clean_title:
+    if type == "string" then
+      gsub("\\p{Cf}"; "") | gsub("[\\p{Cc}\\s]+"; " ") | gsub("^ +| +$"; "")
+    else "" end;
   def email:
     if type != "string" then empty
     elif test("<[^>]+>$") then capture("<(?<value>[^>]+)>$").value
@@ -47,7 +52,10 @@ jq -c --argjson start_ms "$start_ms" --argjson end_ms "$end_ms" '
     | gsub("%40"; "@") | gsub("%2B"; "+") | gsub("~"; "%7E");
   select((.internalDate | tonumber) >= $start_ms and (.internalDate | tonumber) < $end_ms)
   | (.payload.headers | map({key: (.name | ascii_downcase), value}) | from_entries) as $h
-  | {id, threadId, internalDate, labelIds, sizeEstimate, subject: $h.subject, from: $h.from,
+  | {id, threadId, internalDate, labelIds, sizeEstimate,
+     subject: (($h.subject | clean_title) as $subject
+       | if $subject == "" then "Email without subject" else $subject end),
+     from: $h.from,
      to: [$h.to, $h.cc | select(. != null) | match("(?:\"[^\"]*\"|[^,])+"; "g").string | gsub("^\\s+|\\s+$"; "")],
      list_id: $h."list-id"}
   | . + {participant_uris: ([.from, .to[]]

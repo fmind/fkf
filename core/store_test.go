@@ -199,16 +199,16 @@ func TestTrustGate(t *testing.T) {
 	root := writeBase(t, minimalConfig, nil)
 
 	// A base nobody trusted here refuses, and names the remedy rather than only the refusal.
-	err := RequireTrust(t.Context(), root)
+	err := RequireTrust(t.Context(), trustTestConfig(t, root))
 	if !errors.Is(err, ErrUntrusted) || !strings.Contains(err.Error(), "fkf trust") {
 		t.Fatalf("RequireTrust(t.Context(), ) error = %v, want an untrusted refusal naming `fkf trust`", err)
 	}
 
-	recorded, err := WriteTrust(t.Context(), root, time.Date(2026, 8, 22, 9, 0, 0, 0, time.UTC))
+	recorded, err := WriteTrust(t.Context(), trustTestConfig(t, root), time.Date(2026, 8, 22, 9, 0, 0, 0, time.UTC))
 	if err != nil || !recorded.Trusted {
 		t.Fatalf("WriteTrust(t.Context(), ) = %+v, %v", recorded, err)
 	}
-	if err := RequireTrust(t.Context(), root); err != nil {
+	if err := RequireTrust(t.Context(), trustTestConfig(t, root)); err != nil {
 		t.Fatalf("RequireTrust(t.Context(), ) after trusting = %v", err)
 	}
 	// Trust state lives outside the base on purpose: recording it inside would make it
@@ -224,7 +224,7 @@ func TestTrustGate(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(semanticOnly), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RequireTrust(t.Context(), root); err != nil {
+	if err := RequireTrust(t.Context(), trustTestConfig(t, root)); err != nil {
 		t.Fatalf("RequireTrust(t.Context(), ) after a semantic-only edit = %v", err)
 	}
 
@@ -234,7 +234,7 @@ func TestTrustGate(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(executionChange), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err = RequireTrust(t.Context(), root)
+	err = RequireTrust(t.Context(), trustTestConfig(t, root))
 	if !errors.Is(err, ErrUntrusted) || !strings.Contains(err.Error(), "changed since it was trusted") {
 		t.Fatalf("RequireTrust(t.Context(), ) after an edit = %v, want the changed-configuration refusal", err)
 	}
@@ -245,13 +245,13 @@ func TestTrustGate(t *testing.T) {
 func TestTrustCoversTheLocalOverlay(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	root := writeBase(t, minimalConfig, nil)
-	if _, err := WriteTrust(t.Context(), root, time.Now()); err != nil {
+	if _, err := WriteTrust(t.Context(), trustTestConfig(t, root), time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, LocalConfigName), []byte("bin: [/tmp]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := RequireTrust(t.Context(), root); !errors.Is(err, ErrUntrusted) {
+	if err := RequireTrust(t.Context(), trustTestConfig(t, root)); !errors.Is(err, ErrUntrusted) {
 		t.Fatalf("RequireTrust(t.Context(), ) = %v, want adding a local overlay to re-arm the gate", err)
 	}
 }
@@ -269,7 +269,8 @@ func TestResolveAdmitsOnlyThePublishedGrammar(t *testing.T) {
 		"index", "index/github-repositories.json",
 		"tasks", "tasks/2026-05-04", "tasks/2026-05-04/x",
 		"tasks/2026-05-04/x/TASKS.md", "projects", "projects/a.md", "wiki",
-		"wiki/b.md", GraphFile, GraphMetaFile, ConfigFileName, BaseAgentsFile,
+		"wiki/b.md", GraphFile, GraphDstFile, GraphOffsetsFile, GraphMetaFile, GraphGenerationFile,
+		ConfigFileName, BaseAgentsFile,
 	} {
 		if _, err := store.Resolve(addressable); err != nil {
 			t.Fatalf("Resolve(%q) = %v, want the published grammar admitted", addressable, err)

@@ -196,7 +196,7 @@ func errorText(result *mcp.CallToolResult) string {
 	return text.Text
 }
 
-func TestServerExposesExactlyFiveToolsAndFourResources(t *testing.T) {
+func TestServerExposesExactlySevenToolsAndFourResources(t *testing.T) {
 	session := connect(t, newBase(t))
 	tools, err := session.ListTools(t.Context(), nil)
 	if err != nil {
@@ -218,8 +218,8 @@ func TestServerExposesExactlyFiveToolsAndFourResources(t *testing.T) {
 				tool.Name, annotations)
 		}
 	}
-	if strings.Join(names, ",") != "context,find,graph,list,read" {
-		t.Fatalf("tools = %v, want exactly context, find, list, read, graph", names)
+	if strings.Join(names, ",") != "context,day,find,graph,list,read,timeline" {
+		t.Fatalf("tools = %v, want exactly context, day, find, graph, list, read, timeline", names)
 	}
 	resources, err := session.ListResources(t.Context(), nil)
 	if err != nil {
@@ -275,7 +275,7 @@ func TestNoToolCanFetchABody(t *testing.T) {
 
 func TestOnlyPageableToolsPublishACursor(t *testing.T) {
 	session := connect(t, newBase(t))
-	for _, name := range []string{"find", "list", "read", "graph", "context"} {
+	for _, name := range []string{"find", "list", "read", "graph", "context", "day", "timeline"} {
 		tool := listedTool(t, session, name)
 		encoded, err := json.Marshal(tool.InputSchema)
 		if err != nil {
@@ -288,7 +288,7 @@ func TestOnlyPageableToolsPublishACursor(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, hasCursor := schema.Properties["cursor"]
-		if want := name != "context"; hasCursor != want {
+		if want := name != "context" && name != "day" && name != "timeline"; hasCursor != want {
 			t.Fatalf("%s cursor schema = %t, want %t", name, hasCursor, want)
 		}
 	}
@@ -329,6 +329,32 @@ func TestToolsAnswerFromTheBase(t *testing.T) {
 		if !strings.Contains(string(encoded), test.want) {
 			t.Fatalf("%s(%v) = %s, want it to contain %q", test.tool, test.arguments, encoded, test.want)
 		}
+	}
+}
+
+func TestContextResolvesRelativeWindowAndAsOfFromOneClockRead(t *testing.T) {
+	base := newBase(t)
+	session := connect(t, base)
+	clockReads := 0
+	base.Now = func() time.Time {
+		clockReads++
+		return testClock.AddDate(0, 0, clockReads-1)
+	}
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "context", Arguments: map[string]any{
+			"query": "FK-412", "since": "today", "until": "today",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pack services.ContextPack
+	decodeStructured(t, result, &pack)
+	// The MCP wrapper samples duration before and after the handler. The one clock read between
+	// them must bind both relative bounds and as_of, even when every sample crosses midnight.
+	if clockReads != 3 || pack.Receipt.AsOf != "2026-05-11" ||
+		pack.Receipt.Window.Since != pack.Receipt.AsOf || pack.Receipt.Window.Until != pack.Receipt.AsOf {
+		t.Fatalf("clock reads = %d, receipt = %+v; want one shared evaluation instant", clockReads, pack.Receipt)
 	}
 }
 
@@ -509,6 +535,8 @@ func TestNumericToolInputsPublishAndEnforceTheirDomains(t *testing.T) {
 		{tool: "find", field: "limit", minimum: 0},
 		{tool: "list", field: "limit", minimum: 0},
 		{tool: "context", field: "budget", minimum: 1, maximum: &maxBudget},
+		{tool: "day", field: "budget", minimum: 1, maximum: &maxBudget},
+		{tool: "timeline", field: "budget", minimum: 1, maximum: &maxBudget},
 		{tool: "graph", field: "depth", minimum: 1, maximum: &three},
 		{tool: "graph", field: "limit", minimum: 0},
 	} {
@@ -636,7 +664,7 @@ func TestToolInputsPublishAndEnforceTextAndRepeatedFilterBounds(t *testing.T) {
 
 func TestWindowToolInputsPublishTheSharedGrammar(t *testing.T) {
 	session := connect(t, newBase(t))
-	for _, toolName := range []string{"find", "context", "list"} {
+	for _, toolName := range []string{"find", "context", "list", "timeline"} {
 		tool := listedTool(t, session, toolName)
 		encoded, err := json.Marshal(tool.InputSchema)
 		if err != nil {
@@ -687,6 +715,9 @@ func TestResourcesAreReadable(t *testing.T) {
 		}
 		if len(result.Contents) != 1 || result.Contents[0].Text == "" {
 			t.Fatalf("ReadResource(%q) = %+v", uri, result.Contents)
+		}
+		if result.CacheScope != "private" {
+			t.Fatalf("ReadResource(%q) cache scope = %q, want private", uri, result.CacheScope)
 		}
 		var decoded any
 		if err := json.Unmarshal([]byte(result.Contents[0].Text), &decoded); err != nil {
@@ -914,7 +945,7 @@ func TestStatusResourceRedactsAnExternalStateDirectoryFromErrors(t *testing.T) {
 	base := newBase(t)
 	externalState := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", externalState)
-	if _, err := core.WriteTrust(t.Context(), base.Root(), testClock); err != nil {
+	if _, err := core.WriteTrust(t.Context(), base.Config, testClock); err != nil {
 		t.Fatal(err)
 	}
 	trustDir := filepath.Join(externalState, "fkf", "trust")

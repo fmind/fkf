@@ -370,15 +370,16 @@ func TestListEventsAndReadDocument(t *testing.T) {
 	if listing.Total != 3 {
 		t.Fatalf("total = %d, want 3", listing.Total)
 	}
-	document, err := services.ReadEventDocument(base, "2026-05-04", "synthetic")
+	read, err := services.Read(t.Context(), base, "events/2026-05-04/synthetic.json", services.ReadOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	document := read.Document
 	if document.Count != 2 || document.URI() != "events/2026-05-04/synthetic.json" {
 		t.Fatalf("document = %+v", document)
 	}
-	if _, err := services.ReadEventDocument(base, "not-a-date", "synthetic"); err == nil {
-		t.Fatal("ReadEventDocument() must refuse a malformed date")
+	if _, err := services.Read(t.Context(), base, "events/not-a-date/synthetic.json", services.ReadOptions{}); err == nil {
+		t.Fatal("Read() must refuse a malformed event date")
 	}
 }
 
@@ -407,12 +408,9 @@ func TestListTasks(t *testing.T) {
 	if listing.Traces[0].Title != "Second trace" {
 		t.Fatalf("title = %q, want the trace's first heading", listing.Traces[0].Title)
 	}
-	page, err := services.ReadTaskTrace(base, "2026-05-04/first")
-	if err != nil || page.Title != "First trace" {
-		t.Fatalf("ReadTaskTrace() = %+v, %v", page, err)
-	}
-	if _, err := services.ReadTaskTrace(base, "no-slash"); err == nil {
-		t.Fatal("ReadTaskTrace() must name the <date>/<slug> form")
+	read, err := services.Read(t.Context(), base, "tasks/2026-05-04/first/TASKS.md", services.ReadOptions{})
+	if err != nil || read.Page.Title != "First trace" {
+		t.Fatalf("Read(task URI) = %+v, %v", read, err)
 	}
 }
 
@@ -525,16 +523,11 @@ func TestSearchPagesBuildsUnicodeSafeExcerptFromOriginalText(t *testing.T) {
 	}
 }
 
-func TestReadPageBySlugTolerateTheExtension(t *testing.T) {
+func TestReadPageContextUsesThePublishedURI(t *testing.T) {
 	base := graphBase(t)
-	for _, slug := range []string{"retrieval-boundary", "retrieval-boundary.md"} {
-		page, err := services.ReadPageBySlug(base, core.LayerWiki, slug)
-		if err != nil || page.Slug != "retrieval-boundary" {
-			t.Fatalf("ReadPageBySlug(%q) = %+v, %v", slug, page, err)
-		}
-	}
-	if _, err := services.ReadPageBySlug(base, core.LayerWiki, "  "); err == nil {
-		t.Fatal("ReadPageBySlug() must name the slug form")
+	page, err := services.ReadPageContext(t.Context(), base, "wiki/retrieval-boundary.md")
+	if err != nil || page.Slug != "retrieval-boundary" {
+		t.Fatalf("ReadPageContext() = %+v, %v", page, err)
 	}
 }
 
@@ -556,7 +549,9 @@ func TestListIndexHoldsOnlyWhatWasCollected(t *testing.T) {
 			t.Errorf("entry %q is not an index document; graph files belong at the base root", entry.URI)
 		}
 	}
-	for _, generated := range []string{core.GraphFile, core.GraphMetaFile} {
+	for _, generated := range []string{
+		core.GraphFile, core.GraphDstFile, core.GraphOffsetsFile, core.GraphMetaFile, core.GraphGenerationFile,
+	} {
 		if !base.Exists(generated) {
 			t.Errorf("%s was not written at the base root", generated)
 		}
@@ -700,6 +695,10 @@ func TestFindTermSearchDefaultsToEveryMatchBeyondTheDiscoveryLimit(t *testing.T)
 	if len(bounded.Records) != 7 || !bounded.Truncated {
 		t.Fatalf("explicit --limit equivalent returned %d, truncated=%t; want 7 and true",
 			len(bounded.Records), bounded.Truncated)
+	}
+	if bounded.Scanned != want || bounded.Matched != want {
+		t.Fatalf("bounded summary = %d scanned, %d matched; want the complete %d-record corpus",
+			bounded.Scanned, bounded.Matched, want)
 	}
 
 	discovery, err := services.Find(t.Context(), base, services.FindFilter{}, false)
@@ -1065,6 +1064,7 @@ sources:
     fields:
       id: .id
       time: .t
+      title: .id
 `, nil)
 	// Written directly rather than through the collect() helper, which always speaks for a
 	// source named "synthetic": this fixture's whole point is a source under a DIFFERENT name.

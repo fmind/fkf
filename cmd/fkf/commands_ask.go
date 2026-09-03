@@ -24,6 +24,7 @@ func newContextCommand() *cli.Command {
 			[2]string{`fkf context "fmind/fkf retrieval"`, "the pack: paste it, or pipe it into an agent"},
 			[2]string{`fkf context "FK-412" --explain`, "the same pack, with why each item scored"},
 			[2]string{`fkf context "fmind/fkf" --budget 1500 --expand`, "smaller, plus one graph hop"},
+			[2]string{`fkf context "fmind/fkf" --since-receipt <sha256>`, "only evidence new or changed since that pack"},
 			[2]string{`fkf context "release" --pin projects/release-checklist.md`, "force that exact page in, whatever it scores"},
 		),
 		Description: "This is the selective half of retrieval: the best few items under a token " +
@@ -32,7 +33,8 @@ func newContextCommand() *cli.Command {
 			"concept lexically, then returns the pack plus a receipt: each item's score and " +
 			"reasons, bounded drop detail with the full count, rejected pins, graph expansion, and digests that " +
 			"make it reproducible. Put the most specific field value first: an exact value from " +
-			"any declared field scores as an identifier.",
+			"any declared field scores as an identifier. --format jsonl keeps the complete pack " +
+			"and receipt together on one compact line.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "since", Usage: windowFlagUsage},
 			&cli.StringFlag{Name: "until", Usage: windowFlagUsage},
@@ -40,6 +42,7 @@ func newContextCommand() *cli.Command {
 			&cli.StringSliceFlag{Name: "pin", Usage: "Exact wiki/ or projects/ URI admitted first (repeatable, capped at a third of the budget)."},
 			&cli.BoolFlag{Name: "expand", Usage: "Add one graph hop from the strongest matches."},
 			&cli.BoolFlag{Name: "explain", Usage: "Include the per-reason score breakdown for every selected item."},
+			&cli.StringFlag{Name: "since-receipt", Usage: "Return only records and pages new or changed since this input digest's machine-local snapshot."},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if cmd.Args().Len() == 0 {
@@ -52,14 +55,20 @@ func newContextCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
-			window, err := services.ParseWindow(cmd.String("since"), cmd.String("until"), base.Now())
-			if err != nil {
-				return invalidUsage(err)
+			delivery := services.ContextDeliveryJSON
+			switch cmd.Root().String("format") {
+			case formatJSONL:
+				delivery = services.ContextDeliveryJSONL
+			case formatText:
+				delivery = services.ContextDeliveryText
 			}
-			return render(cmd)(services.BuildContext(ctx, base, services.ContextRequest{
-				Query: strings.Join(cmd.Args().Slice(), " "), Window: window, Budget: cmd.Int("budget"),
+			pack, err := services.BuildContext(ctx, base, services.ContextRequest{
+				Query:  strings.Join(cmd.Args().Slice(), " "),
+				Window: services.Window{Since: cmd.String("since"), Until: cmd.String("until")}, Budget: cmd.Int("budget"),
 				Pins: cmd.StringSlice("pin"), Expand: cmd.Bool("expand"), Explain: cmd.Bool("explain"),
-			}))
+				SinceReceipt: cmd.String("since-receipt"), SaveSnapshot: true, DeliveryFormat: delivery,
+			})
+			return render(cmd)(pack, err)
 		},
 	}
 }
@@ -92,6 +101,8 @@ func newFindCommand() *cli.Command {
 			&cli.StringSliceFlag{Name: "where", Usage: "<jq-path>=<value> equality over a record (repeatable); records only."},
 			&cli.IntFlag{Name: "limit", Usage: "Maximum items per half (search default all; bare find 200; 0 for no limit)."},
 			&cli.BoolFlag{Name: "count", Usage: "Print per-day, per-source volumes instead of items."},
+			&cli.BoolFlag{Name: "bodies", Usage: "Also search verified cached body text; never fetch or execute."},
+			&cli.BoolFlag{Name: "raw", Usage: "Keep raw provider records and the scanned days array in structured output."},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if err := requireNonNegativeLimit(cmd); err != nil {
@@ -112,7 +123,7 @@ func newFindCommand() *cli.Command {
 			filter := services.FindFilter{
 				Sources: cmd.StringSlice("source"), Layers: layers, Window: window,
 				Grep:  append(cmd.Args().Slice(), cmd.StringSlice("grep")...),
-				Limit: findLimit(cmd),
+				Limit: findLimit(cmd), Bodies: cmd.Bool("bodies"),
 			}
 			for _, argument := range cmd.StringSlice("where") {
 				clause, err := services.ParseWhere(argument)
@@ -122,6 +133,9 @@ func newFindCommand() *cli.Command {
 				filter.Where = append(filter.Where, clause)
 			}
 			result, err := services.Find(ctx, base, filter, cmd.Bool("count"))
+			if err == nil && cmd.Root().String("format") != formatText && !cmd.Bool("raw") {
+				services.CompactFindResult(result)
+			}
 			return emit(cmd, result, err)
 		},
 	}
@@ -137,7 +151,7 @@ func newReadCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:  "body",
-				Usage: "Fetch this record's body on demand; it stores nothing and needs a trusted base." + markRun,
+				Usage: "Read this record's cached body or fetch it on demand; cache policy may store it and fetching needs a trusted base." + markRun,
 			},
 			&cli.IntFlag{Name: "limit", Usage: "Bound a directory listing or an entity's neighbourhood."},
 		},
@@ -152,9 +166,15 @@ func newReadCommand() *cli.Command {
 			if err != nil {
 				return err
 			}
-			return render(cmd)(services.Read(ctx, base, cmd.Args().First(), services.ReadOptions{
-				Body: cmd.Bool("body"), Limit: cmd.Int("limit"),
-			}))
+			run := func() error {
+				return render(cmd)(services.Read(ctx, base, cmd.Args().First(), services.ReadOptions{
+					Body: cmd.Bool("body"), Limit: cmd.Int("limit"),
+				}))
+			}
+			if cmd.Bool("body") {
+				return withWriterLock(ctx, base.Root(), run)
+			}
+			return run()
 		},
 	}
 }
@@ -172,6 +192,7 @@ func newGraphCommand() *cli.Command {
 		UsageText: usageLines(
 			[2]string{"fkf graph <uri> [--in|--out|--both] [--depth 2]", "the edges around one node"},
 			[2]string{"fkf graph", "the edge list at a glance: how many of each kind, and when it was built"},
+			[2]string{"fkf graph --verify", "fully hash every input and graph artifact, without writing"},
 			[2]string{"fkf graph nodes [--kind customer]", "every node the edge list knows, busiest first"},
 		),
 		Description: "Edges come from schema fields declared as relations and the links written in " +
@@ -179,6 +200,7 @@ func newGraphCommand() *cli.Command {
 			"backlinks; on an entity it is every record or page that names it. --out is what " +
 			"the node points at. Authored pages, collected records, and entities become nodes when an edge names them.",
 		Flags: []cli.Flag{
+			&cli.BoolFlag{Name: "verify", Usage: "Fully hash every graph input and generated artifact; accepts no URI or walk flags."},
 			&cli.BoolFlag{Name: "in", Usage: "Follow edges into the node (backlinks)."},
 			&cli.BoolFlag{Name: "out", Usage: "Follow edges away from the node."},
 			&cli.BoolFlag{Name: "both", Usage: "Follow either side (the default)."},
@@ -186,46 +208,7 @@ func newGraphCommand() *cli.Command {
 			&cli.IntFlag{Name: "depth", Value: 1, Usage: "Hops to follow, 1 to 3."},
 			&cli.IntFlag{Name: "limit", Usage: "Maximum edges to return."},
 		},
-		Action: func(ctx context.Context, cmd *cli.Command) error {
-			if cmd.Args().Len() > 1 {
-				return invalidUsage(errUsage("usage: fkf graph <uri> [--in|--out|--both] [--depth 2]"))
-			}
-			if err := requirePositiveIntFlagAtMost(cmd, "depth", services.MaxGraphDepth); err != nil {
-				return err
-			}
-			if err := requireNonNegativeLimit(cmd); err != nil {
-				return err
-			}
-			directions := 0
-			for _, name := range []string{"in", "out", "both"} {
-				if cmd.Bool(name) {
-					directions++
-				}
-			}
-			if directions > 1 {
-				return invalidUsage(errUsage("choose one of --in, --out, or --both"))
-			}
-			base, err := openBase(cmd)
-			if err != nil {
-				return err
-			}
-			// No URI is the other question — the shape of the whole edge list — rather than a
-			// missing argument, so it answers instead of correcting.
-			if cmd.Args().Len() == 0 {
-				return render(cmd)(services.SummarizeGraph(ctx, base))
-			}
-			direction := services.DirectionBoth
-			switch {
-			case cmd.Bool("in") && !cmd.Bool("out"):
-				direction = services.DirectionIn
-			case cmd.Bool("out") && !cmd.Bool("in"):
-				direction = services.DirectionOut
-			}
-			return render(cmd)(services.Neighbours(ctx, base, services.GraphQuery{
-				URI: cmd.Args().First(), Direction: direction, Kind: cmd.String("kind"),
-				Depth: cmd.Int("depth"), Limit: cmd.Int("limit"),
-			}))
-		},
+		Action: runGraphCommand,
 		Commands: []*cli.Command{
 			{
 				Name: "nodes", Aliases: []string{"n"},
@@ -234,18 +217,90 @@ func newGraphCommand() *cli.Command {
 					&cli.StringFlag{Name: "kind", Usage: "Node kind: an entity scheme, url, event, index, wiki, project, task, derived, or file."},
 					&cli.IntFlag{Name: "limit", Usage: "Maximum nodes to return."},
 				},
-				Action: func(ctx context.Context, cmd *cli.Command) error {
-					if err := requireNonNegativeLimit(cmd); err != nil {
-						return err
-					}
-					base, err := openBase(cmd)
-					if err != nil {
-						return err
-					}
-					return render(cmd)(services.ListNodes(ctx, base, cmd.String("kind"), cmd.Int("limit")))
-				},
+				Action: runGraphNodesCommand,
 			},
 		},
+	}
+}
+
+func runGraphCommand(ctx context.Context, cmd *cli.Command) error {
+	if cmd.Bool("verify") {
+		return runGraphVerifyCommand(ctx, cmd)
+	}
+	if cmd.Args().Len() > 1 {
+		return invalidUsage(errUsage("usage: fkf graph <uri> [--in|--out|--both] [--depth 2]"))
+	}
+	if err := requirePositiveIntFlagAtMost(cmd, "depth", services.MaxGraphDepth); err != nil {
+		return err
+	}
+	if err := requireNonNegativeLimit(cmd); err != nil {
+		return err
+	}
+	if graphDirectionFlagCount(cmd) > 1 {
+		return invalidUsage(errUsage("choose one of --in, --out, or --both"))
+	}
+	base, err := openBase(cmd)
+	if err != nil {
+		return err
+	}
+	// No URI answers the shape of the whole edge list rather than treating it as a typo.
+	if cmd.Args().Len() == 0 {
+		return render(cmd)(services.SummarizeGraph(ctx, base))
+	}
+	return render(cmd)(services.Neighbours(ctx, base, services.GraphQuery{
+		URI: cmd.Args().First(), Direction: graphDirection(cmd), Kind: cmd.String("kind"),
+		Depth: cmd.Int("depth"), Limit: cmd.Int("limit"),
+	}))
+}
+
+func runGraphVerifyCommand(ctx context.Context, cmd *cli.Command) error {
+	if cmd.Args().Len() != 0 {
+		return invalidUsage(errUsage("fkf graph --verify accepts no URI"))
+	}
+	for _, name := range []string{"in", "out", "both", "kind", "depth", "limit"} {
+		if cmd.IsSet(name) {
+			return invalidUsage(errUsage("fkf graph --verify cannot be combined with --%s", name))
+		}
+	}
+	base, err := openBase(cmd)
+	if err != nil {
+		return err
+	}
+	return render(cmd)(services.VerifyGraph(ctx, base))
+}
+
+func runGraphNodesCommand(ctx context.Context, cmd *cli.Command) error {
+	if cmd.Bool("verify") {
+		return invalidUsage(errUsage("fkf graph --verify accepts no subcommand"))
+	}
+	if err := requireNonNegativeLimit(cmd); err != nil {
+		return err
+	}
+	base, err := openBase(cmd)
+	if err != nil {
+		return err
+	}
+	return render(cmd)(services.ListNodes(ctx, base, cmd.String("kind"), cmd.Int("limit")))
+}
+
+func graphDirectionFlagCount(cmd *cli.Command) int {
+	count := 0
+	for _, name := range []string{"in", "out", "both"} {
+		if cmd.Bool(name) {
+			count++
+		}
+	}
+	return count
+}
+
+func graphDirection(cmd *cli.Command) services.Direction {
+	switch {
+	case cmd.Bool("in"):
+		return services.DirectionIn
+	case cmd.Bool("out"):
+		return services.DirectionOut
+	default:
+		return services.DirectionBoth
 	}
 }
 

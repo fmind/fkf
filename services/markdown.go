@@ -9,6 +9,7 @@ import (
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -72,7 +73,10 @@ type Page struct {
 	Description string              `json:"description,omitempty"`
 	Status      string              `json:"status,omitempty"`
 	Date        string              `json:"date,omitempty"`
+	ValidFrom   string              `json:"valid_from,omitempty"`
+	ValidUntil  string              `json:"valid_until,omitempty"`
 	Tags        []string            `json:"tags,omitempty"`
+	Aliases     []string            `json:"aliases,omitempty"`
 	Relations   map[string][]string `json:"relations,omitempty"`
 	Frontmatter map[string]any      `json:"frontmatter,omitempty"`
 	Body        string              `json:"-"`
@@ -109,7 +113,10 @@ func ParsePage(uri string, data []byte, modified time.Time) (Page, error) {
 	page.Description = frontmatterString(page.Frontmatter, "description")
 	page.Status = frontmatterString(page.Frontmatter, "status")
 	page.Date = frontmatterString(page.Frontmatter, "date")
+	page.ValidFrom = frontmatterString(page.Frontmatter, "valid_from")
+	page.ValidUntil = frontmatterString(page.Frontmatter, "valid_until")
 	page.Tags = frontmatterStrings(page.Frontmatter, "tags")
+	page.Aliases = frontmatterStrings(page.Frontmatter, "aliases")
 	page.Relations, err = frontmatterRelations(page.Frontmatter)
 	if err != nil {
 		return page, fmt.Errorf("%s: %w", uri, err)
@@ -148,11 +155,6 @@ func frontmatterRelations(frontmatter map[string]any) (map[string][]string, erro
 		relations[name] = values
 	}
 	return relations, nil
-}
-
-// ReadPage loads and parses one page from a base.
-func ReadPage(base *Base, uri string) (Page, error) {
-	return ReadPageContext(context.Background(), base, uri)
 }
 
 // ReadPageContext loads and parses one page from a base with cooperative cancellation.
@@ -203,7 +205,7 @@ func frontmatterString(frontmatter map[string]any, key string) string {
 	if !ok {
 		return ""
 	}
-	if rendered, ok := core.ScalarString(value); ok {
+	if rendered, ok := frontmatterScalarString(value); ok {
 		return rendered
 	}
 	return ""
@@ -218,7 +220,7 @@ func frontmatterStrings(frontmatter map[string]any, key string) []string {
 	case []any:
 		values := make([]string, 0, len(typed))
 		for _, item := range typed {
-			if rendered, ok := core.ScalarString(item); ok {
+			if rendered, ok := frontmatterScalarString(item); ok {
 				values = append(values, rendered)
 			}
 		}
@@ -227,6 +229,46 @@ func frontmatterStrings(frontmatter map[string]any, key string) []string {
 		return strings.FieldsFunc(typed, func(r rune) bool { return r == ',' || r == ' ' })
 	default:
 		return nil
+	}
+}
+
+// YAML decodes plain numeric and timestamp scalars into native Go values. Known frontmatter
+// roles are textual contracts, so render those scalars deterministically instead of silently
+// dropping an otherwise valid unquoted date or number.
+func frontmatterScalarString(value any) (string, bool) {
+	if rendered, ok := core.ScalarString(value); ok {
+		return rendered, true
+	}
+	switch typed := value.(type) {
+	case int:
+		return strconv.FormatInt(int64(typed), 10), true
+	case int8:
+		return strconv.FormatInt(int64(typed), 10), true
+	case int16:
+		return strconv.FormatInt(int64(typed), 10), true
+	case int32:
+		return strconv.FormatInt(int64(typed), 10), true
+	case int64:
+		return strconv.FormatInt(typed, 10), true
+	case uint:
+		return strconv.FormatUint(uint64(typed), 10), true
+	case uint8:
+		return strconv.FormatUint(uint64(typed), 10), true
+	case uint16:
+		return strconv.FormatUint(uint64(typed), 10), true
+	case uint32:
+		return strconv.FormatUint(uint64(typed), 10), true
+	case uint64:
+		return strconv.FormatUint(typed, 10), true
+	case float32:
+		return strconv.FormatFloat(float64(typed), 'f', -1, 32), true
+	case time.Time:
+		if typed.Hour() == 0 && typed.Minute() == 0 && typed.Second() == 0 && typed.Nanosecond() == 0 {
+			return typed.Format(time.DateOnly), true
+		}
+		return typed.Format(time.RFC3339), true
+	default:
+		return "", false
 	}
 }
 
@@ -620,6 +662,7 @@ func validatePage(report *ValidationReport, page Page, layer core.Layer, require
 	if requireStatus && !isProjectStatus(page.Status) {
 		report.fail(page.URI, 0, "frontmatter `status` is required and must be active, paused, or done (got %q)", page.Status)
 	}
+	validatePageValidity(report, page)
 	if len(page.Tags) == 0 && !structural {
 		report.warn(page.URI, 0, "no tags: the page is absent from tag-filtered navigation and harder to discover")
 	}
@@ -643,6 +686,43 @@ func validatePage(report *ValidationReport, page Page, layer core.Layer, require
 	if layer == core.LayerWiki {
 		validateWikiSpecialPages(report, page)
 	}
+}
+
+func validatePageValidity(report *ValidationReport, page Page) {
+	for _, bound := range []struct {
+		name  string
+		value string
+	}{{"valid_from", page.ValidFrom}, {"valid_until", page.ValidUntil}} {
+		if bound.value == "" {
+			continue
+		}
+		parsed, err := time.Parse(time.DateOnly, bound.value)
+		if err != nil || parsed.Format(time.DateOnly) != bound.value {
+			report.fail(page.URI, 0, "frontmatter `%s` must be an absolute YYYY-MM-DD date (got %q)", bound.name, bound.value)
+		}
+	}
+	if page.ValidFrom != "" && page.ValidUntil != "" && page.ValidFrom > page.ValidUntil {
+		report.fail(page.URI, 0, "frontmatter `valid_from` %s is after `valid_until` %s", page.ValidFrom, page.ValidUntil)
+	}
+}
+
+// ValidAt applies an authored page's inclusive validity window. Invalid non-empty bounds fail
+// closed in retrieval while `fkf validate` provides the actionable diagnostic.
+func (page Page) ValidAt(asOf string) bool {
+	if _, err := time.Parse(time.DateOnly, asOf); err != nil {
+		return false
+	}
+	for _, value := range []string{page.ValidFrom, page.ValidUntil} {
+		if value == "" {
+			continue
+		}
+		parsed, err := time.Parse(time.DateOnly, value)
+		if err != nil || parsed.Format(time.DateOnly) != value {
+			return false
+		}
+	}
+	return (page.ValidFrom == "" || page.ValidFrom <= asOf) &&
+		(page.ValidUntil == "" || asOf <= page.ValidUntil)
 }
 
 func validateFrontmatterText(report *ValidationReport, page Page) {

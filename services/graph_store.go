@@ -9,6 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -40,10 +43,10 @@ import (
 const (
 	// EdgeSchemaVersion is the edge-list contract version. It lives in the sidecar rather
 	// than on every row, because an index is regenerated as one unit.
-	EdgeSchemaVersion = 2
+	EdgeSchemaVersion = 3
 	// GraphExtractorVersion changes only when edge-derivation semantics change. It is separate
 	// from the metadata shape so identical inputs interpreted by an older extractor become stale.
-	GraphExtractorVersion = 1
+	GraphExtractorVersion = 2
 	// EdgeFieldSeparator separates columns. It may not appear inside any field.
 	EdgeFieldSeparator = '\t'
 	// EdgeFieldCount is the exact column count of a well-formed row.
@@ -200,6 +203,13 @@ func EncodeEdges(writer io.Writer, edges []Edge) error {
 	copy(rows, edges)
 	SortEdges(rows)
 	rows = DedupeEdges(rows)
+	if err := validateEncodedEdges(rows); err != nil {
+		return err
+	}
+	return encodeOrderedEdges(writer, rows)
+}
+
+func validateEncodedEdges(rows []Edge) error {
 	if err := validateEdgeCount(len(rows)); err != nil {
 		return err
 	}
@@ -215,7 +225,10 @@ func EncodeEdges(writer io.Writer, edges []Edge) error {
 				ErrEdgeLineTooLong, index, size, MaxEdgeLineBytes)
 		}
 	}
+	return nil
+}
 
+func encodeOrderedEdges(writer io.Writer, rows []Edge) error {
 	buffered := bufio.NewWriter(writer)
 	for _, edge := range rows {
 		fields := edge.fields()
@@ -380,7 +393,19 @@ type EdgeListMeta struct {
 	Edges            int                 `json:"edges"`
 	Extractors       []string            `json:"extractors"`
 	Bytes            int                 `json:"bytes"`
+	Kinds            []string            `json:"kinds"`
+	Inputs           []GraphFileManifest `json:"inputs"`
+	Outputs          []GraphFileManifest `json:"outputs"`
 	SHA256           GraphSHA256Manifest `json:"sha256"`
+}
+
+// GraphFileManifest binds one exact input or generated artifact to its filesystem identity.
+// Ordinary reads compare size and mtime first; --verify hashes every listed file.
+type GraphFileManifest struct {
+	URI              string `json:"uri"`
+	Bytes            int64  `json:"bytes"`
+	ModifiedUnixNano int64  `json:"modified_unix_nano"`
+	SHA256           string `json:"sha256"`
 }
 
 // GraphSHA256Manifest separates the exact graph output from every meaningful logical input.
@@ -404,7 +429,9 @@ type GraphInputSHA256 struct {
 
 // GraphOutputSHA256 binds metadata to the exact canonical TSV bytes published beside it.
 type GraphOutputSHA256 struct {
-	GraphTSV string `json:"graph.tsv"`
+	GraphTSV        string `json:"graph.tsv"`
+	GraphDstTSV     string `json:"graph.dst.tsv"`
+	GraphOffsetsTSV string `json:"graph.offsets.tsv"`
 }
 
 var graphInputNames = []string{"events", "index", "projects", "tasks", "wiki", "schema"}
@@ -458,24 +485,33 @@ func aggregateGraphInputsSHA256(inputs GraphInputSHA256) string {
 // rather than an ambient time.Now call so a test can assert byte-identical output; determinism
 // is a property of the function, not something a caller has to arrange.
 func NewEdgeListMeta(
-	edges []Edge, generatedAt time.Time, inputs GraphInputSHA256,
+	edges []Edge, generatedAt time.Time, inputs GraphInputSHA256, inputFiles ...GraphFileManifest,
 ) (EdgeListMeta, error) {
-	var encoded bytes.Buffer
-	if err := EncodeEdges(&encoded, edges); err != nil {
+	artifacts, err := encodeGraphArtifacts(edges)
+	if err != nil {
 		return EdgeListMeta{}, err
 	}
 	if problems := graphInputDigestProblems(inputs); len(problems) > 0 {
 		return EdgeListMeta{}, errors.New(strings.Join(problems, "; "))
 	}
-	return edgeListMetaFromBytes(edges, generatedAt, inputs, encoded.Bytes()), nil
+	return edgeListMetaFromArtifacts(edges, generatedAt, inputs, inputFiles, artifacts), nil
 }
 
-func edgeListMetaFromBytes(
-	edges []Edge, generatedAt time.Time, inputs GraphInputSHA256, encoded []byte,
+func edgeListMetaFromArtifacts(
+	edges []Edge,
+	generatedAt time.Time,
+	inputs GraphInputSHA256,
+	inputFiles []GraphFileManifest,
+	artifacts graphArtifacts,
 ) EdgeListMeta {
+	// Edge rows use RFC3339 seconds, so every artifact records that same canonical instant.
+	// Keeping sub-second clock noise would make the manifest disagree with its own rows.
+	generatedAt = generatedAt.UTC().Truncate(time.Second)
 	seen := make(map[string]struct{}, 8)
 	extractors := make([]string, 0, 8)
+	kindSet := make(map[string]struct{}, 8)
 	for _, edge := range edges {
+		kindSet[edge.Kind] = struct{}{}
 		if _, known := seen[edge.Via]; known || edge.Via == "" {
 			continue
 		}
@@ -483,14 +519,21 @@ func edgeListMetaFromBytes(
 		extractors = append(extractors, edge.Via)
 	}
 	sort.Strings(extractors)
-	digest := sha256.Sum256(encoded)
+	kinds := slices.Sorted(maps.Keys(kindSet))
+	outputFiles := graphOutputManifests(artifacts, generatedAt)
 	return EdgeListMeta{
 		SchemaVersion: EdgeSchemaVersion, ExtractorVersion: GraphExtractorVersion,
 		Columns: slices.Clone(EdgeColumns), Separator: "\\t",
 		GeneratedAt: generatedAt.UTC().Format(time.RFC3339),
-		Edges:       len(DedupeEdges(edges)), Extractors: extractors, Bytes: len(encoded),
+		Edges:       len(DedupeEdges(edges)), Extractors: extractors, Bytes: len(artifacts.src),
+		Kinds: kinds, Inputs: slices.Clone(inputFiles), Outputs: outputFiles,
 		SHA256: GraphSHA256Manifest{
-			Inputs: inputs, Outputs: GraphOutputSHA256{GraphTSV: hex.EncodeToString(digest[:])},
+			Inputs: inputs,
+			Outputs: GraphOutputSHA256{
+				GraphTSV:        outputFilesSHA256(outputFiles, core.GraphFile),
+				GraphDstTSV:     outputFilesSHA256(outputFiles, core.GraphDstFile),
+				GraphOffsetsTSV: outputFilesSHA256(outputFiles, core.GraphOffsetsFile),
+			},
 		},
 	}
 }
@@ -518,13 +561,13 @@ func isCanonicalSHA256(value string) bool {
 	return err == nil
 }
 
-// WriteEdgeList atomically replaces each file, rows first and metadata second. A two-file
-// rename cannot be atomic, so the sidecar binds the exact TSV bytes by length and SHA-256: a
+// WriteEdgeList atomically replaces each file, rows first and metadata second. Several file
+// renames cannot be atomic, so the sidecar binds the exact TSV bytes by length and SHA-256: a
 // reader during the short publication window, or after a metadata-write failure, fails closed
 // instead of accepting new rows under old metadata.
 func WriteEdgeList(path, metaPath string, edges []Edge, meta EdgeListMeta) error {
-	var buffer bytes.Buffer
-	if err := EncodeEdges(&buffer, edges); err != nil {
+	artifacts, err := encodeGraphArtifacts(edges)
+	if err != nil {
 		return err
 	}
 	generatedAt, err := time.Parse(time.RFC3339, meta.GeneratedAt)
@@ -540,19 +583,47 @@ func WriteEdgeList(path, metaPath string, edges []Edge, meta EdgeListMeta) error
 				index, edge.Indexed, meta.GeneratedAt)
 		}
 	}
-	expected := edgeListMetaFromBytes(edges, generatedAt, meta.SHA256.Inputs, buffer.Bytes())
+	expected := edgeListMetaFromArtifacts(edges, generatedAt, meta.SHA256.Inputs, meta.Inputs, artifacts)
 	if meta.SchemaVersion != expected.SchemaVersion || !slices.Equal(meta.Columns, expected.Columns) ||
 		meta.ExtractorVersion != expected.ExtractorVersion ||
 		meta.Separator != expected.Separator || meta.GeneratedAt != expected.GeneratedAt ||
 		meta.Edges != expected.Edges || !slices.Equal(meta.Extractors, expected.Extractors) ||
-		meta.Bytes != expected.Bytes || meta.SHA256 != expected.SHA256 {
+		!slices.Equal(meta.Kinds, expected.Kinds) || !slices.Equal(meta.Inputs, expected.Inputs) ||
+		!slices.Equal(meta.Outputs, expected.Outputs) || meta.Bytes != expected.Bytes ||
+		meta.SHA256 != expected.SHA256 {
 		return errors.New("edge-list metadata does not describe the exact canonical encoded rows")
 	}
-	if err := core.WriteFileAtomicMode(path, buffer.Bytes(), core.BaseFileMode); err != nil {
+	generationPath := filepath.Join(filepath.Dir(metaPath), core.GraphGenerationFile)
+	generation := graphGenerationSHA256(meta)
+	if err := writeGraphGenerationState(generationPath, graphGenerationBuilding, generation); err != nil {
+		return fmt.Errorf("mark graph generation as building: %w", err)
+	}
+	if err := writeGraphArtifact(path, artifacts.src, generatedAt); err != nil {
 		return fmt.Errorf("write edge list: %w", err)
+	}
+	directory := filepath.Dir(path)
+	if err := writeGraphArtifact(filepath.Join(directory, core.GraphDstFile), artifacts.dst, generatedAt); err != nil {
+		return fmt.Errorf("write destination edge list: %w", err)
+	}
+	if err := writeGraphArtifact(filepath.Join(directory, core.GraphOffsetsFile), artifacts.offsets, generatedAt); err != nil {
+		return fmt.Errorf("write graph offsets: %w", err)
 	}
 	if err := core.WriteDataToJSON(meta, metaPath); err != nil {
 		return fmt.Errorf("write edge list metadata: %w", err)
+	}
+	if err := writeGraphGenerationState(generationPath, graphGenerationCurrent, generation); err != nil {
+		return fmt.Errorf("publish graph generation: %w", err)
+	}
+	return nil
+}
+
+func writeGraphArtifact(path string, data []byte, generatedAt time.Time) error {
+	if err := core.WriteFileAtomicMode(path, data, core.BaseFileMode); err != nil {
+		return err
+	}
+	canonical := generatedAt.UTC()
+	if err := os.Chtimes(path, canonical, canonical); err != nil {
+		return fmt.Errorf("set deterministic modification time: %w", err)
 	}
 	return nil
 }

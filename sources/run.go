@@ -34,11 +34,13 @@ type Command struct {
 	Argv          []string          `json:"argv"`
 	Dir           string            `json:"dir"`
 	ForbiddenRoot string            `json:"-"`
+	TrustConfig   *core.Config      `json:"-"`
 	Stdin         string            `json:"-"`
 	Env           map[string]string `json:"env,omitempty"`
 	Timeout       time.Duration     `json:"timeout"`
 	Source        string            `json:"-"`
 	Window        Window            `json:"-"`
+	QuietFailure  bool              `json:"-"`
 }
 
 // Display renders argv as a copyable diagnostic. Execution never reparses this string.
@@ -74,6 +76,9 @@ func ExecRunner() Runner {
 				Command: cmd.Display(),
 			})
 		}
+		if cmd.QuietFailure {
+			ctx = core.WithQuietCommandFailure(ctx)
+		}
 		if len(cmd.Env) > 0 || cmd.ForbiddenRoot != "" {
 			var (
 				withEnv context.Context
@@ -89,7 +94,14 @@ func ExecRunner() Runner {
 			}
 			ctx = withEnv
 		}
-		return core.RunCLIStdin(ctx, cmd.Argv, cmd.Dir, cmd.Stdin, cmd.Timeout)
+		// The outer service gate approves the plan before work starts; this check closes the
+		// longer-lived gap by hashing the trusted executable trees again at the exec boundary.
+		if cmd.TrustConfig != nil {
+			if err := core.RequireTrust(ctx, cmd.TrustConfig); err != nil {
+				return "", fmt.Errorf("revalidate declared command trust: %w", err)
+			}
+		}
+		return core.RunCLIBounded(ctx, cmd.Argv, cmd.Dir, cmd.Stdin, cmd.Timeout, core.MaxCLIOutputBytes)
 	})
 }
 
@@ -164,22 +176,29 @@ func sameCivilDay(t time.Time, year int, month time.Month, date int) bool {
 // midnight is what DayWindow's own fix exists to route around. Every caller already reduces
 // this to a date label or hands it straight to DayWindow, so the shifted hour is invisible.
 func ParseDay(value string) (time.Time, error) {
+	return ParseDayInLocation(value, time.Local)
+}
+
+// ParseDayInLocation reads a YYYY-MM-DD day in loc. Callers that already own an evaluation
+// clock use its location instead of mutating process-global timezone state in tests.
+func ParseDayInLocation(value string, loc *time.Location) (time.Time, error) {
 	label := strings.TrimSpace(value)
-	noon, err := time.ParseInLocation("2006-01-02 15:04:05", label+" 12:00:00", time.Local)
+	noon, err := time.ParseInLocation("2006-01-02 15:04:05", label+" 12:00:00", loc)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("date must be YYYY-MM-DD: %w", err)
 	}
 	if noon.Format(time.DateOnly) != label {
-		return time.Time{}, fmt.Errorf("%w: %s in %s", ErrCivilDateDoesNotExist, label, time.Local)
+		return time.Time{}, fmt.Errorf("%w: %s in %s", ErrCivilDateDoesNotExist, label, loc)
 	}
 	return noon, nil
 }
 
 // Environment is the machine-local context a base's commands run in.
 type Environment struct {
-	Root string
-	Bin  []string
-	Env  map[string]string
+	Root        string
+	Bin         []string
+	Env         map[string]string
+	TrustConfig *core.Config
 }
 
 // NewEnvironment resolves the execution context from a base's configuration. The base's own
@@ -198,7 +217,7 @@ func NewEnvironment(config *core.Config) Environment {
 	}
 	directories = append(directories, filepath.SplitList(inherited)...)
 	env := map[string]string{"PATH": strings.Join(directories, string(os.PathListSeparator))}
-	return Environment{Root: store.Root(), Bin: directories, Env: env}
+	return Environment{Root: store.Root(), Bin: directories, Env: env, TrustConfig: config}
 }
 
 // LookPath resolves a command name against the PATH this environment will actually give the
@@ -224,12 +243,16 @@ func (e Environment) testPath() string {
 
 // BuildRunCommand substitutes fkf-owned placeholders in each declared argument and returns
 // exactly what exec receives. No shell parses the result.
-func BuildRunCommand(source *core.Source, env Environment, window Window, timeout time.Duration) Command {
-	home := homeDirectory()
+func BuildRunCommand(
+	source *core.Source, env Environment, window Window, timeout time.Duration,
+) (Command, error) {
 	values := map[string]string{
 		"date": window.Date, "next_date": window.Next,
 		"start": window.Start, "end": window.End,
-		"base": env.Root, "home": home,
+		"base": env.Root,
+	}
+	if err := addHomePlaceholder(source.Run, values); err != nil {
+		return Command{}, fmt.Errorf("plan run command for source %s: %w", source.Name, err)
 	}
 	argv := make([]string, 0, len(source.Run))
 	for _, argument := range source.Run {
@@ -241,14 +264,18 @@ func BuildRunCommand(source *core.Source, env Environment, window Window, timeou
 	return Command{
 		Argv: argv,
 		Dir:  core.DeclaredCommandDirectory, ForbiddenRoot: env.Root,
-		Env: maps.Clone(env.Env), Timeout: timeout, Source: source.Name, Window: window,
-	}
+		TrustConfig: env.TrustConfig,
+		Env:         maps.Clone(env.Env), Timeout: timeout, Source: source.Name, Window: window,
+	}, nil
 }
 
 // BuildTestCommand substitutes only stable base and home paths into a source's verification
 // hook. Test hooks receive no collection window or stored value and execute as direct argv.
-func BuildTestCommand(source *core.Source, env Environment, timeout time.Duration) Command {
-	values := map[string]string{"base": env.Root, "home": homeDirectory()}
+func BuildTestCommand(source *core.Source, env Environment, timeout time.Duration) (Command, error) {
+	values := map[string]string{"base": env.Root}
+	if err := addHomePlaceholder(source.Test, values); err != nil {
+		return Command{}, fmt.Errorf("plan test command for source %s: %w", source.Name, err)
+	}
 	argv := make([]string, 0, len(source.Test))
 	for _, argument := range source.Test {
 		argv = append(argv, substitute(argument, values))
@@ -264,7 +291,25 @@ func BuildTestCommand(source *core.Source, env Environment, timeout time.Duratio
 	return Command{
 		Argv: argv,
 		Dir:  core.DeclaredCommandDirectory, ForbiddenRoot: env.Root,
-		Env: commandEnv, Timeout: timeout, Source: source.Name,
+		TrustConfig: env.TrustConfig,
+		Env:         commandEnv, Timeout: timeout, Source: source.Name,
+	}, nil
+}
+
+// BuildAuthCommand builds one literal authentication-readiness probe. Config validation
+// rejects placeholders, so planning cannot depend on dates, HOME, or collected values.
+func BuildAuthCommand(source *core.Source, env Environment, timeout time.Duration) Command {
+	if source.Timeout > 0 {
+		timeout = source.Timeout
+	}
+	return Command{
+		Argv:          append([]string(nil), source.Auth...),
+		Dir:           core.DeclaredCommandDirectory,
+		ForbiddenRoot: env.Root,
+		TrustConfig:   env.TrustConfig,
+		Env:           maps.Clone(env.Env),
+		Timeout:       timeout,
+		QuietFailure:  true,
 	}
 }
 
@@ -321,12 +366,16 @@ func substitute(template string, values map[string]string) string {
 	return strings.NewReplacer(replacements...).Replace(template)
 }
 
-func homeDirectory() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+func addHomePlaceholder(argv []string, values map[string]string) error {
+	if !argvUsesPlaceholder(argv, "home") {
+		return nil
 	}
-	return home
+	home, found := os.LookupEnv("HOME")
+	if !found || strings.TrimSpace(home) == "" {
+		return errors.New("cannot expand {{home}}: HOME is unset or empty")
+	}
+	values["home"] = home
+	return nil
 }
 
 // EnsureBinDir creates the base's script directory so a `run:` line that calls a helper does

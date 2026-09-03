@@ -22,6 +22,9 @@ schema:
   time:
     description: Event time.
     cardinality: one
+  title:
+    description: Meaningful subject line.
+    cardinality: optional
   project:
     description: Project containing the item.
     cardinality: optional
@@ -38,6 +41,7 @@ sources:
     fields:
       id: .id
       time: .updatedAt
+      title: .title
       project: .project.key
       author: [".author_uri", ".reviewer_uris[]"]
     body: [cli, view, "{{id}}", --project, "{{project}}"]
@@ -50,7 +54,7 @@ sources:
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `"fields":{"author":[".author_uri",".reviewer_uris[]"],"id":".id","project":".project.key","time":".updatedAt"}`
+	want := `"fields":{"author":[".author_uri",".reviewer_uris[]"],"id":".id","project":".project.key","time":".updatedAt","title":".title"}`
 	if !strings.Contains(string(encoded), want) {
 		t.Fatalf("source JSON = %s, want canonical scalar-or-list field paths %s", encoded, want)
 	}
@@ -62,7 +66,7 @@ sources:
 	}
 
 	removedSpelling := strings.Replace(configText,
-		"    fields:\n      id: .id\n      time: .updatedAt\n      project: .project.key\n      author: [\".author_uri\", \".reviewer_uris[]\"]\n",
+		"    fields:\n      id: .id\n      time: .updatedAt\n      title: .title\n      project: .project.key\n      author: [\".author_uri\", \".reviewer_uris[]\"]\n",
 		"    id: .id\n    time: .updatedAt\n", 1)
 	if _, err := LoadConfig(writeBase(t, removedSpelling, nil)); err == nil || !strings.Contains(err.Error(), "field id not found") {
 		t.Fatalf("removed top-level fields error = %v, want the old spelling refused", err)
@@ -89,6 +93,7 @@ func TestLoadConfigKeepsRequirementsExplicit(t *testing.T) {
 name: brain
 schema:
   id: {description: Stable identity., cardinality: one}
+  title: {description: Meaningful subject line., cardinality: optional}
 layers: {index: true}
 sources:
   repositories:
@@ -96,7 +101,7 @@ sources:
     layer: index
     requires: [gh, jq]
     run: [gh, repo, list, --json, name]
-    fields: {id: .name}
+    fields: {id: .name, title: .name}
 `
 	loaded, err := LoadConfig(writeBase(t, config, nil))
 	if err != nil {
@@ -113,18 +118,56 @@ sources:
 	}
 }
 
+func TestLoadConfigValidatesBodyCachePolicy(t *testing.T) {
+	configText := `fkf: 1
+name: brain
+schema:
+  id: {description: Stable identity., cardinality: one}
+  title: {description: Meaningful subject line., cardinality: optional}
+layers: {index: true}
+sources:
+  notes:
+    enabled: true
+    layer: index
+    run: [cli, list]
+    fields: {id: .id, title: .title}
+    body: [cli, get, "{{id}}"]
+    bodies: sync
+`
+	config, err := LoadConfig(writeBase(t, configText, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := config.Sources["notes"].Bodies; got != BodiesSync {
+		t.Fatalf("bodies = %q, want %q", got, BodiesSync)
+	}
+
+	for name, changed := range map[string]string{
+		"unknown": strings.Replace(configText, "bodies: sync", "bodies: forever", 1),
+		"no body command": strings.Replace(configText,
+			"    body: [cli, get, \"{{id}}\"]\n", "", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := LoadConfig(writeBase(t, changed, nil)); err == nil || !strings.Contains(err.Error(), "bodies") {
+				t.Fatalf("LoadConfig() error = %v, want bodies policy refused", err)
+			}
+		})
+	}
+}
+
 func TestLoadConfigAcceptsRunAsDirectArgv(t *testing.T) {
 	config := `fkf: 1
 name: brain
 schema:
   id: {description: Stable identity., cardinality: one}
   time: {description: Event time., cardinality: one}
+  title: {description: Meaningful subject line., cardinality: optional}
 layers: {events: true}
 sources:
   pull-requests:
     enabled: true
     run: [github-search-json.sh, prs, author, "{{start}}", "{{end}}", "{{base}}/with spaces"]
-    fields: {id: .id, time: .time}
+    fields: {id: .id, time: .time, title: .title}
 `
 	loaded, err := LoadConfig(writeBase(t, config, nil))
 	if err != nil {
@@ -141,6 +184,7 @@ func TestLoadConfigAcceptsTestAsOneDirectArgvSpelling(t *testing.T) {
 name: brain
 schema:
   id: {description: Stable identity., cardinality: one}
+  title: {description: Meaningful subject line., cardinality: optional}
 layers: {index: true}
 sources:
   repositories:
@@ -148,7 +192,7 @@ sources:
     layer: index
     run: [collect-repositories.sh]
     test: [collect-repositories.sh, --test]
-    fields: {id: .id}
+    fields: {id: .id, title: .title}
 `
 	loaded, err := LoadConfig(writeBase(t, config, nil))
 	if err != nil {
@@ -165,6 +209,41 @@ sources:
 	empty := strings.Replace(config, "test: [collect-repositories.sh, --test]", "test: []", 1)
 	if _, err := LoadConfig(writeBase(t, empty, nil)); err == nil {
 		t.Fatalf("empty test error = %v, want a declared hook to name an executable", err)
+	}
+}
+
+func TestLoadConfigAcceptsAuthAsLiteralDirectArgv(t *testing.T) {
+	config := `fkf: 1
+name: brain
+schema:
+  id: {description: Stable identity., cardinality: one}
+  title: {description: Meaningful subject line., cardinality: optional}
+layers: {index: true}
+sources:
+  repositories:
+    enabled: true
+    layer: index
+    auth: [gh, auth, status]
+    run: [gh, repo, list, --json, name]
+    fields: {id: .name, title: .name}
+`
+	loaded, err := LoadConfig(writeBase(t, config, nil))
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v, want a direct auth argv", err)
+	}
+	want := []string{"gh", "auth", "status"}
+	if got := loaded.Sources["repositories"].Auth; !slices.Equal(got, want) {
+		t.Fatalf("auth = %#v, want %#v", got, want)
+	}
+	for _, replacement := range []string{
+		"auth: []",
+		"auth: [\"{{home}}/bin/gh\", auth, status]",
+		"auth: [gh, auth, \"{{date}}\"]",
+	} {
+		candidate := strings.Replace(config, "auth: [gh, auth, status]", replacement, 1)
+		if _, err := LoadConfig(writeBase(t, candidate, nil)); err == nil || !strings.Contains(err.Error(), "auth") {
+			t.Fatalf("LoadConfig(%q) error = %v, want auth rejected", replacement, err)
+		}
 	}
 }
 
@@ -193,6 +272,7 @@ name: brain
 schema:
   id: {description: Stable identity., cardinality: one}
   time: {description: Event time., cardinality: one}
+  title: {description: Meaningful subject line., cardinality: optional}
   author:
     description: Canonical author identities.
     cardinality: many
@@ -203,7 +283,7 @@ sources:
   work:
     enabled: true
     run: [cli]
-    fields: {id: .id, time: .time, author: ".author_uris[]"}
+    fields: {id: .id, time: .time, title: .title, author: ".author_uris[]"}
 `
 	if _, err := LoadConfig(writeBase(t, valid, nil)); err != nil {
 		t.Fatalf("LoadConfig() rejected the v1 semantic contract: %v", err)
@@ -286,6 +366,7 @@ sources:
     fields:
       id: .number
       time: .updatedAt
+      title: .title
       repo: .repository.nameWithOwner
       people: [.author.login]
     body: [gh, pr, view, "{{id}}", --repo, "{{repo}}"]
@@ -451,12 +532,6 @@ func TestLoadConfigRejects(t *testing.T) {
 			config: "name: brain\nlayers: {events: true}\nsources:\n  s:\n" +
 				"    enabled: true\n    run: [cli, --at, \"date}}\"]\n    fields:\n      id: .id\n      time: .t\n",
 			wantMessage: "malformed placeholder",
-		},
-		{
-			name: "a date placeholder in an index source",
-			config: "name: brain\nlayers: {index: true}\nsources:\n  s:\n" +
-				"    enabled: true\n    layer: index\n    run: [cli, --at, \"{{date}}\"]\n    fields:\n      id: .id\n",
-			wantMessage: "an index source collects a point in time",
 		},
 		{
 			name: "a body without {{id}}",
@@ -900,7 +975,7 @@ func TestValidBodyValueAcceptsOpaqueUnicodeArgvValues(t *testing.T) {
 		}
 	}
 	for _, value := range []string{
-		"--help", "-Rattacker/repo", "a\nb", "a\tb", "", "   ", "a\u200bb",
+		"--help", "-Rattacker/repo", "@response-file", "a\nb", "a\tb", "", "   ", "a\u200bb",
 		string([]byte{0xff}), strings.Repeat("a", 257),
 	} {
 		if ValidBodyValue(value) {
@@ -914,7 +989,7 @@ func TestValidBodyValueAcceptsOpaqueUnicodeArgvValues(t *testing.T) {
 // floors at one so a source declaring no policy at all behaves as "run it once".
 func TestLoadConfigAcceptsADeclaredRetryPolicy(t *testing.T) {
 	config := "name: brain\nlayers: {events: true}\nsources:\n  s:\n" +
-		"    enabled: true\n    run: [gh, search, prs]\n    fields:\n      id: .id\n      time: .t\n" +
+		"    enabled: true\n    run: [gh, search, prs]\n    fields:\n      id: .id\n      time: .t\n      title: .title\n" +
 		"    retry: {attempts: 3, backoff: 30s, on: [\"exit:1\", rate limit]}\n" +
 		"    min_interval: 5s\n"
 	loaded, err := LoadConfig(writeBase(t, config, nil))
@@ -946,12 +1021,72 @@ func TestLoadConfigAcceptsADeclaredRetryPolicy(t *testing.T) {
 // true decodes onto an events source and does not touch its neighbours.
 func TestLoadConfigAcceptsWindowOnAnEventsSource(t *testing.T) {
 	config := "name: brain\nlayers: {events: true}\nsources:\n  s:\n" +
-		"    enabled: true\n    layer: events\n    run: [cli, \"{{start}}\", \"{{end}}\"]\n    fields:\n      id: .id\n      time: .t\n    window: true\n"
+		"    enabled: true\n    layer: events\n    run: [cli, \"{{start}}\", \"{{end}}\"]\n    fields:\n      id: .id\n      time: .t\n      title: .title\n    window: true\n"
 	loaded, err := LoadConfig(writeBase(t, config, nil))
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	if !loaded.Sources["s"].Window {
 		t.Fatal("Window = false, want true")
+	}
+}
+
+func TestLoadConfigAcceptsOnlyTheClosedTasksSourceContract(t *testing.T) {
+	valid := `name: brain
+layers: {tasks: true}
+sources:
+  agent-session-traces:
+    enabled: true
+    layer: tasks
+    run: [agent-session-trace.sh, "{{start}}", "{{end}}"]
+    window: true
+`
+	loaded, err := LoadConfig(writeBase(t, valid, nil))
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v, want the dedicated tasks source accepted", err)
+	}
+	source := loaded.Sources["agent-session-traces"]
+	if source.Layer != LayerTasks || !source.Window || len(source.Fields) != 0 || source.Format != FormatJSON {
+		t.Fatalf("tasks source = %+v, want one windowed JSON task-trace importer with no field map", source)
+	}
+
+	for _, test := range []struct {
+		name, addition, want string
+	}{
+		{"window disabled", "", "window must be true"},
+		{"fields", "    fields: {id: .id, title: .title}\n", "fields is not valid"},
+		{"records", "    records: .items[]\n", "records is not valid"},
+		{"body", "    body: [cli, \"{{id}}\"]\n", "body is not valid"},
+		{"bodies", "    bodies: none\n", "bodies is not valid"},
+		{"recency", "    recency: {half_life_days: 7}\n", "recency is not valid"},
+		{"ndjson", "    format: ndjson\n", "must emit one json array"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := strings.Replace(valid, "    window: true\n", test.addition, 1)
+			if test.name != "window disabled" {
+				candidate += "    window: true\n"
+			}
+			_, err := LoadConfig(writeBase(t, candidate, nil))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadConfig() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRequiresMeaningfulTitleProjectionForCollectedJSON(t *testing.T) {
+	for _, layer := range []Layer{LayerEvents, LayerIndex} {
+		t.Run(string(layer), func(t *testing.T) {
+			fields := "      id: .id\n"
+			if layer == LayerEvents {
+				fields += "      time: .time\n"
+			}
+			config := "name: brain\nlayers: {" + string(layer) + ": true}\nsources:\n  missing-title:\n" +
+				"    enabled: true\n    layer: " + string(layer) + "\n    run: [cli]\n    fields:\n" + fields
+			_, err := LoadConfig(writeBase(t, config, nil))
+			if err == nil || !strings.Contains(err.Error(), "fields.title is required") {
+				t.Fatalf("LoadConfig() error = %v, want the subject-line contract", err)
+			}
+		})
 	}
 }

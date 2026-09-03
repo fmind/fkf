@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -23,8 +22,9 @@ import (
 
 // Window bounds a listing or a query by date. An empty bound is open.
 type Window struct {
-	Since string `json:"since,omitempty"`
-	Until string `json:"until,omitempty"`
+	Since       string `json:"since,omitempty"`
+	Until       string `json:"until,omitempty"`
+	DerivedFrom string `json:"derived_from,omitempty"`
 }
 
 // dayKeywords name the two days an agent asks for by name. They resolve to one absolute date
@@ -214,19 +214,6 @@ func readEventDay(ctx context.Context, base *Base, date, source string) (EventDa
 	return day, nil
 }
 
-// ReadEventDocument returns one day's document for one source.
-func ReadEventDocument(base *Base, date, source string) (*sources.Document, error) {
-	return ReadEventDocumentContext(context.Background(), base, date, source)
-}
-
-// ReadEventDocumentContext returns one day's document for one source with cooperative cancellation.
-func ReadEventDocumentContext(ctx context.Context, base *Base, date, source string) (*sources.Document, error) {
-	if err := core.ValidateDate(date); err != nil {
-		return nil, err
-	}
-	return base.ReadDocumentContext(ctx, sources.EventDocumentURI(date, source))
-}
-
 // ValidateDate is the shared YYYY-MM-DD check for every command that takes a date.
 func ValidateDate(value string) error { return core.ValidateDate(value) }
 
@@ -301,17 +288,6 @@ func describeIndexDocument(
 	entry.AgeHours = max(0, int(age/time.Hour))
 	entry.Stale = age < 0 || age >= maxAge
 	return nil
-}
-
-// ReadIndexDocument returns one point-in-time document.
-func ReadIndexDocument(base *Base, name string) (*sources.Document, error) {
-	return ReadIndexDocumentContext(context.Background(), base, name)
-}
-
-// ReadIndexDocumentContext returns one point-in-time document with cooperative cancellation.
-func ReadIndexDocumentContext(ctx context.Context, base *Base, name string) (*sources.Document, error) {
-	document, _, err := readValidatedIndexDocumentContext(ctx, base, sources.IndexDocumentURI(name))
-	return document, err
 }
 
 // readValidatedIndexDocumentContext is the one freshness clock for point-in-time snapshots. File
@@ -548,23 +524,6 @@ func citedTraces(ctx context.Context, base *Base) (map[string]bool, error) {
 		}
 	}
 	return cited, nil
-}
-
-// ReadTaskTrace returns one trace, addressed as `<date>/<slug>`.
-func ReadTaskTrace(base *Base, reference string) (Page, error) {
-	return ReadTaskTraceContext(context.Background(), base, reference)
-}
-
-// ReadTaskTraceContext returns one trace with cooperative cancellation.
-func ReadTaskTraceContext(ctx context.Context, base *Base, reference string) (Page, error) {
-	date, slug, ok := strings.Cut(strings.Trim(reference, "/"), "/")
-	if !ok {
-		return Page{}, errors.New("a task is addressed as <date>/<slug>, for example 2026-08-22/changes-review")
-	}
-	if err := core.ValidateDate(date); err != nil {
-		return Page{}, err
-	}
-	return ReadPageContext(ctx, base, path.Join(string(core.LayerTasks), date, slug, core.TaskTraceFile))
 }
 
 func readDateDirectories(directory string) ([]string, error) {

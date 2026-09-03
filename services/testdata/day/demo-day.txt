@@ -1,0 +1,19 @@
+[git-commits] 5/6 records
+2026-05-09T00:00:00Z Fix index staleness (GW-1203) · events/2026-05-09/git-commits.json#git-commits-20260509-0
+2026-05-09T00:00:00Z Review markdown validation (GW-1203) · events/2026-05-09/git-commits.json#git-commits-20260509-1
+2026-05-09T00:00:00Z Design retrieval boundary (FK-501) · events/2026-05-09/git-commits.json#git-commits-20260509-2
+2026-05-09T00:00:00Z Revert quiet source watchdog (GW-1203) · events/2026-05-09/git-commits.json#git-commits-20260509-3
+2026-05-09T00:00:00Z Review daily collection window (LG-77) · events/2026-05-09/git-commits.json#git-commits-20260509-4
+[google-calendar-events] 6/6 records
+2026-05-09T00:00:00Z Measure quiet source watchdog (GW-1203) · events/2026-05-09/google-calendar-events.json#google-calendar-events-20260509-0
+2026-05-09T00:00:00Z Document retrieval boundary (FK-501) · events/2026-05-09/google-calendar-events.json#google-calendar-events-20260509-1
+2026-05-09T00:00:00Z Document markdown validation (GW-1203) · events/2026-05-09/google-calendar-events.json#google-calendar-events-20260509-2
+2026-05-09T00:00:00Z Design index staleness (GW-1203) · events/2026-05-09/google-calendar-events.json#google-calendar-events-20260509-3
+2026-05-09T00:00:00Z Document graph edge extraction (FK-412) · events/2026-05-09/google-calendar-events.json#google-calendar-events-20260509-4
+2026-05-09T00:00:00Z Design trust gate for cloned bases (FK-412) · events/2026-05-09/google-calendar-events.json#google-calendar-events-20260509-5
+[shell-commands] 6 records summarized
+people: person:email/eli@example.test, person:email/ines@example.test, person:email/lea@example.test, person:email/marc@example.test, person:email/maya@example.test, person:email/sara@example.test, person:email/tomas@example.test, person:email/zoe@example.test, person:email/luc@example.test, person:email/nadia@example.test, person:email/raf@example.test
+repositories: repo:github.com/acme/console, repo:github.com/acme/gateway, repo:github.com/acme/ledger, repo:github.com/example/agents, repo:github.com/example/docs, repo:github.com/fmind/atlas
+receipt: 2026-05-09..2026-05-09 · records 36 · selected 17 · dropped 19
+receipt: budget 600 · used 584 · json 953 · text 584
+receipt: as_of 2026-05-10 · input_sha256 1452050b01f5db76ff1ebf31425854a30d9a640e11768669458c9b8b2d8b5a31

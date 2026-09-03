@@ -119,12 +119,13 @@ func newApp(stdout, stderr io.Writer) *cli.Command {
 	app.OnUsageError = usageError
 	app.Commands = []*cli.Command{
 		// Ask the base.
-		newContextCommand(), newFindCommand(), newReadCommand(), newGraphCommand(),
+		newContextCommand(), newBriefCommand(), newDayCommand(), newTimelineCommand(), newWhoCommand(), newFindCommand(), newReadCommand(), newGraphCommand(),
 		// Inspect and explore.
-		newListCommand(), newValidateCommand(), newTagsCommand(),
+		newListCommand(), newValidateCommand(), newTagsCommand(), newEvalCommand(),
 		// Run and set up.
 		newInitCommand(), newTrustCommand(), newTestCommand(), newSyncCommand(), newStatusCommand(),
-		newBuildCommand(), newNewCommand(), newConfigCommand(), newMCPCommand(), newUpgradeCommand(),
+		newBuildCommand(), newNewCommand(), newConfigCommand(), newMCPCommand(), newHarnessCommand(),
+		newLearnCommand(), newScheduleCommand(), newUpgradeCommand(),
 	}
 	// urfave/cli consults the failing command's own hook rather than walking up to the root, so
 	// a mistyped flag on a subcommand would otherwise exit 1 — "partial failure" — telling a

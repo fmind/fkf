@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 )
 
 // WriteDataToJSON writes any to file (indent 2) or stdout if path is empty.
@@ -85,12 +84,8 @@ func WriteFileAtomicMode(path string, bytes []byte, mode os.FileMode) error {
 	return writeFileAtomicMode(dir, path, bytes, mode)
 }
 
-// SyncDirectory persists a directory-entry change where the platform supports directory
-// fsync. Windows does not expose the same primitive through os.File.Sync.
+// SyncDirectory persists a directory-entry change.
 func SyncDirectory(dir string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
 	handle, err := os.Open(dir)
 	if err != nil {
 		return err

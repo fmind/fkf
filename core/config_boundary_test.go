@@ -9,10 +9,8 @@ import (
 	"time"
 )
 
-// TestEveryConfigReaderRefusesUnsafeLeaves keeps the execution boundary identical across
-// configuration loading, trust disclosure, and trust enforcement. A symlink can swap the
-// reviewed command file for bytes outside the base, while a FIFO can block a read forever;
-// neither is a regular base-owned configuration leaf.
+// TestEveryConfigReaderRefusesUnsafeLeaves keeps the single configuration boundary closed. A
+// symlink can swap command bytes outside the base, while a FIFO can block a read forever.
 func TestEveryConfigReaderRefusesUnsafeLeaves(t *testing.T) {
 	for _, name := range []string{ConfigFileName, LocalConfigName} {
 		for _, kind := range []string{"symlink", "fifo"} {
@@ -55,15 +53,6 @@ func assertUnsafeConfigReaders(t *testing.T, root string) {
 	if _, err := LoadConfig(root); !errors.Is(err, ErrUnsafePath) {
 		t.Fatalf("LoadConfig() error = %v, want ErrUnsafePath", err)
 	}
-	if _, err := ConfigDigest(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
-		t.Fatalf("ConfigDigest(t.Context(), ) error = %v, want ErrUnsafePath", err)
-	}
-	if _, err := TrustItems(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
-		t.Fatalf("TrustItems(t.Context(), ) error = %v, want ErrUnsafePath", err)
-	}
-	if err := RequireTrust(t.Context(), root); !errors.Is(err, ErrUnsafePath) {
-		t.Fatalf("RequireTrust(t.Context(), ) error = %v, want ErrUnsafePath", err)
-	}
 }
 
 // TestConfigReadersPreserveASymlinkSpelledBaseRoot distinguishes an unsafe link inside a
@@ -89,16 +78,16 @@ func TestConfigReadersPreserveASymlinkSpelledBaseRoot(t *testing.T) {
 		t.Fatalf("config paths = %q and %q, want the chosen root spelling %q",
 			config.Path, config.LocalPath, linkRoot)
 	}
-	if _, err := ConfigDigest(t.Context(), linkRoot); err != nil {
+	if _, err := ConfigDigest(t.Context(), config); err != nil {
 		t.Fatalf("ConfigDigest(t.Context(), ) through a symlink-spelled root: %v", err)
 	}
-	if _, err := TrustItems(t.Context(), linkRoot); err != nil {
+	if _, err := TrustItems(t.Context(), config); err != nil {
 		t.Fatalf("TrustItems(t.Context(), ) through a symlink-spelled root: %v", err)
 	}
-	if _, err := WriteTrust(t.Context(), linkRoot, time.Now()); err != nil {
+	if _, err := WriteTrust(t.Context(), config, time.Now()); err != nil {
 		t.Fatalf("WriteTrust(t.Context(), ) through a symlink-spelled root: %v", err)
 	}
-	if err := RequireTrust(t.Context(), linkRoot); err != nil {
+	if err := RequireTrust(t.Context(), config); err != nil {
 		t.Fatalf("RequireTrust(t.Context(), ) through a symlink-spelled root: %v", err)
 	}
 }

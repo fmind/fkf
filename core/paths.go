@@ -50,6 +50,35 @@ func ResolveAbsolutePath(value string) (string, error) {
 	return absolute, nil
 }
 
+// ResolvePhysicalPath gives aliases of the same existing path one stable identity. Missing
+// suffixes are preserved so callers can also key state for a path they are about to create.
+func ResolvePhysicalPath(value string) (string, error) {
+	absolute, err := ResolveAbsolutePath(value)
+	if err != nil {
+		return "", err
+	}
+	current := absolute
+	missing := make([]string, 0, 2)
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("resolve physical path %s: %w", value, err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("resolve physical path %s: no existing ancestor", value)
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
 // CleanRelative normalizes one base-relative slash path and refuses anything that could
 // address a file outside the base. Backslashes and NUL are rejected outright rather than
 // normalized, because both mean the caller is not describing a base-relative URI.

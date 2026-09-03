@@ -36,9 +36,9 @@ sources:
 
   shell-commands: # metadata about shell activity from atuin, never the command text
     # Requires atuin and its database at the path below. Raw shell commands routinely contain
-    # inline tokens, passwords, signed URLs, and heredoc data, so the shipped projection never
-    # selects or stores atuin's command column. The record keeps only when and where a command
-    # ran, its exit status, and its duration.
+    # inline tokens, passwords, signed URLs, and heredoc data. The helper reads them only in a
+    # private temporary directory to classify an allowlisted tool and verb; it emits no argument
+    # text. The record also keeps when and where a command ran, its exit status, and duration.
     enabled: false
     layer: events
     requires: [atuin-history-json.sh, sqlite3, jq]
@@ -51,11 +51,12 @@ sources:
     fields:
       id: .id
       time: .time
+      title: .subject
     install: mise use -g sqlite@latest # and atuin itself: mise use -g atuin@latest
 
   agent-sessions: # one record per coding-agent session per day, from the transcripts on disk
-    # On by default: the script reads what Claude Code, Codex, Gemini CLI, OpenCode, Copilot, and
-    # Antigravity keep on disk with find, jq, and sqlite3; a harness that is not installed
+    # On by default: the script reads what Claude Code, Codex, Gemini CLI, OpenCode, Copilot,
+    # Antigravity, and Grok keep on disk with find, jq, and sqlite3; a harness that is not installed
     # contributes nothing, and what an agent did in a repository is the half of your work no
     # provider can see. Metadata only — id, time, harness, cwd, branch, the clone's repository,
     # the harness's own title line — never a prompt or a response; subagent threads are skipped.
@@ -79,27 +80,102 @@ sources:
     install: mise use -g jq@latest sqlite@latest
 
   agent-memory-files: # one record per harness memory file touched that day
-    # Claude Code's auto-memory, Codex's memories, and Gemini CLI's per-project memory are where
-    # an agent's decisions land today:
+    # Claude Code's auto-memory, Codex's memories, Gemini CLI's per-project memory, and Grok's
+    # Markdown memory are where an agent's decisions land today:
     # per tool, per project, unversioned, invisible to the other harnesses and to fkf. This
     # source lists the files touched each day — path, time, title from a bounded prefix, never body — so
     # the fkf-learn skill can read them as candidates and promote the durable ones into wiki/.
     enabled: true
     layer: events
-    requires: [agent-memory-files.sh, find, jq, stat]
+    requires: [agent-memory-files.sh, agent-memory-body.sh, find, jq, stat]
     window: true # one find across every harness root instead of one per requested day
     run: [agent-memory-files.sh, "{{start}}", "{{end}}"] # script written into bin/ by init; POSIX find, stat, and jq
+    body: [agent-memory-body.sh, "{{id}}"]
+    bodies: sync
     fields:
       id: .id
       time: .time
       title: .title
     install: mise use -g jq@latest
 
+  agent-prompts: # metadata for requests you wrote; full text remains lazy behind body:
+    enabled: false
+    layer: events
+    requires: [agent-prompts.sh, agent-prompt-body.sh, agent-prompt-filter.jq, find, git, jq, touch]
+    window: true
+    run: [agent-prompts.sh, "{{start}}", "{{end}}", "0"]
+    timeout: 5m
+    fields:
+      id: .id
+      time: .time
+      title: .title
+      repo: .repo
+    body: [agent-prompt-body.sh, "{{id}}"]
+    install: mise use -g jq@latest
+
+  agent-session-traces: # bounded task skeletons from the shared harness-independent store
+    # This is the write-oriented companion to agent-prompts: one completed session becomes one
+    # idempotent tasks/<date>/<repo>-<sid>/TASKS.md skeleton. Requests and the last assistant
+    # message are inert code blocks; git contributes changed paths only, never file contents.
+    enabled: true
+    layer: tasks
+    requires: [agent-session-trace.sh, agent-prompt-filter.jq, find, git, jq, xargs]
+    window: true
+    run: [agent-session-trace.sh, "{{start}}", "{{end}}"]
+    timeout: 10m
+    install: mise use -g jq@latest
+
+  chrome-bookmarks: # a current metadata snapshot across Chromium-family profiles
+    enabled: false
+    layer: index
+    requires: [chrome-bookmarks.sh, jq]
+    run: [chrome-bookmarks.sh]
+    fields:
+      id: .uid
+      title: .title
+      url: .url
+    install: mise use -g jq@latest
+
+  mise-tools: # active local tool versions; no provider or network call
+    enabled: false
+    layer: index
+    requires: [mise-tools-json.sh, mise, jq]
+    run: [mise-tools-json.sh]
+    fields:
+      id: .id
+      title: .title
+
+  writing-documents: # edit the sentinel to one or more explicit authored files before enabling
+    enabled: false
+    layer: index
+    requires: [writing-source-json.sh, writing-index.sh, git, jq, yq]
+    run: [writing-source-json.sh, "{{home}}/REPLACE_WITH_WRITING_DOCUMENT.md"]
+    fields:
+      id: .id
+      title: .title
+      url: .url
+      repo: .repo
+    install: mise use -g yq@latest
+
+  rss-items: # edit feeds.opml; feeds expose a complete current document, not historical pages
+    enabled: false
+    layer: index
+    requires: [rss-json.sh, curl, jq, xargs, yq]
+    run: [rss-json.sh, "{{base}}/feeds.opml", --optional-opml, "{{base}}/feeds.private.opml"]
+    timeout: 10m
+    fields:
+      id: .id
+      time: .time
+      title: .title
+      url: .url
+      visibility: .visibility
+    install: mise use -g yq@latest
+
   chromium-pages: # local browser-history metadata; disabled until the owner opts in
     enabled: false
     layer: events
     requires: [chromium-pages.sh, sqlite3, jq]
-    # One SQLite backup covers the requested span and includes live WAL state. The helper
+    # One SQLite online backup covers the requested span, including committed live-WAL rows. The helper
     # strips URL credentials, query strings, and fragments before any JSON reaches fkf.
     window: true
     run: [chromium-pages.sh, "{{start}}", "{{end}}"]
@@ -116,12 +192,13 @@ sources:
     enabled: false
     layer: events
     requires: [github-search-json.sh, gh, jq]
+    auth: [gh, auth, status]
     # One helper call covers the requested range. GitHub Search exposes at most 1,000 results
     # per query, so github-search-json.sh recursively splits a saturated half-open time window,
     # uses an inclusive end one second before each boundary, de-duplicates canonical URLs, and
     # fails if even a one-second slice saturates. A complete day can never look truncated.
     window: true
-    run: [github-search-json.sh, prs, author, "{{start}}", "{{end}}"]
+    run: [github-search-json.sh, prs, assignee, "{{start}}", "{{end}}"]
     # Issue and pull-request numbers are repository-scoped; the canonical URL is globally unique.
     # gh pr view accepts that URL directly, so {{id}} still fetches the body without parsing it.
     fields:
@@ -131,6 +208,7 @@ sources:
       url: .url
       repo: .repository.nameWithOwner
       repository: .repository_uri
+      owner: [".assignee_uris[]"]
       participant: [".participant_uris[]"]
     body: [gh, pr, view, "{{id}}", --repo, "{{repo}}", --json, "body,comments"] # argv, one record, on demand
     install: mise use -g gh@latest jq@latest
@@ -145,8 +223,9 @@ sources:
     enabled: false
     layer: events
     requires: [github-search-json.sh, gh, jq]
+    auth: [gh, auth, status]
     window: true # see github-pull-requests: the helper proves every range is complete
-    run: [github-search-json.sh, issues, author, "{{start}}", "{{end}}"]
+    run: [github-search-json.sh, issues, assignee, "{{start}}", "{{end}}"]
     # Issue numbers are repository-scoped; gh issue view accepts the globally unique URL.
     fields:
       id: .url
@@ -155,6 +234,7 @@ sources:
       url: .url
       repo: .repository.nameWithOwner
       repository: .repository_uri
+      owner: [".assignee_uris[]"]
       participant: [".participant_uris[]"]
     body: [gh, issue, view, "{{id}}", --repo, "{{repo}}", --json, "body,comments"]
     install: mise use -g gh@latest jq@latest
@@ -167,6 +247,7 @@ sources:
     enabled: false
     layer: events
     requires: [github-reviews-json.sh, gh, jq]
+    auth: [gh, auth, status]
     # Contributions are review events, not pull requests that merely match reviewed-by. The
     # helper follows at most 100 GraphQL pages, checks totalCount, and enforces the half-open window.
     window: true
@@ -191,6 +272,7 @@ sources:
     enabled: false
     layer: events
     requires: [github-list-json.sh, gh, jq]
+    auth: [gh, auth, status]
     format: ndjson
     # The helper follows Link rel=next within a finite ceiling, reapplies the exact half-open
     # updated_at window, and emits only reviewed notification and repository metadata.
@@ -208,45 +290,214 @@ sources:
     enabled: false
     layer: index # a point-in-time snapshot, refreshed on age rather than per day
     requires: [github-list-json.sh, gh, jq]
+    auth: [gh, auth, status]
     # The authenticated-user endpoint covers repositories you own, collaborate on, or can read
     # through an organization. The helper follows Link headers within a reviewed finite budget.
     format: ndjson
     run: [github-list-json.sh, user-repositories]
     fields:
       id: .nameWithOwner
+      title: .title
       url: .url
       repo: .nameWithOwner
       repository: .repository_uri
     install: mise use -g gh@latest jq@latest
 
+  github-commits:
+    enabled: false
+    layer: events
+    requires: [github-commits-json.sh, gh, jq]
+    auth: [gh, auth, status]
+    window: true
+    run: [github-commits-json.sh, "{{start}}", "{{end}}"]
+    timeout: 8m
+    fields:
+      id: .url
+      time: .commit.author.date
+      title: .commit.message
+      url: .url
+      repo: .repository.fullName
+      repository: .repository_uri
+      participant: [".participant_uris[]"]
+    retry:
+      attempts: 3
+      backoff: 30s
+      on: ["API rate limit exceeded", "secondary rate limit"]
+    install: mise use -g gh@latest jq@latest
+
+  github-events:
+    enabled: false
+    layer: events
+    requires: [github-events-json.sh, gh, jq]
+    auth: [gh, auth, status]
+    run: [github-events-json.sh, "{{start}}", "{{end}}"]
+    timeout: 5m
+    fields:
+      id: .id
+      time: .created_at
+      title: .title
+      repo: .repo
+      repository: .repository_uri
+      participant: [".participant_uris[]"]
+    install: mise use -g gh@latest jq@latest
+
+  github-runs:
+    enabled: false
+    layer: events
+    requires: [gh-runs.sh, github-generic-list-json.sh, gh, jq]
+    auth: [gh, auth, status]
+    window: true
+    # No owner argument means the authenticated user's owned repositories. Add explicit
+    # organizations locally when those calls and their larger timeout are intentional.
+    run: [gh-runs.sh, "{{start}}", "{{end}}"]
+    timeout: 10m
+    fields:
+      id: .url
+      time: .createdAt
+      title: .displayTitle
+      url: .url
+      repo: .repo
+      repository: .repository_uri
+    install: mise use -g gh@latest jq@latest
+
+  github-stars:
+    enabled: false
+    layer: index
+    requires: [github-stars-json.sh, github-generic-list-json.sh, gh, jq]
+    auth: [gh, auth, status]
+    format: ndjson
+    run: [github-stars-json.sh]
+    fields:
+      id: .full_name
+      title: .title
+      url: .url
+      repo: .full_name
+      repository: .repository_uri
+    install: mise use -g gh@latest jq@latest
+
+  github-gists:
+    enabled: false
+    layer: index
+    requires: [github-gists-json.sh, github-generic-list-json.sh, gh, jq]
+    auth: [gh, auth, status]
+    format: ndjson
+    run: [github-gists-json.sh]
+    fields:
+      id: .id
+      title: .description
+      url: .url
+    install: mise use -g gh@latest jq@latest
+
   # --- Google Workspace: the gws CLI owns the OAuth flow ----------------------------------
+
+  # A replaceable point-in-time agenda supplies today's brief without making an incomplete
+  # event day mutable. Historical calendar evidence remains in google-calendar-events.
+  google-calendar-agenda:
+    enabled: false
+    layer: index
+    requires: [gws-calendars-json.sh, gws-page-json.sh, gws, jq]
+    auth: [gws, auth, status]
+    run: [gws-calendars-json.sh, "{{start}}", "{{end}}", "{{date}}", "{{next_date}}"]
+    timeout: 5m
+    fields:
+      id: .uid
+      time: .at
+      title: .summary
+      url: .htmlLink
+      visibility: .visibility
+      participant: [".participant_uris[]"]
+      attachment: [".attachment_uris[]"]
+    install: mise use -g gws@latest jq@latest
 
   google-calendar-events:
     enabled: false
     layer: events
-    requires: [gws-calendar-json.sh, gws, jq]
+    requires: [gws-calendars-json.sh, gws-page-json.sh, gws, jq]
+    auth: [gws, auth, status]
     window: true
-    # Calendar timeMin filters event END rather than start. The helper removes spanning events,
-    # handles date-only all-day starts, and projects an allowlist with no description, location,
-    # conference credential, or attachment metadata.
-    run: [gws-calendar-json.sh, "{{start}}", "{{end}}", "{{date}}", "{{next_date}}"]
+    # Walk every visible calendar with finite, token-validated pagination, then filter event
+    # starts to the exact half-open window and project metadata only.
+    run: [gws-calendars-json.sh, "{{start}}", "{{end}}", "{{date}}", "{{next_date}}"]
+    timeout: 5m
     fields:
-      id: .id
+      id: .uid
       time: .at
       title: .summary
       url: .htmlLink
+      visibility: .visibility
       participant: [".participant_uris[]"]
+      attachment: [".attachment_uris[]"]
+    install: mise use -g gws@latest jq@latest
+
+  meeting-notes:
+    enabled: false
+    layer: events
+    requires: [gws-meeting-notes-json.sh, gws-calendars-json.sh, gws-page-json.sh, gws-doc-text.sh, gws, jq]
+    auth: [gws, auth, status]
+    window: true
+    # Enable and sync google-calendar-events too. The helper refuses a matched note until the
+    # calendar record it links is durable, so timeline never depends on an ephemeral live join.
+    # Replace the sentinel with the stable prefix used for owner-authored notes. Gemini's
+    # conventional " - Notes by Gemini" suffix is always included as the other branch.
+    run: [
+      gws-meeting-notes-json.sh,
+      "{{start}}",
+      "{{end}}",
+      "{{date}}",
+      "{{next_date}}",
+      REPLACE_WITH_MEETING_PREFIX,
+      "{{base}}",
+    ]
+    body: [gws-doc-text.sh, "{{id}}"]
+    bodies: sync
+    timeout: 10m
+    fields:
+      id: .id
+      time: .at
+      title: .title
+      modified: .modified
+      url: .url
+      owner: [".owner_uris[]"]
+      attachment: [".attachment_uris[]"]
+      meeting: [".meeting_uris[]"]
+    install: mise use -g gws@latest jq@latest
+
+  google-calendars:
+    enabled: false
+    layer: index
+    requires: [gws-page-json.sh, gws, jq]
+    auth: [gws, auth, status]
+    format: ndjson
+    records: .items
+    run: [
+      gws-page-json.sh,
+      items,
+      gws,
+      calendar,
+      calendarList,
+      list,
+      --params,
+      '{"maxResults":250,"fields":"nextPageToken,items(id,summary,description,location,timeZone,accessRole,primary,selected,hidden,colorId,backgroundColor,foregroundColor)"}',
+      --page-all,
+      --page-limit,
+      "100",
+    ]
+    fields:
+      id: .id
+      title: .summary
     install: mise use -g gws@latest jq@latest
 
   google-gmail-emails: # metadata only by default; the body is lazy, and jq reshapes before fkf sees it
     enabled: false
     layer: events
     requires: [gmail-json.sh, gws, jq]
+    auth: [gws, auth, status]
     format: ndjson
     # The helper converts exact RFC3339 bounds to epoch seconds, widens Gmail's exclusive
     # after: operator by one second, then filters internalDate to the exact half-open window.
     # Fallible stages are separate, so no provider/conversion failure disappears in a pipeline.
     run: [gmail-json.sh, "{{start}}", "{{end}}"] # script written into bin/ by init
+    timeout: 15m
     # from_entries, not `.headers[]|select(...)`: constructing an object from an EMPTY stream
     # yields no object at all, so every message with no Subject — bounces, most automated
     # notifications, many invites — silently vanished with no error and no count to notice.
@@ -264,6 +515,7 @@ sources:
     enabled: false
     layer: index # spaces list has no time window, so this is one current snapshot
     requires: [gws-page-json.sh, gws, jq]
+    auth: [gws, auth, status]
     format: ndjson
     records: .spaces
     run: [
@@ -282,18 +534,35 @@ sources:
     fields:
       id: .name
       time: .lastActiveTime
-      title: .displayName
+      title: .name
       url: .spaceUri
+    install: mise use -g gws@latest jq@latest
+
+  google-chat-messages:
+    enabled: false
+    layer: events
+    requires: [gws-chat-messages.sh, gws-chat-message-body.sh, gws-page-json.sh, gws, jq]
+    auth: [gws, auth, status]
+    window: true
+    run: [gws-chat-messages.sh, "{{start}}", "{{end}}"]
+    timeout: 10m
+    fields:
+      id: .name
+      time: .createTime
+      title: .title
+    body: [gws-chat-message-body.sh, "{{id}}"]
     install: mise use -g gws@latest jq@latest
 
   google-tasks-items:
     enabled: false
     layer: events
     requires: [gws-tasks.sh, gws-page-json.sh, gws, jq]
+    auth: [gws, auth, status]
     # One helper walks every task list, proves each finite token chain, and applies the missing
     # upper time bound before emitting a globally unique list-and-task identity.
     window: true
     run: [gws-tasks.sh, "{{start}}", "{{end}}"]
+    timeout: 5m
     fields:
       id: .uid
       time: .updated
@@ -309,6 +578,7 @@ sources:
     enabled: false
     layer: index
     requires: [gws-page-json.sh, gws, jq]
+    auth: [gws, auth, status]
     format: ndjson
     records: .files
     run: [
@@ -333,10 +603,65 @@ sources:
       participant: [".owners[].uri"]
     install: mise use -g gws@latest jq@latest
 
+  google-docs:
+    enabled: false
+    layer: index
+    requires: [gws-page-json.sh, gws, jq]
+    auth: [gws, auth, status]
+    format: ndjson
+    records: .files
+    run: [
+      gws-page-json.sh,
+      files,
+      gws,
+      drive,
+      files,
+      list,
+      --params,
+      '{"q":"mimeType=''application/vnd.google-apps.document'' and trashed=false","pageSize":1000,"orderBy":"modifiedTime desc","fields":"nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,shared,trashed,owners(emailAddress,displayName))"}',
+      --page-all,
+      --page-limit,
+      "100",
+    ]
+    fields:
+      id: .id
+      title: .name
+      url: .webViewLink
+      participant: [".owners[].uri"]
+    install: mise use -g gws@latest jq@latest
+
+  google-meet-calls:
+    enabled: false
+    layer: events
+    requires: [gws-page-json.sh, gws, jq]
+    auth: [gws, auth, status]
+    format: ndjson
+    records: .conferenceRecords
+    window: true
+    run: [
+      gws-page-json.sh,
+      conferenceRecords,
+      gws,
+      meet,
+      conferenceRecords,
+      list,
+      --params,
+      '{"filter":"start_time>=\"{{start}}\" AND start_time<\"{{end}}\"","pageSize":1000,"fields":"nextPageToken,conferenceRecords(name,startTime,endTime,expireTime,space)"}',
+      --page-all,
+      --page-limit,
+      "100",
+    ]
+    fields:
+      id: .name
+      time: .startTime
+      title: .space
+    install: mise use -g gws@latest jq@latest
+
   google-contacts-people:
     enabled: false
     layer: index
     requires: [gws-page-json.sh, gws, jq]
+    auth: [gws, auth, status]
     format: ndjson
     records: .connections
     run: [
@@ -364,7 +689,8 @@ sources:
   gcloud-audit-logs:
     enabled: false
     layer: events
-    requires: [gcloud-audit-json.sh, gcloud, jq]
+    requires: [gcloud-auth-ready.sh, gcloud-audit-json.sh, gcloud, jq]
+    auth: [gcloud-auth-ready.sh]
     # Scope is the active project only. One overflow record distinguishes a complete bounded
     # day from silent provider truncation; request and response bodies never enter the output.
     run: [gcloud-audit-json.sh, "{{start}}", "{{end}}"]
@@ -378,7 +704,8 @@ sources:
   gcloud-projects:
     enabled: false
     layer: index
-    requires: [gcloud-projects-json.sh, gcloud, jq]
+    requires: [gcloud-auth-ready.sh, gcloud-projects-json.sh, gcloud, jq]
+    auth: [gcloud-auth-ready.sh]
     # Limit-plus-one makes an account beyond the reviewed 10,000-project envelope fail rather
     # than publish a complete-looking truncated snapshot.
     run: [gcloud-projects-json.sh]
@@ -386,3 +713,68 @@ sources:
       id: .projectId
       title: .name
     install: mise use -g gcloud@latest jq@latest
+
+  # --- Data and model platforms: each provider CLI owns authentication -------------------
+
+  kaggle-competitions:
+    enabled: false
+    layer: index
+    requires: [kaggle-competitions-json.sh, kaggle-json.sh, kaggle, jq]
+    auth: [kaggle, config, view]
+    run: [kaggle-competitions-json.sh]
+    timeout: 5m
+    fields:
+      id: .ref
+      title: .ref
+    install: mise use -g pipx:kaggle@latest
+
+  kaggle-datasets:
+    enabled: false
+    layer: index
+    requires: [kaggle-datasets-json.sh, kaggle-json.sh, kaggle, jq]
+    auth: [kaggle, config, view]
+    run: [kaggle-datasets-json.sh]
+    timeout: 5m
+    fields:
+      id: .ref
+      title: .title
+    install: mise use -g pipx:kaggle@latest
+
+  kaggle-kernels:
+    enabled: false
+    layer: index
+    requires: [kaggle-kernels-json.sh, kaggle]
+    auth: [kaggle, config, view]
+    run: [kaggle-kernels-json.sh]
+    timeout: 10m
+    fields:
+      id: .id
+      title: .title
+    install: mise use -g pipx:kaggle@latest
+
+  kaggle-models:
+    enabled: false
+    layer: index
+    requires: [kaggle-models-json.sh, kaggle, jq]
+    auth: [kaggle, config, view]
+    # Kaggle exposes no reviewed account-discovery command here; replace this explicit owner.
+    run: [kaggle-models-json.sh, REPLACE_WITH_OWNER]
+    timeout: 5m
+    fields:
+      id: .id
+      title: .title
+    install: mise use -g pipx:kaggle@latest
+
+  huggingface-repositories:
+    enabled: false
+    layer: index
+    requires: [huggingface-repositories-json.sh, hf]
+    auth: [hf, auth, whoami]
+    run: [huggingface-repositories-json.sh]
+    timeout: 5m
+    fields:
+      id: .uid
+      title: .id
+      url: .url
+      visibility: .visibility
+    install: mise use -g hf@latest

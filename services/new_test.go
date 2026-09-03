@@ -147,9 +147,9 @@ func TestCreateNewProjectEncodesFrontmatterScalars(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := services.ReadPage(base, result.URI)
+	page, err := services.ReadPageContext(t.Context(), base, result.URI)
 	if err != nil {
-		t.Fatalf("ReadPage() error = %v, generated frontmatter must parse", err)
+		t.Fatalf("ReadPageContext() error = %v, generated frontmatter must parse", err)
 	}
 	if page.Title != title {
 		t.Fatalf("title = %q, want %q", page.Title, title)
@@ -176,7 +176,7 @@ func TestCreateNewPageHeadingFragmentRoundTripsAfterLiteralEncoding(t *testing.T
 		t.Fatal(err)
 	}
 	const anchor = "fix-fk-412-northports-launch"
-	page, err := services.ReadPage(base, result.URI)
+	page, err := services.ReadPageContext(t.Context(), base, result.URI)
 	if err != nil {
 		t.Fatal(err)
 	}

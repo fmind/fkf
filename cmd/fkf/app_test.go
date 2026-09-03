@@ -137,19 +137,19 @@ sources:
     layer: index
     run: [printf, "[]"]
     test: [active-check.sh, "{{base}}"]
-    fields: {id: .id}
+    fields: {id: .id, title: .id}
   dormant:
     enabled: false
     layer: index
     run: [printf, "[]"]
     test: [dormant-check.sh]
-    fields: {id: .id}
+    fields: {id: .id, title: .id}
   slow:
     enabled: false
     layer: index
     run: [printf, "[]"]
     test: [slow-check.sh]
-    fields: {id: .id}
+    fields: {id: .id, title: .id}
 `
 	if err := os.WriteFile(filepath.Join(root, core.ConfigFileName), []byte(config), core.BaseFileMode); err != nil {
 		t.Fatal(err)
@@ -213,12 +213,12 @@ func TestCLIWriterLockExcludesMutationsButNeverReaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config = []byte(strings.Replace(string(config), "sources: {}", `sources:
+	config = []byte(strings.Replace(string(config), "sources:\n", `sources:
   synthetic-cli:
     enabled: true
     layer: events
     run: [printf, "[]"]
-    fields: {id: .id, time: .time}
+    fields: {id: .id, time: .time, title: .id}
 `, 1))
 	if err := os.WriteFile(configPath, config, core.BaseFileMode); err != nil {
 		t.Fatal(err)
@@ -409,6 +409,7 @@ sources:
     fields:
       id: .id
       time: .time
+      title: .id
 `))
 	if err := core.WriteFileAtomicMode(filepath.Join(want, core.ConfigFileName), config, core.BaseFileMode); err != nil {
 		t.Fatalf("write synthetic config: %v", err)
@@ -449,8 +450,9 @@ func TestCommandTableIsTheDocumentedSurface(t *testing.T) {
 		}
 	}
 	want := []string{
-		"context", "find", "read", "graph", "list", "validate", "tags",
-		"init", "trust", "test", "sync", "status", "build", "new", "config", "mcp", "upgrade",
+		"context", "brief", "day", "timeline", "who", "find", "read", "graph", "list", "validate", "tags", "eval",
+		"init", "trust", "test", "sync", "status", "build", "new", "config", "mcp", "harness", "schedule", "upgrade",
+		"learn",
 	}
 	slices.Sort(names)
 	slices.Sort(want)
@@ -464,6 +466,16 @@ func TestCommandTableIsTheDocumentedSurface(t *testing.T) {
 			t.Fatalf("alias %q is claimed by both %s and something else", alias, previous)
 		}
 		seen[alias] = alias
+	}
+}
+
+func TestHelpAliasIsNotShadowedByACommand(t *testing.T) {
+	got := invoke(t, "h")
+	if got.code != ExitSuccess {
+		t.Fatalf("help alias exited %d: %s%s", got.code, got.stdout, got.stderr)
+	}
+	if !strings.Contains(got.stdout, "COMMANDS:") || strings.Contains(got.stdout, "fkf harness") {
+		t.Fatalf("help alias output = %q, want root help", got.stdout)
 	}
 }
 
@@ -495,10 +507,10 @@ func TestEveryWindowFlagAdvertisesTheSharedGrammar(t *testing.T) {
 }
 
 // The alias convention is stated in the root help, so it has to hold: one letter, the command's
-// own first letter, and the five that lost a collision are typed in full.
+// own first letter, while collisions with another command or built-in help are typed in full.
 func TestAliasesAreTheFirstLetterOrNothing(t *testing.T) {
 	app := newApp(&bytes.Buffer{}, &bytes.Buffer{})
-	spelled := []string{"init", "trust", "test", "status", "config"}
+	spelled := []string{"brief", "harness", "init", "trust", "test", "timeline", "status", "schedule", "config", "learn"}
 	for _, command := range app.Commands {
 		if slices.Contains(spelled, command.Name) {
 			if len(command.Aliases) != 0 {
@@ -521,7 +533,9 @@ func TestLayerCommandsShareOneVocabulary(t *testing.T) {
 		"read": "r", "search": "s", "tags": "t", "validate": "v",
 		"nodes": "n", "build": "b", "serve": "s", "instructions": "i", "schema": "s",
 		"helpers": "h", "learned": "l", "task": "t", "project": "p", "graph": "g",
-		"helper": "h",
+		"helper":  "h",
+		"records": "r", "propose": "p", "review": "v", "apply": "a", "reject": "r",
+		"list": "l", "print": "p", "install": "i", "status": "s", "remove": "r",
 	}
 	for _, command := range app.Commands {
 		if command.Action == nil && command.Name != "mcp" && command.Name != "new" && command.Name != "list" {
@@ -679,7 +693,7 @@ func TestSyncDryRunNeedsNoTrustAndRunsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := "sources:\n  synthetic:\n    enabled: true\n    layer: events\n" +
-		"    run: [printf, \"[]\"]\n    fields:\n      id: .id\n      time: .t\n"
+		"    run: [printf, \"[]\"]\n    fields:\n      id: .id\n      time: .t\n      title: .id\n"
 	if err := os.WriteFile(config, []byte(strings.Replace(string(data), "sources: {}", source, 1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -707,23 +721,38 @@ func TestSyncDryRunNeedsNoTrustAndRunsNothing(t *testing.T) {
 	}
 }
 
-func TestMCPServeRequiresItsOwnBaseFlag(t *testing.T) {
+func TestMCPServeRequiresAnExplicitRootBaseWithoutDuplicatingTheFlag(t *testing.T) {
 	root := demoBase(t)
-	// The flag is required on purpose: an MCP launch line must always say which base it exposes,
-	// so it cannot silently follow FKF_BASE or the working directory.
+	// The launch line must name its base, but `--base` is still the root contract: callers may
+	// put it before the command and leaf help must not publish a duplicate local spelling.
 	t.Setenv("FKF_BASE", root)
 	if got := invoke(t, "mcp", "serve"); got.code != ExitInvalidUsage {
 		t.Fatalf("exit = %d, want --base demanded even with the environment set", got.code)
 	}
-	command := newApp(&bytes.Buffer{}, &bytes.Buffer{}).Command("mcp").Command("serve")
-	found := false
-	for _, flag := range command.Flags {
-		if base, ok := flag.(*cli.StringFlag); ok && base.Name == "base" {
-			found = base.Required && base.Local
+	missing := filepath.Join(t.TempDir(), "missing")
+	for _, args := range [][]string{
+		{"--base", missing, "mcp", "serve"},
+		{"mcp", "serve", "--base", missing},
+	} {
+		got := invoke(t, args...)
+		if got.code == ExitInvalidUsage && strings.Contains(got.stderr, "--base is required") {
+			t.Fatalf("args %v refused the root flag position: %s", args, got.stderr)
 		}
 	}
-	if !found {
-		t.Fatal("mcp serve must declare its own required, local --base flag")
+	command := newApp(&bytes.Buffer{}, &bytes.Buffer{}).Command("mcp").Command("serve")
+	for _, flag := range command.Flags {
+		if base, ok := flag.(*cli.StringFlag); ok && base.Name == "base" {
+			t.Fatalf("mcp serve publishes a duplicate local base flag: %+v", base)
+		}
+	}
+	help := invoke(t, "mcp", "serve", "--help")
+	if help.code != ExitSuccess || strings.Count(help.stdout, "\n   --base ") != 1 {
+		t.Fatalf("mcp serve help = %q (exit %d), want exactly one inherited --base", help.stdout, help.code)
+	}
+	for _, tool := range []string{"context", "find", "day", "timeline", "list", "read", "graph"} {
+		if !strings.Contains(help.stdout, tool) {
+			t.Fatalf("mcp serve help omits registered tool %q: %q", tool, help.stdout)
+		}
 	}
 }
 
@@ -771,6 +800,18 @@ func TestExecutionBoundaryHelpIsComplete(t *testing.T) {
 			t.Fatalf("sync usage = %q, want boundary marker %q", syncCommand.Usage, marker)
 		}
 	}
+	statusCommand := app.Command("status")
+	liveBoundaryDocumented := false
+	for _, flag := range statusCommand.Flags {
+		live, ok := flag.(*cli.BoolFlag)
+		if ok && live.Name == "live" && strings.Contains(live.Usage, markRun) {
+			liveBoundaryDocumented = true
+			break
+		}
+	}
+	if !liveBoundaryDocumented {
+		t.Fatal("status has no --live flag with an execution-boundary marker")
+	}
 
 	trustCommand := app.Command("trust")
 	for _, term := range []string{"run:", "test:", "body:", "policy", "bin:", "helper"} {
@@ -791,6 +832,47 @@ func TestExecutionBoundaryHelpIsComplete(t *testing.T) {
 		return
 	}
 	t.Fatal("trust command has no --all flag")
+}
+
+func TestStatusRunsDeclaredAuthOnlyWithLive(t *testing.T) {
+	isolate(t)
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, core.BaseBinDir), core.BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "auth-ran")
+	script := filepath.Join(root, core.BaseBinDir, "auth-probe.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nset -eu\n: > \"$1\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := cliTestContract + `name: status-live
+layers: {events: true}
+sources:
+  guarded:
+    enabled: true
+    layer: events
+    auth: [auth-probe.sh, "` + marker + `"]
+    run: [printf, "[]"]
+    fields: {id: .id, time: .time, title: .title}
+`
+	if err := os.WriteFile(filepath.Join(root, core.ConfigFileName), []byte(config), core.BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if got := invoke(t, "--base", root, "trust"); got.code != ExitSuccess {
+		t.Fatalf("trust exited %d: %s%s", got.code, got.stdout, got.stderr)
+	}
+	if got := invoke(t, "--base", root, "status"); got.code != ExitSuccess {
+		t.Fatalf("offline status exited %d: %s%s", got.code, got.stdout, got.stderr)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("offline status executed the declared auth probe: %v", err)
+	}
+	if got := invoke(t, "--base", root, "status", "--live"); got.code != ExitSuccess {
+		t.Fatalf("live status exited %d: %s%s", got.code, got.stdout, got.stderr)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("status --live did not execute the declared auth probe: %v", err)
+	}
 }
 
 func TestReadResolvesFromInsideTheBase(t *testing.T) {
@@ -850,8 +932,8 @@ func TestTrustListsWhatAppliesToEveryCommand(t *testing.T) {
 	config := "name: t\nlayers: {events: true, index: true, tasks: true, projects: true, wiki: true}\n" +
 		"sync: {days: 7, index_max_age_hours: 24, timeout: 1s, concurrency: 2}\n" +
 		"bin:\n  - " + toolDir + "\n" +
-		"sources:\n  s:\n    enabled: true\n    layer: events\n    run: [echo, \"[]\"]\n    fields:\n      id: .id\n      time: .time\n" +
-		"  dormant:\n    enabled: false\n    layer: events\n    run: [dormant, --json]\n    fields:\n      id: .id\n      time: .time\n"
+		"sources:\n  s:\n    enabled: true\n    layer: events\n    run: [echo, \"[]\"]\n    fields:\n      id: .id\n      time: .time\n      title: .id\n" +
+		"  dormant:\n    enabled: false\n    layer: events\n    run: [dormant, --json]\n    fields:\n      id: .id\n      time: .time\n      title: .id\n"
 	if err := os.WriteFile(filepath.Join(root, "fkf.yaml"), []byte(withCLITestContract(config)), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -899,6 +981,61 @@ func TestGraphTakesTheURIItself(t *testing.T) {
 		got := invoke(t, args...)
 		if got.code != ExitInvalidUsage || !strings.Contains(got.stderr, "choose one of --in, --out, or --both") {
 			t.Fatalf("graph direction flags %v exited %d: %s%s", flags, got.code, got.stdout, got.stderr)
+		}
+	}
+}
+
+func TestGraphVerifyIsBareReadOnlyAndRejectsWalkArguments(t *testing.T) {
+	root := demoBase(t)
+	artifacts := []string{core.GraphFile, core.GraphDstFile, core.GraphOffsetsFile, core.GraphMetaFile}
+	type snapshot struct {
+		data  []byte
+		mtime time.Time
+	}
+	before := make(map[string]snapshot, len(artifacts))
+	for _, name := range artifacts {
+		path := filepath.Join(root, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = snapshot{data: data, mtime: info.ModTime()}
+	}
+
+	verified := invoke(t, "--base", root, "--format", "json", "graph", "--verify")
+	if verified.code != ExitSuccess || !strings.Contains(verified.stdout, core.GraphFile) {
+		t.Fatalf("graph --verify exited %d: %s%s", verified.code, verified.stdout, verified.stderr)
+	}
+	for _, name := range artifacts {
+		path := filepath.Join(root, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(data, before[name].data) || !info.ModTime().Equal(before[name].mtime) {
+			t.Errorf("graph --verify modified %s", name)
+		}
+	}
+
+	for _, arguments := range [][]string{
+		{"--verify", "ticket:FK-412"},
+		{"--verify", "--in"},
+		{"--verify", "--depth", "2"},
+		{"--verify", "--kind", "tag"},
+		{"--verify", "--limit", "1"},
+		{"--verify", "nodes"},
+	} {
+		got := invoke(t, append([]string{"--base", root, "graph"}, arguments...)...)
+		if got.code != ExitInvalidUsage {
+			t.Errorf("graph %v exited %d, want %d: %s%s", arguments, got.code, ExitInvalidUsage, got.stdout, got.stderr)
 		}
 	}
 }
@@ -1136,9 +1273,9 @@ func TestReTrustShowsTheSmallestCompleteExecutionDiff(t *testing.T) {
 		t.Fatalf("init exited %d: %s%s", got.code, got.stdout, got.stderr)
 	}
 	header := "name: t\nlayers: {events: true, index: true, tasks: true, projects: true, wiki: true}\n"
-	quiet := "sources:\n  quiet:\n    enabled: true\n    layer: events\n    run: [echo, \"[]\"]\n    fields:\n      id: .id\n      time: .time\n    timeout: 30s\n"
+	quiet := "sources:\n  quiet:\n    enabled: true\n    layer: events\n    run: [echo, \"[]\"]\n    fields:\n      id: .id\n      time: .time\n      title: .id\n    timeout: 30s\n"
 	loud := func(run string) string {
-		return "  loud:\n    enabled: true\n    layer: events\n    run: [" + run + "]\n    fields:\n      id: .id\n      time: .time\n"
+		return "  loud:\n    enabled: true\n    layer: events\n    run: [" + run + "]\n    fields:\n      id: .id\n      time: .time\n      title: .id\n"
 	}
 	write := func(body string) {
 		if err := os.WriteFile(filepath.Join(root, "fkf.yaml"), []byte(withCLITestContract(body)), 0o600); err != nil {
@@ -1181,7 +1318,7 @@ func TestReTrustKeepsAScriptOnlyChangeConcise(t *testing.T) {
 		t.Fatalf("init exited %d: %s%s", got.code, got.stdout, got.stderr)
 	}
 	config := "name: t\nlayers: {events: true, index: true, tasks: true, projects: true, wiki: true}\n" +
-		"sources:\n  quiet:\n    enabled: true\n    layer: events\n    run: [echo, \"[]\"]\n    fields:\n      id: .id\n      time: .time\n"
+		"sources:\n  quiet:\n    enabled: true\n    layer: events\n    run: [echo, \"[]\"]\n    fields:\n      id: .id\n      time: .time\n      title: .id\n"
 	if err := os.WriteFile(filepath.Join(root, "fkf.yaml"), []byte(withCLITestContract(config)), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1240,7 +1377,7 @@ func TestReTrustKeepsASourceTestOnlyChangeConcise(t *testing.T) {
 	}
 	config := "name: t\nlayers: {events: true, index: true, tasks: true, projects: true, wiki: true}\n" +
 		"sources:\n  quiet:\n    enabled: true\n    layer: events\n    run: [echo, \"[]\"]\n" +
-		"    test: [source-check.sh]\n    fields:\n      id: .id\n      time: .time\n"
+		"    test: [source-check.sh]\n    fields:\n      id: .id\n      time: .time\n      title: .id\n"
 	if err := os.WriteFile(filepath.Join(root, core.ConfigFileName), []byte(withCLITestContract(config)), core.BaseFileMode); err != nil {
 		t.Fatal(err)
 	}
@@ -1290,16 +1427,29 @@ func TestSourceTestCommandKeepsAnEmptySelectionSuccessful(t *testing.T) {
 
 func TestBuildAndNewCommands(t *testing.T) {
 	root := demoBase(t)
+	assertGraphCurrent := func(after string) {
+		t.Helper()
+		got := invoke(t, "--base", root, "graph")
+		if got.code != ExitSuccess {
+			t.Fatalf("graph after %s exited %d: %s%s", after, got.code, got.stdout, got.stderr)
+		}
+	}
 
 	// Test new subcommands
 	if got := invoke(t, "--base", root, "new", "task", "feature-x", "--title", "Feature X"); got.code != ExitSuccess {
 		t.Fatalf("new task exited %d: %s%s", got.code, got.stdout, got.stderr)
 	}
+	assertGraphCurrent("new task")
 	if got := invoke(t, "--base", root, "new", "project", "proj-y", "--title", "Project Y", "--tag", "core"); got.code != ExitSuccess {
 		t.Fatalf("new project exited %d: %s%s", got.code, got.stdout, got.stderr)
 	}
+	assertGraphCurrent("new project")
 	if got := invoke(t, "--base", root, "new", "wiki", "concept-z", "--type", "decision", "--title", "Concept Z", "--tag", "arch"); got.code != ExitSuccess {
 		t.Fatalf("new wiki exited %d: %s%s", got.code, got.stdout, got.stderr)
+	}
+	assertGraphCurrent("new wiki")
+	if got := invoke(t, "--base", root, "build", "wiki", "--check"); got.code != ExitSuccess {
+		t.Fatalf("wiki check after new wiki exited %d: %s%s", got.code, got.stdout, got.stderr)
 	}
 	got := invoke(t, "--format", "text", "--base", root, "new", "helper", "collect-prs.sh")
 	if got.code != ExitSuccess {

@@ -8,7 +8,7 @@ It is one binary with no account, daemon, database, telemetry, or credential sto
 
 ## Try it on your GitHub pull requests
 
-Start with one real source. The personal preset includes a reviewed GitHub Search helper; enable `github-pull-requests` in the generated `fkf.yaml`, then collect your recently updated pull requests:
+Start with one real source. The personal preset includes a reviewed GitHub Search helper; enable `github-pull-requests` in the generated `fkf.yaml`, then collect recently updated pull requests assigned to you:
 
 ```bash
 gh auth status
@@ -39,7 +39,11 @@ tasks/                 agent session traces and learned items
 projects/              active, paused, or completed efforts
 wiki/                  reusable decisions, patterns, tools, and insights
 graph.tsv              rebuildable relation cache at the base root
+graph.dst.tsv          destination-sorted graph twin
+graph.offsets.tsv      byte ranges used by graph walks
 graph.meta.json        integrity metadata for that exact graph generation
+graph.generation.json  atomic publication state for the graph generation
+index/.fkf-index.*     ignored, rebuildable lexical candidate cache
 ```
 
 This differs from a live connector: FKF preserves history, works offline, and can join local activity with provider metadata. When a coding harness sends a selected context pack to a model, that slice is governed by the harness or model provider's data policy.
@@ -91,7 +95,7 @@ fkf init ~/brain --preset personal
 fkf status --base ~/brain
 ```
 
-Initialization creates the five layers, `fkf.yaml`, managed git rules, helpers required by initially enabled sources under `bin/`, and two agent skills under `.agents/skills/`. It neither contacts a provider nor asks for a token. The default enabled sources read local git and coding-agent metadata; provider, browser, mail, and shell-history sources remain disabled until you enable them.
+Initialization creates the five layers, `fkf.yaml`, managed git rules, helpers required by initially enabled sources under `bin/`, and three agent skills under `.agents/skills/`. It neither contacts a provider nor asks for a token. The default enabled sources read local git and coding-agent metadata; provider, browser, mail, and shell-history sources remain disabled until you enable them.
 
 The usual first collection is:
 
@@ -108,7 +112,9 @@ Set `FKF_BASE=~/brain` or run commands from inside the base to omit `--base`. `f
 
 After enabling a preset source, `fkf config helpers --refresh` installs any newly required official helper without touching custom scripts. `fkf init` refreshes FKF-owned skills and managed blocks when rerun. It preserves your configuration, `AGENTS.md`, custom skills, and existing Claude bridges.
 
-The copied `fkf-use` skill teaches agents how to retrieve and collect safely. `fkf-learn` turns verified task-trace findings into a dated log or, with your approval, durable wiki and project pages. An MCP connection does not train the model or preload the whole base: it gives the agent bounded `context`, `find`, `list`, `read`, and `graph` tools plus instructions for using them. Ask the agent to consult FKF when a task needs prior work context, or add the session-start hook when every session should receive one compact repository-aware pack automatically.
+The copied `fkf-use` skill teaches agents how to retrieve and collect safely. `fkf-learn` stages verified task-trace findings as unified diffs under `.agents/tmp/learn/`; `fkf learn review <id> --diff` makes approval exact, and only `fkf learn apply <id>` validates, writes, and rebuilds durable wiki or project knowledge. `daily-brief` narrates the deterministic `fkf brief` report instead of rebuilding it from ad hoc searches. An MCP connection does not train the model or preload the whole base: it gives the agent bounded `context`, `find`, `day`, `timeline`, `list`, `read`, and `graph` tools plus instructions for using them. Ask the agent to consult FKF when a task needs prior work context, or add the session-start hook when every session should receive one compact repository-aware pack automatically.
+
+For the daily loop, `fkf brief` combines yesterday's digest, today's calendar, assigned open work, failing CI, due tasks, stale or login-blocked sources, unharvested learnings, and active projects under one text-and-JSON budget. On a trusted base it runs each enabled source's bounded `auth:` probe so login gaps are current; it never collects evidence or fetches a body. A repeated `fkf context "<query>" --since-receipt <input_digest>` returns only records and pages new or changed since that machine-local receipt snapshot.
 
 ## Define a source
 
@@ -132,6 +138,10 @@ schema:
     description: Repository associated with the record.
     cardinality: optional
     relation: true
+  owner:
+    description: Person or account assigned to the record.
+    cardinality: many
+    relation: true
 
 sources:
   github-pull-requests:
@@ -139,13 +149,14 @@ sources:
     layer: events
     requires: [github-search-json.sh, gh, jq]
     window: true
-    run: [github-search-json.sh, prs, author, "{{start}}", "{{end}}"]
+    run: [github-search-json.sh, prs, assignee, "{{start}}", "{{end}}"]
     fields:
       id: .url
       time: .updatedAt
       title: .title
       repo: .repository.nameWithOwner
       repository: .repository_uri
+      owner: [".assignee_uris[]"]
     body: [gh, pr, view, "{{id}}", --repo, "{{repo}}", --json, "body,comments"]
 ```
 
@@ -184,7 +195,7 @@ fkf list projects --status active
 fkf validate --strict
 ```
 
-Terminal output is human-readable. Piped or redirected output defaults to JSON; use `--format jsonl` for streams.
+Terminal output is human-readable. Piped or redirected output defaults to JSON; use `--format jsonl` for compact streams. A context pack stays one complete JSONL record so its receipt and exact budget accounting remain attached.
 
 File URIs use `<path>[?jq=<expr>][#<record-or-heading>]`. Entity URIs use any non-reserved lowercase `<scheme>:<identity>`. A fragment must name an existing record or Markdown heading. `fkf read` resolves either form, and `fkf graph` walks declared relationships.
 
@@ -194,9 +205,9 @@ For coding agents, start the read-only MCP server:
 fkf mcp serve --base ~/brain
 ```
 
-It exposes `context`, `find`, `list`, `read`, and `graph`; it cannot write, run a shell, or fetch record bodies. `fkf init` also installs `bin/fkf-hook.sh`, which can load repository-specific context at session start. Client setup is in the [harness guide](https://fmind.github.io/fkf/docs/harnesses/).
+It exposes `context`, `find`, `day`, `timeline`, `list`, `read`, and `graph`; it cannot write, run a shell, or fetch record bodies. `fkf init` also installs `bin/fkf-hook.sh`, which can load repository-specific context at session start. Client setup is in the [harness guide](https://fmind.github.io/fkf/docs/harnesses/).
 
-Running `fkf sync` repeatedly is safe. Existing event documents and still-fresh index snapshots are skipped; due index snapshots and the derived graph are refreshed. Only `--force` deliberately re-collects and atomically replaces an existing document. A failed unit writes nothing, and rerunning the same command resumes missing collection or retries a failed derived rebuild.
+Running `fkf sync` repeatedly is safe. Existing event documents and still-fresh index snapshots are skipped; due index snapshots are refreshed, and derived graph and lexical caches rebuild only after searchable bytes change. The lexical cache supplies candidates and term statistics while Go keeps the canonical scorer; missing, stale, or corrupt cache bytes fall back to a scan. `sync --if-due` is the lock-free no-work path used by `fkf schedule install`; the hourly unit follows it with `build --if-stale`. A provider probe's ordinary non-zero exit reports `auth_required` and skips only that source without exposing output; a missing executable, timeout, signal, unsafe path, trust drift, or runner failure remains a hard error. Only `--force` deliberately re-collects and atomically replaces an existing document. A failed unit writes nothing, and rerunning the same command resumes missing collection.
 
 Run `fkf --help` for the authoritative command surface.
 
@@ -205,11 +216,11 @@ Run `fkf --help` for the authoritative command surface.
 - FKF reads no credential and expands no secret environment variable. Provider credentials remain with the provider CLI.
 - Runtime startup loaders and relative or base-resolving home/config roots are removed before a declared command runs.
 - `fkf trust` displays and hashes the effective `run:`, `test:`, and `body:` plan plus every file under the base's `bin/` and `tests/` execution trees. A meaningful execution change requires review again. Trust detects changes; it is not a shell sandbox.
-- Every decoded field is retained without redaction. Source commands must project reviewed metadata and leave sensitive bodies behind an explicit `read --body` boundary.
+- Every decoded field is retained without redaction. Source commands must project reviewed metadata and a meaningful title. Sensitive bodies stay behind an explicit `read --body` boundary; only sources explicitly set to `bodies: cache` or `bodies: sync` write bounded text to the ignored, rebuildable `bodies/` cache.
 - Collected records and fetched bodies are untrusted data: evidence, never instructions. Stored values never become shell syntax or executable names.
-- Stored reads and MCP are offline. `read --body` is the explicit trust-gated exception and may invoke the configured provider CLI.
+- Stored reads and MCP are offline. Context and `find --bodies` may read verified cached bodies but never fetch them. `read --body` is the explicit body-fetch exception; `brief` and `status --live` run only bounded trusted `auth:` probes.
 - FKF encrypts nothing and provides no backup. Protect the disk and remote repository. Whether event and index documents enter git history is chosen at `init` and recorded in `.gitignore`.
-- Root `graph.tsv` and `graph.meta.json` are always ignored and rebuilt. Privacy boundaries are bases and repositories, not graph flags: hiding an edge would not hide the underlying JSON record or Markdown page.
+- Root `graph.tsv`, `graph.dst.tsv`, `graph.offsets.tsv`, `graph.meta.json`, and `graph.generation.json` are always ignored and rebuilt. Privacy boundaries are bases and repositories, not graph flags: hiding an edge would not hide the underlying JSON record or Markdown page.
 
 ## Scope
 

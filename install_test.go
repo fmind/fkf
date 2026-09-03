@@ -79,6 +79,47 @@ func TestInstallerDownloadsLatestVerifiesAndInstalls(t *testing.T) {
 	}
 }
 
+func TestInstallerWarnsWhenAnotherFKFPrecedesTheInstalledBinary(t *testing.T) {
+	fixture := newInstallerFixture(t, false)
+	shadowDirectory := t.TempDir()
+	shadow := filepath.Join(shadowDirectory, "fkf")
+	writeExecutable(t, shadow, "#!/bin/sh\nprintf 'fkf version v0.1.0\\n'\n")
+	fixture.setPath(strings.Join([]string{
+		shadowDirectory, fixture.installDir, fixture.fakeBin, os.Getenv("PATH"),
+	}, string(os.PathListSeparator)))
+
+	output, err := fixture.run()
+	if err != nil {
+		t.Fatalf("install.sh failed: %v\n%s", err, output)
+	}
+	installed := filepath.Join(fixture.installDir, "fkf")
+	for _, want := range []string{"Warning:", shadow, installed, "PATH"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("install output = %q, want %q", output, want)
+		}
+	}
+}
+
+func TestInstallerDoesNotWarnWhenAPrecedingPathIsTheInstalledBinary(t *testing.T) {
+	fixture := newInstallerFixture(t, false)
+	aliasDirectory := t.TempDir()
+	installed := filepath.Join(fixture.installDir, "fkf")
+	if err := os.Symlink(installed, filepath.Join(aliasDirectory, "fkf")); err != nil {
+		t.Fatal(err)
+	}
+	fixture.setPath(strings.Join([]string{
+		aliasDirectory, fixture.installDir, fixture.fakeBin, os.Getenv("PATH"),
+	}, string(os.PathListSeparator)))
+
+	output, err := fixture.run()
+	if err != nil {
+		t.Fatalf("install.sh failed: %v\n%s", err, output)
+	}
+	if strings.Contains(output, "Warning:") {
+		t.Fatalf("install output = %q, want no warning for a symlink to the installed binary", output)
+	}
+}
+
 func TestInstallerRefusesAChecksumMismatch(t *testing.T) {
 	fixture := newInstallerFixture(t, true)
 	output, err := fixture.run()
@@ -204,6 +245,7 @@ func TestInstallerArchiveNameMatchesGoReleaser(t *testing.T) {
 type installerFixture struct {
 	root        string
 	installDir  string
+	fakeBin     string
 	curlLog     string
 	ghLog       string
 	archive     string
@@ -303,7 +345,7 @@ printf '%s\n' "$*" >> "$FKF_TEST_GH_LOG"
 	ghLog := filepath.Join(temporary, "gh.log")
 	env := append(os.Environ(),
 		"HOME="+filepath.Join(temporary, "home"),
-		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"PATH="+installDir+string(os.PathListSeparator)+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"FKF_INSTALL_DIR="+installDir,
 		"FKF_TEST_ARCHIVE="+archive,
 		"FKF_TEST_CHECKSUMS="+checksums,
@@ -314,9 +356,19 @@ printf '%s\n' "$*" >> "$FKF_TEST_GH_LOG"
 		"FKF_TEST_REAL_INSTALL="+realInstall,
 	)
 	return installerFixture{
-		root: root, installDir: installDir, curlLog: curlLog, ghLog: ghLog,
+		root: root, installDir: installDir, fakeBin: fakeBin, curlLog: curlLog, ghLog: ghLog,
 		archive: archive, archiveName: archiveName, checksums: checksums, env: env,
 	}
+}
+
+func (fixture *installerFixture) setPath(value string) {
+	for index := len(fixture.env) - 1; index >= 0; index-- {
+		if strings.HasPrefix(fixture.env[index], "PATH=") {
+			fixture.env[index] = "PATH=" + value
+			return
+		}
+	}
+	fixture.env = append(fixture.env, "PATH="+value)
 }
 
 func (fixture installerFixture) writeChecksum(t *testing.T) {

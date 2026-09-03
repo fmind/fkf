@@ -35,6 +35,16 @@ schema:
     cardinality: many
     relation: true
     examples: [person:email/user@example.test, actor:github.com/login]
+  category:
+    description: Authorship role for default retrieval policy.
+    cardinality: optional
+  visibility:
+    description: Audience role for default retrieval policy.
+    cardinality: optional
+  owner:
+    description: Person or account assigned to the record.
+    cardinality: many
+    relation: true
 
 sources:
   github-pull-requests:
@@ -42,19 +52,21 @@ sources:
     layer: events
     requires: [github-search-json.sh, gh, jq]
     window: true
-    run: [github-search-json.sh, prs, author, "{{start}}", "{{end}}"]
+    run: [github-search-json.sh, prs, assignee, "{{start}}", "{{end}}"]
     fields:
       id: .url
       time: .updatedAt
       title: .title
       repo: .repository.nameWithOwner
       repository: .repository_uri
+      owner: [".assignee_uris[]"]
       participant: [".participant_uris[]"]
     body: [gh, pr, view, "{{id}}", --repo, "{{repo}}", --json, "body,comments"]
     retry:
       attempts: 3
       backoff: 30s
       on: ["API rate limit exceeded", "secondary rate limit"]
+    recency: { half_life_days: 14 }
 ```
 
 This avoids ambiguous built-ins such as `people`. A field name says **why the value is attached**: `participant`, `author`, `reviewer`, or `owner`. Its URI says **which identity namespace it belongs to**: `person:email/...`, `actor:github.com/...`, or any other stable lowercase scheme the base chooses.
@@ -66,7 +78,7 @@ FKF neither assigns those names nor infers equivalence. It validates cardinality
 | Key            | Meaning                                                       |
 | -------------- | ------------------------------------------------------------- |
 | `enabled`      | Whether sync may run the source; false by default             |
-| `layer`        | `events` for completed days, `index` for a current snapshot   |
+| `layer`        | `events`, `index`, or the dedicated `tasks` trace importer    |
 | `requires`     | Explicit bare executable names checked by `status`            |
 | `run`          | Direct argv producing JSON; required                          |
 | `test`         | Optional direct argv verifying the source without collection  |
@@ -75,6 +87,8 @@ FKF neither assigns those names nor infers equivalence. It validates cardinality
 | `fields`       | Root-schema name to one path or ordered list of paths         |
 | `window`       | Run once per contiguous missing date range and bucket records |
 | `body`         | Argv that fetches one record body on explicit `read --body`   |
+| `bodies`       | Rebuildable body policy: `none`, `cache`, or `sync`           |
+| `recency`      | Optional lexical recency half-life in days                    |
 | `install`      | Human guidance printed by status; never executed              |
 | `timeout`      | Source timeout overriding the base default                    |
 | `retry`        | Bounded attempts, backoff, and named retryable failures       |
@@ -111,11 +125,11 @@ The generated scaffold is deliberately portable and does not select a runtime wi
 
 `run:` is a YAML argument list. FKF substitutes only values it generated in arguments after the literal executable:
 
-- `{{date}}` and `{{next_date}}` for one completed day;
-- `{{start}}` and `{{end}}` for the half-open requested window;
+- `{{date}}` and `{{next_date}}` for the selected local day;
+- `{{start}}` and `{{end}}` for its half-open window;
 - `{{base}}` and `{{home}}` as opaque path values.
 
-The exact lowercase spelling is mandatory. Whitespace inside braces, unknown names, uppercase names, malformed braces, placeholders in the executable position, and date placeholders on an index source fail configuration loading. Each YAML item remains exactly one argument after substitution; FKF never invokes a shell or performs expansion.
+For event and task sources the date values describe the requested completed range. An index source receives the current local day, which supports replaceable agenda snapshots without collecting an incomplete event document. The exact lowercase spelling is mandatory. Whitespace inside braces, unknown names, uppercase names, malformed braces, and placeholders in the executable position fail configuration loading. Each YAML item remains exactly one argument after substitution; FKF never invokes a shell or performs expansion.
 
 `test:` is also one direct argv array. It may use only `{{base}}` and `{{home}}`, because a verification hook is independent of collection windows and stored values. Put a base-owned hook and its fixtures or support files under `tests/`; FKF hashes the complete tree and prepends it only for `test:` execution, so a fixture cannot shadow collection or body commands. With no names, `fkf test` selects enabled sources that declare a hook; explicit names also select disabled sources, and `--all` selects every declared hook. An empty selection preserves the compatible successful 0/0 report. Name every mandatory source in a project completion task so the gate also detects one accidentally removed hook. Hooks use the source timeout, run sequentially, discard stdout, expose no provider stderr, and never write evidence.
 
@@ -137,7 +151,9 @@ No pipes, functions, or `select` are accepted. Rich reshaping belongs in the com
 
 Paths are evaluated in declaration order. Missing and null values contribute nothing; objects and arrays do not silently stringify. The total scalar count must satisfy the root declaration: exactly one for `one`, zero or one for `optional`, any count for `many`. A field used in `body:` must be `one` or `optional` because it becomes one argv value.
 
-Every source maps `id`; an events source also maps `time`. Those two structural fields are never relations. `title` and `url` are optional display fields. Every other field is generic retrieval input. A relation field additionally requires each projected scalar to be a canonical FKF URI; its field name becomes the graph edge kind.
+Every source maps `id` and `title`; an events source also maps `time`. Those structural roles are never relations. A newly collected record must project a non-empty, control-free title. Content-first helpers derive one deterministic line, capped at 160 characters, without copying the body. Historical v1 documents that predate a title remain readable and never require forced re-collection. `url` is an optional display field. Every other field is generic retrieval input. A relation field additionally requires each projected scalar to be a canonical FKF URI; its field name becomes the graph edge kind.
+
+A root schema field may declare `weight: 1..100` for lexical ranking. Omitted weights resolve to 10 for `id`, 5 for `title`, and 1 otherwise. Optional max-one roles `category` (`created`, `received`, or `saved`) and `visibility` (`private`, `shared`, or `public`) let context apply explicit defaults without inferring sensitivity from a provider or note type. A source may declare `recency: {half_life_days: N}`; undated records and sources without that policy receive no freshness bonus.
 
 ## Complete or absent
 
@@ -149,6 +165,7 @@ Any of these fails the whole collection unit and writes nothing:
 - an unwrapped object where an array is expected;
 - a non-object record;
 - missing `id` or event `time`;
+- missing, empty, or unsafe `title` on a source that maps it;
 - a cardinality or relation-value violation;
 - an incomplete preset pagination boundary.
 
@@ -157,6 +174,8 @@ Writes are atomic. A reader sees the previous complete document or the new compl
 `format: json` expects one array, or one wrapper selected by `records:`; empty output is failure because a real empty JSON result is `[]`. `format: ndjson` expects one value per line and accepts empty output as an empty result.
 
 `window: true` runs once for each contiguous missing span in the requested half-open range and buckets records by their mapped time. An already collected day splits the plan, so a source is never asked to re-fetch across that gap unless `--force` makes the whole span eligible. It is for event sources whose fixed cost is scanning a large file tree or paginated range once.
+
+A `layer: tasks` source is a deliberately smaller contract. It must be windowed JSON and may declare only its execution controls: `records`, `fields`, `body`, `bodies`, and `recency` are rejected. Its helper returns the closed bounded session-trace array consumed by FKF, which validates the whole batch before creating any `tasks/<date>/<repo>-<sid>/TASKS.md` skeleton. Existing traces are never overwritten because they may already contain owner annotations. Preview is unavailable; use `sync <source> --dry-run` to disclose its command without execution.
 
 Before a real write, preview exactly one source:
 
@@ -186,7 +205,15 @@ The event bounds preserve the collection-time civil-day interpretation if a base
 fkf read events/2026-08-20/github-pull-requests.json#https://github.com/o/r/pull/42 --body
 ```
 
-This executes the record source's current trusted `body:` argv, prints the result, and stores nothing. Entity URIs remain graph nodes assembled from record relations or authored Markdown relations; they do not execute an on-demand resolver. Body execution is never available over MCP.
+A source may set `bodies: none`, `cache`, or `sync`; the default is `none`:
+
+- `none` fetches only for the explicit read and stores nothing. Mail, Chat, and ordinary provider sources use this policy.
+- `cache` stores a body only after an explicit `read --body`.
+- `sync` prefetches new or provider-modified bodies after the evidence document is safely written. A fresh current index snapshot repairs missing cache entries. A failed new event document gets one later retry; after a complete cache prune, the newest selected event document for each opted-in source gets the same bounded retry cycle. An attempt marker prevents a vanished historical resource from becoming perpetual hourly work. Use an explicit `read --body` for any other historical miss or `sync --force` to re-collect and prefetch its document. Meeting notes and local harness memory files opt in.
+
+Cached text lives under ignored `bodies/<source>/` and is bound by `bodies/manifest.json` to its record URI, provider modification time, byte count, SHA-256, and the cache-local event restore markers. It is bounded to 4,096 entries, 512 MiB total, a 1 MiB manifest, and 4 MiB per body. FKF refuses growth before publishing a body that the manifest cannot name. The cache is UTF-8, machine-local, rebuildable data—not evidence and never mirrored by FKF. `read --body` uses a valid cached copy before executing. `find --bodies` and `context` consult valid cached text offline; neither fetches a miss. `fkf build bodies --prune` explicitly empties the cache and re-arms the one-time newest-event restoration for the next sync.
+
+Entity URIs remain graph nodes assembled from record relations or authored Markdown relations; they do not execute an on-demand resolver. Body execution is never available over MCP. `fkf validate records` warns when one title is shared by more than half of a source's records; `--strict` promotes that warning.
 
 ## Retry, pacing, and trust
 
@@ -198,6 +225,8 @@ When a declared `run:` exits unsuccessfully, the diagnostic names the source, da
 
 ## Presets and custom sources
 
-`personal` keeps a small supported set: git activity and local agent metadata are enabled; shell-history metadata, privacy-projected browser history, GitHub, Google Workspace, and Google Cloud collectors are present but disabled. `team` declares one disabled GitHub repository snapshot whose organization sentinel must be replaced before it can be enabled. Network collection is always opt-in. `minimal` starts with no sources. `--demo N` writes synthetic data without running a source. FKF has no plugin manager: presets are examples plus maintained helpers, while a base may run any reviewed command or script.
+`personal` enables only git activity and local agent metadata. Its disabled, opt-in examples cover agent prompts, Chromium history and bookmarks, RSS, authored documents, mise tools, GitHub activity and Actions, Google Workspace, Google Cloud, Kaggle, and Hugging Face. `google-calendar-agenda` is a refreshable index snapshot for today's brief; `google-calendar-events` remains the permanent completed-day history. The `meeting-notes` source joins Google Docs to calendar records by attachment ID, then selects the nearest start time among attachment-less events with the exact title prefix. Enable and sync `google-calendar-events` with it: the notes helper refuses to emit a matched calendar record URI until that owning document is durable, keeping `read` and `timeline` addressable. Its reviewed body helper emits Docs text without storing it in the evidence record. Remote collectors remain disabled until the owner reviews their metadata projection and authentication probe. Explicit sentinels such as `REPLACE_WITH_OWNER`, `REPLACE_WITH_MEETING_PREFIX`, or `REPLACE_WITH_WRITING_DOCUMENT.md` must be edited before enabling that source; FKF does not guess an account or filesystem corpus. `team` declares one disabled GitHub repository snapshot whose organization sentinel must be replaced before it can be enabled. Network collection is always opt-in. `minimal` starts with no sources. `--demo N` writes synthetic data without running a source. FKF has no plugin manager: presets are examples plus maintained helpers, while a base may run any reviewed command or script.
+
+The Chromium helper never copies a live database file directly. SQLite's online backup API creates one consistent snapshot and includes committed rows still present only in the browser's live WAL; URL credentials, queries, and fragments are removed before JSON reaches FKF.
 
 Before enabling a source, run `fkf sync --dry-run`, read the rendered command and field mappings, then run `fkf sync <source> --preview`. A contributed preset source also needs a synthetic fixture under `services/testdata/sources/`; CI sends that fixture through the real decode, projection, cardinality, relation, and addressability path without a credential or network.

@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -93,6 +94,19 @@ func CreateNew(base *Base, req NewRequest) (*NewResult, error) {
 	default:
 		return nil, fmt.Errorf("unknown new kind %q; want task, project, wiki, or helper", req.Kind)
 	}
+}
+
+// CreateNewAndBuild creates one authored graph input and immediately binds the derived files
+// to it. Helpers are execution inputs rather than graph inputs, so creating one needs no build.
+func CreateNewAndBuild(ctx context.Context, base *Base, req NewRequest) (*NewResult, error) {
+	result, err := CreateNew(base, req)
+	if err != nil || result.Kind == NewKindHelper {
+		return result, err
+	}
+	if _, err := Build(ctx, base, "", false); err != nil {
+		return result, fmt.Errorf("%s was created but derived rebuild failed; run `fkf build`: %w", result.URI, err)
+	}
+	return result, nil
 }
 
 func createNewHelper(base *Base, name string) (*NewResult, error) {

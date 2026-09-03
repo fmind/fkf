@@ -105,11 +105,13 @@ for identity in "$@"; do
   shift
 done
 
-# repo_name accepts only an exact GitHub owner/name from a plain identifier, a github.com URL,
-# or a github.com SCP-style remote. Authority userinfo, other hosts, and malformed paths never
-# cross the metadata boundary.
-repo_name() {
+# remote_key returns a provider-neutral host/path key for a URL or SCP-style remote. Userinfo
+# and volatile query or fragment credentials are excluded. Malformed or local paths return
+# empty so the caller can fall back to an opaque local identity.
+remote_key() {
   candidate=$1
+  candidate=${candidate%%\#*}
+  candidate=${candidate%%\?*}
   case "$candidate" in
     *://*)
       scheme=${candidate%%://*}
@@ -117,26 +119,46 @@ repo_name() {
       authority_and_path=${candidate#*://}
       authority=${authority_and_path%%/*}
       case "$authority_and_path" in */*) [ -n "$authority" ] || return 0; path=${authority_and_path#*/} ;; *) return 0 ;; esac
-      host=${authority##*@}
-      host=${host%%:*}
-      case "$host" in [Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]) ;; *) return 0 ;; esac
+      host_port=${authority##*@}
+      case "$host_port" in
+        *:*)
+          host=${host_port%%:*}
+          port=${host_port#*:}
+          case "$port" in "" | *[!0-9]*) return 0 ;; esac
+          [ "$port" -ge 1 ] 2>/dev/null && [ "$port" -le 65535 ] 2>/dev/null || return 0
+          host_suffix=":$port"
+          ;;
+        *) host=$host_port; host_suffix="" ;;
+      esac
       ;;
     *:*/*)
       scp_host=${candidate%%:*}
       case "$scp_host" in "" | */*) return 0 ;; esac
       host=${scp_host##*@}
-      case "$host" in [Gg][Ii][Tt][Hh][Uu][Bb].[Cc][Oo][Mm]) ;; *) return 0 ;; esac
+      host_suffix=""
       path=${candidate#*:}
       ;;
-    *) path=$candidate ;;
+    *) return 0 ;;
   esac
-  case "$path" in *\?* | *\#*) return 0 ;; esac
+  host=$(printf '%s' "$host" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+  case "$host" in "" | .* | *. | *..* | *[!a-z0-9.-]*) return 0 ;; esac
+  saved_ifs=$IFS
+  IFS=.
+  set -- $host
+  IFS=$saved_ifs
+  for label in "$@"; do
+    case "$label" in "" | -* | *-) return 0 ;; esac
+  done
   path=${path%.git}
-  case "$path" in */*/* | /* | */) return 0 ;; esac
-  case "$path" in */*) owner=${path%%/*}; name=${path#*/} ;; *) return 0 ;; esac
-  case "$owner" in "" | . | .. | *[!A-Za-z0-9._-]*) return 0 ;; esac
-  case "$name" in "" | . | .. | *[!A-Za-z0-9._-]*) return 0 ;; esac
-  printf '%s/%s\n' "$owner" "$name"
+  case "$path" in "" | /* | */ | *//* | *[!A-Za-z0-9._~+%@/-]*) return 0 ;; esac
+  IFS=/
+  set -- $path
+  IFS=$saved_ifs
+  [ "$#" -ge 2 ] || return 0
+  for segment in "$@"; do
+    case "$segment" in "" | . | ..) return 0 ;; esac
+  done
+  printf '%s%s/%s\n' "$host" "$host_suffix" "$path"
 }
 
 roots_file=$(mktemp); markers=$(mktemp); sorted_markers=$(mktemp)
@@ -171,7 +193,36 @@ while read -r gitdir; do
     [ "$status" -eq 1 ] || exit "$status"
     remote=""
   fi
-  full=$(repo_name "$remote")
+  key=$(remote_key "$remote")
+  full=""
+  case "$key" in
+    github.com/*)
+      github_path=${key#github.com/}
+      case "$github_path" in
+        */*/* | /* | */) ;;
+        */*)
+          owner=${github_path%%/*}
+          name=${github_path#*/}
+          case "$owner" in "" | . | .. | *[!A-Za-z0-9._-]*) ;;
+            *) case "$name" in "" | . | .. | *[!A-Za-z0-9._-]*) ;; *) full=$github_path ;; esac ;;
+          esac
+          ;;
+      esac
+      ;;
+  esac
+  if [ -n "$full" ]; then
+    repo_identity=$full
+  else
+    # The opaque digest keeps same-hash commits in distinct repositories distinct without
+    # exposing a non-GitHub host, repository path, or local checkout path.
+    if [ -n "$key" ]; then identity_key="remote:$key"; else identity_key="gitdir:$gitdir"; fi
+    repo_digest=$(printf '%s\n' "$identity_key" | git -C "$script_base" hash-object --stdin)
+    case "$repo_digest" in "" | *[!0-9a-f]*)
+      echo "git-log-json.sh: git returned an invalid repository identity digest" >&2
+      exit 1
+    esac
+    repo_identity="opaque:$repo_digest"
+  fi
   # --all includes commits reachable only from an unmerged local or remote ref. Walking the
   # common repository once also prevents linked worktrees from multiplying identical rows.
 	# Git interprets --author values as regular expressions unless --fixed-strings is set. An
@@ -179,7 +230,7 @@ while read -r gitdir; do
   git --git-dir="$gitdir" log --all --fixed-strings "$@" \
     --since="$since" --until="$until" \
     --pretty=format:'%H%x00%ct%x00%aE%x00%s%x00' > "$log_output"
-  jq -R -s --arg repo "$full" '
+  jq -R -s --arg repo "$full" --arg repo_identity "$repo_identity" '
       if . == "" then []
       else split("\u0000")
         | if .[-1] != "" then error("git log output has no terminal NUL") else .[:-1] end
@@ -187,7 +238,8 @@ while read -r gitdir; do
       end
       | [range(0; length; 4) as $offset
           | { hash: (.[ $offset ] | ltrimstr("\n")), _epoch: (.[$offset + 1] | tonumber),
-              author_email: .[$offset + 2], message: .[$offset + 3], repo_full: $repo }]
+              author_email: .[$offset + 2], message: .[$offset + 3], repo_full: $repo,
+              _repo_identity: $repo_identity }]
       | .[]' < "$log_output" >> "$records"
 # A commit can be present in several clones. Give it one semantic identity per repository and
 # collapse repeated clones before fkf verifies that every URI fragment names exactly one record.
@@ -195,17 +247,23 @@ done < "$sorted_gitdirs"
 jq -s --argjson since "$since_epoch" --argjson until "$until_epoch" '
   def fkf_identity: @uri | gsub("%3A"; ":") | gsub("%2F"; "/")
     | gsub("%40"; "@") | gsub("%2B"; "+") | gsub("~"; "%7E");
+  def participant_uri:
+    ascii_downcase as $email
+    | (try ($email | capture("^(?:[0-9]+\\+)?(?<login>[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?)@users\\.noreply\\.github\\.com$")) catch null) as $github
+    | if $github == null then "person:email/" + ($email | fkf_identity)
+      else "actor:github.com/" + $github.login
+      end;
   map(select(._epoch >= $since and ._epoch < $until)
     # Git versions spell a UTC %cI value as either Z or +00:00. Derive one canonical
     # representation from the epoch that also drives window filtering.
     | .time = (._epoch | todateiso8601)
-    | del(._epoch)
     | . + {
-        uid: (if .repo_full == "" then .hash else (.repo_full + "@" + .hash) end),
+        uid: (._repo_identity + "@" + .hash),
         repo_full: (if .repo_full == "" then null else .repo_full end),
         repository_uri: (if .repo_full == "" then null else ("repo:github.com/" + .repo_full) end),
         participant_uris: (if .author_email == "" then []
-          else [("person:email/" + (.author_email | ascii_downcase | fkf_identity))] end)
-      })
+          else [(.author_email | participant_uri)] end)
+      }
+    | del(._epoch, ._repo_identity))
   | unique_by(.uid)
 ' < "$records"

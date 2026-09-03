@@ -1,0 +1,83 @@
+{
+  "groups": [
+    {
+      "source": "git-commits",
+      "count": 6,
+      "items": [
+        {
+          "time": "2026-05-09T00:00:00Z",
+          "uri": "events/2026-05-09/git-commits.json#git-commits-20260509-0",
+          "title": "Fix index staleness (GW-1203)"
+        }
+      ]
+    },
+    {
+      "source": "google-calendar-events",
+      "count": 6,
+      "items": [
+        {
+          "time": "2026-05-09T00:00:00Z",
+          "uri": "events/2026-05-09/google-calendar-events.json#google-calendar-events-20260509-0",
+          "title": "Measure quiet source watchdog (GW-1203)"
+        },
+        {
+          "time": "2026-05-09T00:00:00Z",
+          "uri": "events/2026-05-09/google-calendar-events.json#google-calendar-events-20260509-1",
+          "title": "Document retrieval boundary (FK-501)"
+        },
+        {
+          "time": "2026-05-09T00:00:00Z",
+          "uri": "events/2026-05-09/google-calendar-events.json#google-calendar-events-20260509-2",
+          "title": "Document markdown validation (GW-1203)"
+        }
+      ]
+    },
+    {
+      "source": "shell-commands",
+      "count": 6,
+      "summarized": true
+    }
+  ],
+  "people": [
+    "person:email/eli@example.test",
+    "person:email/ines@example.test",
+    "person:email/lea@example.test",
+    "person:email/marc@example.test",
+    "person:email/maya@example.test",
+    "person:email/sara@example.test",
+    "person:email/tomas@example.test",
+    "person:email/zoe@example.test",
+    "person:email/luc@example.test",
+    "person:email/nadia@example.test",
+    "person:email/raf@example.test"
+  ],
+  "repositories": [
+    "repo:github.com/acme/console",
+    "repo:github.com/acme/gateway",
+    "repo:github.com/acme/ledger",
+    "repo:github.com/example/agents",
+    "repo:github.com/example/docs",
+    "repo:github.com/fmind/atlas"
+  ],
+  "receipt": {
+    "window": {
+      "since": "2026-05-09",
+      "until": "2026-05-09",
+      "derived_from": "yesterday"
+    },
+    "budget": 600,
+    "format": "json",
+    "used_tokens": 586,
+    "json_tokens": 586,
+    "text_tokens": 357,
+    "records": 36,
+    "selected": 10,
+    "dropped": 26,
+    "people": 12,
+    "dropped_people": 1,
+    "repositories": 8,
+    "dropped_repositories": 2,
+    "input_digest": "3ae45762f6531f910483cf2d728b1fdb7b72a8a09e28982acd7e633565271854",
+    "as_of": "2026-05-10"
+  }
+}

@@ -284,7 +284,7 @@ func TestWikiIndexRendersFrontmatterAsSingleLineLiteralMarkdown(t *testing.T) {
 		"---\ntype: %q\ntitle: %q\ndescription: %q\ntags: [safety]\n---\n\n# Hostile metadata\n",
 		wikiType, title, description))
 
-	page, err := services.ReadPage(base, "wiki/hostile.md")
+	page, err := services.ReadPageContext(t.Context(), base, "wiki/hostile.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestWikiIndexRendersFrontmatterAsSingleLineLiteralMarkdown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	index, err := services.ReadPage(base, "wiki/index.md")
+	index, err := services.ReadPageContext(t.Context(), base, "wiki/index.md")
 	if err != nil {
 		t.Fatal(err)
 	}

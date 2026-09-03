@@ -1,5 +1,5 @@
 #!/bin/sh
-# github-search-json.sh <prs|issues> author <start> <end> — written into
+# github-search-json.sh <prs|issues> assignee <start> <end> — written into
 # <base>/bin by `fkf init --preset personal|team`.
 #
 # GitHub Search exposes at most 1,000 results for one query, and a timed-out search can return a
@@ -10,7 +10,7 @@
 set -eu
 
 [ "$#" -eq 4 ] || {
-  echo "usage: github-search-json.sh <prs|issues> author <start> <end>" >&2
+  echo "usage: github-search-json.sh <prs|issues> assignee <start> <end>" >&2
   exit 2
 }
 
@@ -20,10 +20,10 @@ start=$3
 end=$4
 
 case "$kind:$mode" in
-  prs:author) type_qualifier=is:pr ;;
-  issues:author) type_qualifier=is:issue ;;
+  prs:assignee) type_qualifier=is:pr ;;
+  issues:assignee) type_qualifier=is:issue ;;
   *)
-    echo "github-search-json.sh: expected prs author or issues author" >&2
+    echo "github-search-json.sh: expected prs assignee or issues assignee" >&2
     exit 2
     ;;
 esac
@@ -76,13 +76,13 @@ collect_range() {
   range_start=$(epoch_to_rfc3339 "$1")
   # GitHub's range syntax is inclusive; subtracting one second preserves fkf's [start, end).
   range_end=$(epoch_to_rfc3339 "$(( $2 - 1 ))")
-  query="$type_qualifier author:@me updated:$range_start..$range_end"
+  query="$type_qualifier assignee:@me updated:$range_start..$range_end"
   raw_page=$(mktemp "$work_dir/raw-page.XXXXXX")
   page=$(mktemp "$work_dir/page.XXXXXX")
   : > "$raw_page"
   # Search items include bodies. Project the metadata inside gh before anything reaches disk.
   # Explicit page numbers keep the provider loop finite; total_count proves when it is complete.
-  projection='{total_count,incomplete_results,items:[.items[] | {number,title,html_url,updated_at,repository_url,state,user:(if .user == null then null else {login:.user.login} end)}]}'
+  projection='{total_count,incomplete_results,items:[.items[] | {number,title,html_url,updated_at,repository_url,state,user:(if .user == null then null else {login:.user.login} end),assignees:[.assignees[]? | {login}]}]}'
   page_number=1
   retrieved_so_far=0
   while [ "$page_number" -le "$max_pages" ]; do
@@ -168,7 +168,8 @@ collect_range() {
       and (.updated_at | type == "string" and length > 0)
       and (.repository_url | type == "string" and test("/repos/[^/]+/[^/]+$"))
       and (.state | type == "string")
-      and (.user == null or (.user.login | type == "string" and length > 0)))' \
+      and (.user == null or (.user.login | type == "string" and length > 0))
+      and ((.assignees // []) | type == "array" and all(.[].login; type == "string" and length > 0)))' \
     "$page" >/dev/null; then
     echo "github-search-json.sh: GitHub REST search returned an invalid issue item for [$range_start, $range_end]" >&2
     return 1
@@ -189,7 +190,9 @@ collect_range() {
         repository: {nameWithOwner: (.repository_url | capture("/repos/(?<repo>[^/]+/[^/]+)$").repo)},
         repository_uri: ("repo:github.com/" + (.repository_url | capture("/repos/(?<repo>[^/]+/[^/]+)$").repo)),
         state, author: (if .user == null then null else {login: .user.login} end),
-        participant_uris: (if .user == null then [] else [("actor:github.com/" + .user.login)] end) }' \
+        assignee_uris: [(.assignees // [])[].login | "actor:github.com/" + .],
+        participant_uris: ([(if .user == null then empty else .user.login end), (.assignees // [])[].login]
+          | unique | map("actor:github.com/" + .)) }' \
     "$page" >> "$records"
 }
 

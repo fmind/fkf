@@ -9,6 +9,7 @@ import (
 	"maps"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/fmind/fkf/core"
 )
@@ -29,7 +30,10 @@ func Collect(
 	ctx context.Context, runner Runner, source *core.Source,
 	env Environment, window Window, timeout time.Duration, now time.Time,
 ) (*Document, error) {
-	command := BuildRunCommand(source, env, window, timeout)
+	command, err := BuildRunCommand(source, env, window, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("%w: source %s: %w", ErrIncomplete, source.Name, err)
+	}
 	stdout, err := runner.Run(ctx, command)
 	if err != nil {
 		return nil, fmt.Errorf("%w: source %s: %w", ErrIncomplete, source.Name, err)
@@ -50,6 +54,9 @@ func Collect(
 		document.WindowEnd = window.End
 	}
 	if err := VerifyRecords(document); err != nil {
+		return nil, fmt.Errorf("%w: source %s: %w", ErrIncomplete, source.Name, err)
+	}
+	if err := verifyCollectedTitles(source, records); err != nil {
 		return nil, fmt.Errorf("%w: source %s: %w", ErrIncomplete, source.Name, err)
 	}
 	return document, nil
@@ -113,7 +120,10 @@ func CollectWindow(
 	ctx context.Context, runner Runner, source *core.Source,
 	env Environment, rangeWindow Window, dates []string, timeout time.Duration, now time.Time,
 ) (map[string]*Document, error) {
-	command := BuildRunCommand(source, env, rangeWindow, timeout)
+	command, err := BuildRunCommand(source, env, rangeWindow, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("%w: source %s: %w", ErrIncomplete, source.Name, err)
+	}
 	stdout, err := runner.Run(ctx, command)
 	if err != nil {
 		return nil, fmt.Errorf("%w: source %s: %w", ErrIncomplete, source.Name, err)
@@ -122,7 +132,8 @@ func CollectWindow(
 	if err != nil {
 		return nil, fmt.Errorf("%w: source %s: %w", ErrIncomplete, source.Name, err)
 	}
-	buckets, err := bucketRecordsByDay(source, records, dates)
+	loc := now.Location()
+	buckets, err := bucketRecordsByDay(source, records, dates, loc)
 	if err != nil {
 		return nil, fmt.Errorf("%w: source %s: %w", ErrIncomplete, source.Name, err)
 	}
@@ -132,7 +143,7 @@ func CollectWindow(
 		if recs == nil {
 			recs = []Record{}
 		}
-		window, err := eventWindow(date)
+		window, err := eventWindowInLocation(date, loc)
 		if err != nil {
 			return nil, fmt.Errorf("%w: source %s: %w", ErrIncomplete, source.Name, err)
 		}
@@ -146,9 +157,34 @@ func CollectWindow(
 		if err := VerifyRecords(document); err != nil {
 			return nil, fmt.Errorf("%w: source %s: %w", ErrIncomplete, source.Name, err)
 		}
+		if err := verifyCollectedTitles(source, recs); err != nil {
+			return nil, fmt.Errorf("%w: source %s: %w", ErrIncomplete, source.Name, err)
+		}
 		documents[date] = document
 	}
 	return documents, nil
+}
+
+// verifyCollectedTitles applies the new subject-line contract only to sources that declare
+// the title projection. Historical v1 documents without it remain readable: the permanent
+// evidence envelope cannot be made contingent on provider retention or forced recollection.
+func verifyCollectedTitles(source *core.Source, records []Record) error {
+	if source.Fields.Path(core.FieldTitle).IsZero() {
+		return nil
+	}
+	for index, record := range records {
+		title, ok := source.Fields.EvalString(core.FieldTitle, map[string]any(record))
+		if !ok || strings.TrimSpace(title) == "" {
+			return fmt.Errorf("record %d has no meaningful title at the declared fields.title paths %v",
+				index, source.Fields.Paths(core.FieldTitle))
+		}
+		for _, char := range title {
+			if unicode.IsControl(char) || unicode.Is(unicode.Cf, char) {
+				return fmt.Errorf("record %d title contains control or invisible character U+%04X", index, char)
+			}
+		}
+	}
+	return nil
 }
 
 // bucketRecordsByDay sorts a windowed source's records into the requested days by each
@@ -160,10 +196,10 @@ type collectionDayBound struct {
 	start, end time.Time
 }
 
-func collectionDayBounds(dates []string) ([]collectionDayBound, error) {
+func collectionDayBounds(dates []string, loc *time.Location) ([]collectionDayBound, error) {
 	bounds := make([]collectionDayBound, 0, len(dates))
 	for _, date := range dates {
-		day, err := ParseDay(date)
+		day, err := ParseDayInLocation(date, loc)
 		if err != nil {
 			return nil, fmt.Errorf("requested day %q: %w", date, err)
 		}
@@ -181,8 +217,10 @@ func collectionDayBounds(dates []string) ([]collectionDayBound, error) {
 	return bounds, nil
 }
 
-func bucketRecordsByDay(source *core.Source, records []Record, dates []string) (map[string][]Record, error) {
-	bounds, err := collectionDayBounds(dates)
+func bucketRecordsByDay(
+	source *core.Source, records []Record, dates []string, loc *time.Location,
+) (map[string][]Record, error) {
+	bounds, err := collectionDayBounds(dates, loc)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +303,11 @@ func VerifyRecords(document *Document) error {
 }
 
 func eventWindow(date string) (Window, error) {
-	day, err := ParseDay(date)
+	return eventWindowInLocation(date, time.Local)
+}
+
+func eventWindowInLocation(date string, loc *time.Location) (Window, error) {
+	day, err := ParseDayInLocation(date, loc)
 	if err != nil {
 		return Window{}, fmt.Errorf("event document date %q: %w", date, err)
 	}
@@ -371,13 +413,7 @@ func verifyRecord(document *Document, record Record, index int) (string, error) 
 	values := map[string]any(record)
 	for _, name := range document.Fields.Names() {
 		definition := document.Schema[name]
-		var projected []string
-		var err error
-		if definition.Relation {
-			projected, err = document.Fields.EvalRelation(name, values)
-		} else {
-			projected, err = document.Fields.EvalField(name, values)
-		}
+		projected, err := document.Fields.EvalDeclaredField(name, values, definition)
 		if err != nil {
 			return "", fmt.Errorf("record %d field %s: %w", index, name, err)
 		}
@@ -549,7 +585,10 @@ func FetchBody(
 	if !source.HasBody() {
 		return "", Command{}, fmt.Errorf("source %s declares no body: command, so its record bodies are not fetchable", source.Name)
 	}
-	values := map[string]string{"base": env.Root, "home": homeDirectory()}
+	values := map[string]string{"base": env.Root}
+	if err := addHomePlaceholder(source.Body, values); err != nil {
+		return "", Command{}, fmt.Errorf("plan body command for source %s: %w", source.Name, err)
+	}
 	for _, name := range source.Fields.Names() {
 		// The execution placeholders keep their static meaning even when the open semantic map
 		// happens to use the same name. Otherwise record data could replace a trusted path and
@@ -578,7 +617,7 @@ func FetchBody(
 		}
 		if !core.ValidBodyValue(value) {
 			return "", Command{}, fmt.Errorf(
-				"refusing to run body: for source %s: the %s value %q is not a safe opaque argv value (valid UTF-8, 1..256 bytes, no leading '-', controls, or invisible format characters)",
+				"refusing to run body: for source %s: the %s value %q is not a safe opaque argv value (valid UTF-8, 1..256 bytes, no leading '-' or '@', controls, or invisible format characters)",
 				source.Name, name, value,
 			)
 		}
@@ -589,7 +628,8 @@ func FetchBody(
 	}
 	command := Command{
 		Argv: argv, Dir: core.DeclaredCommandDirectory, ForbiddenRoot: env.Root,
-		Env: maps.Clone(env.Env), Timeout: timeout,
+		TrustConfig: env.TrustConfig,
+		Env:         maps.Clone(env.Env), Timeout: timeout,
 	}
 	if source.Timeout > 0 {
 		command.Timeout = source.Timeout
