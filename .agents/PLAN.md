@@ -210,4 +210,4 @@ Fix, with a regression test each:
 
 ## 6. Open questions
 
-None. Every decision is recorded in section 0; the mail-body answer (never stored, on demand only) is the reviewer's recommendation, accepted on 2026-09-02.
+None. Every decision is recorded in section 0; shipped presets keep mail lazy, while a private base may explicitly choose owner-only caching for selected conversational sources.

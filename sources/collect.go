@@ -576,8 +576,8 @@ func objectRecords(array []any, origin string) ([]Record, error) {
 
 // FetchBody runs a source's `body:` command for one record. Every placeholder value comes
 // from collected data, so each is checked against the charset before exec and the argv is
-// passed to the kernel without a shell. The output is printed and never stored: a body is
-// evidence to read once, not a second copy of the provider's database.
+// passed to the kernel without a shell. This function only returns the fetched bytes; the
+// caller applies the source's explicit none, cache, or sync retention policy.
 func FetchBody(
 	ctx context.Context, runner Runner, source *core.Source,
 	fields Fields, env Environment, record Record, timeout time.Duration,
