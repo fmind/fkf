@@ -2,6 +2,38 @@
 
 All notable changes to `fkf` are documented here. This project follows [Semantic Versioning](https://semver.org/) from its first public release.
 
+## [v4.0.0](https://github.com/fmind/fkf/releases/tag/v4.0.0) - 2026-09-04
+
+### Highlights
+
+- Make every derived-cache check read-only with `build [graph|index|wiki|all] --check`, add selective body-cache pruning by source and age, and report lexical-index integrity alongside graph health.
+- Add reviewed Gmail and Calendar body helpers plus four disabled Google Workspace metadata presets, while keeping provider diagnostics private and bounding provider output before it can fill memory or temporary storage.
+- Keep append-only agent-session stores collectible without a lifetime generation ceiling, normalize Git commit titles without discarding raw messages, and refresh the compact embedded usage skill.
+- Harden installation, upgrade, and release delivery with exact dirty-build version handling, portable macOS installation, a four-platform CI gate, draft-before-attestation publication, and exact-head Pages deployment.
+- Rewrite the README around the concrete benefit—owned, inspectable memory shared across coding agents—and tighten the command, source, graph, privacy, and contributor guides.
+
+### Breaking changes
+
+- Remove the documented but ineffective `fkf status --all` flag; bare `status` already performs the complete offline check.
+- Emit one `{wiki, projects, records, lint?, ok}` document from bare structured `fkf validate` instead of concatenating several top-level JSON reports.
+- Bound `receipt.consulted_bodies` under the requested pack budget and expose the complete count as `consulted_bodies_total`.
+- Aggregate text `find --count` output across the selected window, bound text `who` neighbours per relation kind, and make body-prune text output explicit.
+- Treat a corrupt lexical cache as a status error. A missing or stale rebuildable cache remains a warning.
+- Remove the unused exported `services.StatusRequest.All` field and add build/prune request types plus cache-health and receipt fields. Go source consumers using unkeyed literals or strict JSON decoders must update.
+
+### Fixed
+
+- Preserve body-cache crash consistency and confinement across selective pruning, corrupt or missing cache entries, malformed timestamps, symlinked roots, source/age no-ops, and newest-event restore markers.
+- Keep command output inside exact byte budgets, make graph-generation state a published confined URI, and prevent stale or corrupt derived caches from masquerading as current.
+- Refuse unsafe response-file-style body arguments, disclose the real body execution policy during trust review, and retain one finite shutdown path for oversized or uncooperative body providers.
+- Prevent an equal or newer Git-describe development build from being replaced by an older release, and ensure all release archives carry the README, license, notices, checksums, and build-provenance attestations.
+
+### Upgrade notes
+
+- Existing `fkf: 1` configuration and evidence remain valid; no re-collection or data migration is required.
+- Refresh any installed official helpers, review and renew execution trust, then rebuild derived caches: `fkf config helpers --refresh`, `fkf trust --all`, and `fkf build all`.
+- Update consumers of bare structured `validate` and the removed `status --all` flag before upgrading automation.
+
 ## [v3.0.2](https://github.com/fmind/fkf/releases/tag/v3.0.2) - 2026-09-03
 
 ### Fixed
