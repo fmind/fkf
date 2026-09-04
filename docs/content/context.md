@@ -13,7 +13,7 @@ fkf context "collection" --pin wiki/explicit-sync-boundary.md
 fkf context "collection" --since-receipt 0123456789abcdef
 ```
 
-The read path is offline, lexical, deterministic, and model-free. The same query, base bytes, binary, and `as_of` day produce a byte-identical JSON pack and receipt.
+The read path is offline, lexical, deterministic, and model-free. The same effective request, base bytes, binary, `as_of` day, and relevant machine-local receipt state produce the same semantic selection. Indexed and fallback reads intentionally report different execution-path diagnostics.
 
 ## Candidate set
 

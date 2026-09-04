@@ -469,6 +469,51 @@ func TestCommandTableIsTheDocumentedSurface(t *testing.T) {
 	}
 }
 
+func TestCommandReferenceIncludesEveryRootCommand(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", "docs", "content", "commands.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	headings := "\n" + strings.Join(func() []string {
+		var result []string
+		for _, line := range strings.Split(string(content), "\n") {
+			if strings.HasPrefix(line, "### ") {
+				result = append(result, line)
+			}
+		}
+		return result
+	}(), "\n") + "\n"
+	for _, command := range newApp(&bytes.Buffer{}, &bytes.Buffer{}).Commands {
+		if !strings.Contains(headings, "`"+command.Name+"`") {
+			t.Errorf("docs/content/commands.md has no heading for root command %q", command.Name)
+		}
+	}
+}
+
+func TestRenderedHelpKeepsFlagDescriptionsLiteral(t *testing.T) {
+	build := invoke(t, "build", "--help")
+	if build.code != ExitSuccess {
+		t.Fatalf("build --help exited %d: %s%s", build.code, build.stdout, build.stderr)
+	}
+	if strings.Contains(build.stdout, "--prune fkf build bodies") {
+		t.Fatalf("build --help interpreted code markup as a flag placeholder:\n%s", build.stdout)
+	}
+	helper := invoke(t, "new", "helper", "--help")
+	if helper.code != ExitSuccess {
+		t.Fatalf("new helper --help exited %d: %s%s", helper.code, helper.stdout, helper.stderr)
+	}
+	if !strings.Contains(helper.stdout, ".sh") || !strings.Contains(helper.stdout, ".py") {
+		t.Fatalf("new helper --help does not describe both supported helper types:\n%s", helper.stdout)
+	}
+	sync := invoke(t, "sync", "--help")
+	if sync.code != ExitSuccess {
+		t.Fatalf("sync --help exited %d: %s%s", sync.code, sync.stdout, sync.stderr)
+	}
+	if !strings.Contains(sync.stdout, "no selected source has due work") {
+		t.Fatalf("sync --help does not describe --if-due in terms of source due work:\n%s", sync.stdout)
+	}
+}
+
 func TestHelpAliasIsNotShadowedByACommand(t *testing.T) {
 	got := invoke(t, "h")
 	if got.code != ExitSuccess {
@@ -794,6 +839,22 @@ func TestVersionAndHelp(t *testing.T) {
 
 func TestExecutionBoundaryHelpIsComplete(t *testing.T) {
 	app := newApp(&bytes.Buffer{}, &bytes.Buffer{})
+	readCommand := app.Command("read")
+	for _, flag := range readCommand.Flags {
+		body, ok := flag.(*cli.BoolFlag)
+		if !ok || body.Name != "body" {
+			continue
+		}
+		for _, marker := range []string{markWrite, markRun} {
+			if !strings.Contains(body.Usage, marker) {
+				t.Fatalf("read --body usage = %q, want boundary marker %q", body.Usage, marker)
+			}
+		}
+		goto readBoundaryDocumented
+	}
+	t.Fatal("read has no --body flag with execution and write boundary markers")
+
+readBoundaryDocumented:
 	syncCommand := app.Command("sync")
 	for _, marker := range []string{markWrite, markRun} {
 		if !strings.Contains(syncCommand.Usage, marker) {
@@ -1169,15 +1230,36 @@ func TestSingularCommandsRefuseExtraArgumentsBeforeWriting(t *testing.T) {
 	}
 }
 
-func TestBuildCheckRefusesTargetsThatCannotBeCheckedWithoutWriting(t *testing.T) {
+func TestBuildCheckSupportsDerivedTargetsAndRejectsBodies(t *testing.T) {
 	root := demoBase(t)
 	paths := []string{
 		filepath.Join(root, core.GraphFile),
 		filepath.Join(root, core.GraphMetaFile),
+		filepath.Join(root, "index", ".fkf-index.tsv"),
+		filepath.Join(root, "wiki", "index.md"),
 	}
+
+	// build bodies --check is rejected. The bare spelling stops at the earlier --prune
+	// requirement, so the --check guard itself is only reachable with --prune and needs its
+	// own case: without it the guard could be deleted with this test still green.
+	gotBodies := invoke(t, "--base", root, "build", "bodies", "--check")
+	if gotBodies.code != ExitInvalidUsage || !strings.Contains(gotBodies.stderr, "requires --prune") {
+		t.Errorf("fkf build bodies --check exited %d saying %q, want %d naming the --prune requirement",
+			gotBodies.code, gotBodies.stderr, ExitInvalidUsage)
+	}
+	gotPrunedCheck := invoke(t, "--base", root, "build", "bodies", "--prune", "--check")
+	if gotPrunedCheck.code != ExitInvalidUsage ||
+		!strings.Contains(gotPrunedCheck.stderr, "--check is not supported by `fkf build bodies`") {
+		t.Errorf("fkf build bodies --prune --check exited %d saying %q, want %d refusing --check",
+			gotPrunedCheck.code, gotPrunedCheck.stderr, ExitInvalidUsage)
+	}
+
+	// build [--check] succeeds on fresh/current caches without mutating files
 	for _, args := range [][]string{
 		{"build", "--check"},
 		{"build", "graph", "--check"},
+		{"build", "index", "--check"},
+		{"build", "wiki", "--check"},
 		{"build", "all", "--check"},
 	} {
 		before := make([]os.FileInfo, len(paths))
@@ -1189,9 +1271,9 @@ func TestBuildCheckRefusesTargetsThatCannotBeCheckedWithoutWriting(t *testing.T)
 			before[index] = info
 		}
 		got := invoke(t, append([]string{"--base", root}, args...)...)
-		if got.code != ExitInvalidUsage {
+		if got.code != ExitSuccess {
 			t.Errorf("fkf %s exited %d, want %d: %s%s",
-				strings.Join(args, " "), got.code, ExitInvalidUsage, got.stdout, got.stderr)
+				strings.Join(args, " "), got.code, ExitSuccess, got.stdout, got.stderr)
 		}
 		for index, path := range paths {
 			after, err := os.Stat(path)
@@ -1202,6 +1284,49 @@ func TestBuildCheckRefusesTargetsThatCannotBeCheckedWithoutWriting(t *testing.T)
 				t.Errorf("fkf %s replaced %s despite --check", strings.Join(args, " "), path)
 			}
 		}
+	}
+
+	gotText := invoke(t, "--format", "text", "--base", root, "build", "--check")
+	if gotText.code != ExitSuccess || !strings.Contains(gotText.stdout, "graph.tsv  unchanged") ||
+		!strings.Contains(gotText.stdout, "index/.fkf-index.tsv  unchanged") ||
+		!strings.Contains(gotText.stdout, "wiki/index.md  unchanged") {
+		t.Errorf("fkf build --check text output = %q, want unchanged for each target", gotText.stdout)
+	}
+}
+
+// TestBuildCheckNamesEveryStaleCacheAndItsRebuild covers the outcome a user actually hits: the
+// STALE lines, the `stale` field behind them, and the joined refusal that has to agree in
+// number with the list it prints.
+func TestBuildCheckNamesEveryStaleCacheAndItsRebuild(t *testing.T) {
+	root := demoBase(t)
+	if err := os.Remove(filepath.Join(root, core.GraphFile)); err != nil {
+		t.Fatal(err)
+	}
+	staleGraph := invoke(t, "--base", root, "build", "graph", "--check")
+	if staleGraph.code != ExitPartial ||
+		!strings.Contains(staleGraph.stderr, "graph.tsv is out of date; run `fkf build graph`") ||
+		!strings.Contains(staleGraph.stdout, `"stale": true`) {
+		t.Fatalf("fkf build graph --check on a missing graph = exit %d, stdout %q, stderr %q",
+			staleGraph.code, staleGraph.stdout, staleGraph.stderr)
+	}
+
+	for _, path := range []string{
+		filepath.Join(root, "index", ".fkf-index.tsv"),
+		filepath.Join(root, "wiki", "index.md"),
+	} {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	staleAll := invoke(t, "--format", "text", "--base", root, "build", "--check")
+	if staleAll.code != ExitPartial ||
+		!strings.Contains(staleAll.stdout, "wiki/index.md  STALE — run `fkf build wiki`") ||
+		!strings.Contains(staleAll.stdout, "graph.tsv  STALE — run `fkf build graph`") ||
+		!strings.Contains(staleAll.stdout, "index/.fkf-index.tsv  STALE — run `fkf build index`") ||
+		!strings.Contains(staleAll.stderr,
+			"wiki/index.md, graph.tsv, index/.fkf-index.tsv are out of date; run `fkf build`") {
+		t.Fatalf("fkf build --check on three stale caches = exit %d, stdout %q, stderr %q",
+			staleAll.code, staleAll.stdout, staleAll.stderr)
 	}
 }
 

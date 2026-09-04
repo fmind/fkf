@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -140,16 +141,21 @@ func isGraphArtifact(relative string) bool {
 	return relative == core.GraphFile ||
 		relative == core.GraphDstFile ||
 		relative == core.GraphOffsetsFile ||
-		relative == core.GraphMetaFile
+		relative == core.GraphMetaFile ||
+		relative == core.GraphGenerationFile
 }
 
-// readGraphArtifact returns either half of one validated graph generation. Both published
-// paths therefore share the same strict sidecar, row, digest, semantic, and current-input
-// checks as graph queries. The open graph descriptor pins atomic replacements to one snapshot;
-// revalidation catches in-place mutation before any bytes cross the read boundary.
+// readGraphArtifact returns either half of one validated graph generation, or the marker that
+// names the generation. The rows and their metadata therefore share the same strict sidecar,
+// row, digest, semantic, and current-input checks as graph queries. The open graph descriptor
+// pins atomic replacements to one snapshot; revalidation catches in-place mutation before any
+// bytes cross the read boundary.
 func readGraphArtifact(ctx context.Context, base *Base, uri URI) (*ReadResult, error) {
 	if uri.Fragment != "" {
 		return nil, fmt.Errorf("%s does not support fragments", uri.Path)
+	}
+	if uri.Path == core.GraphGenerationFile {
+		return readGraphGeneration(ctx, base, uri)
 	}
 	if uri.Path != core.GraphMetaFile && uri.JQ != "" {
 		return nil, fmt.Errorf("?jq= applies to a JSON document; %s is not one", uri.Path)
@@ -201,6 +207,37 @@ func readGraphArtifact(ctx context.Context, base *Base, uri URI) (*ReadResult, e
 	if err := cache.revalidateBytes(ctx); err != nil {
 		return nil, err
 	}
+	return jsonSelection(ctx, uri, data)
+}
+
+// readGraphGeneration answers the publication marker itself, and deliberately does not open the
+// validated cache first: the marker is what gates that path, so reading it through the path it
+// gates would make it unreadable exactly while a build is in flight or a generation is stale —
+// the two moments its state is worth asking for. The bytes are returned as stored, under the
+// same bound the build-time reader applies, so an interrupted publication stays diagnosable
+// rather than being rewritten into a shape that looks healthy.
+func readGraphGeneration(ctx context.Context, base *Base, uri URI) (*ReadResult, error) {
+	data, err := base.ReadFileContext(ctx, core.GraphGenerationFile, maxGraphGenerationBytes)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("invalid derived graph cache: %s does not exist; run `fkf build graph`",
+			core.GraphGenerationFile)
+	}
+	if err != nil {
+		return nil, err
+	}
+	// The envelope embeds these bytes verbatim, so bytes that are not one JSON document are a
+	// broken cache rather than a readable answer. Trailing space is the writer's newline.
+	data = bytes.TrimSpace(data)
+	if !json.Valid(data) {
+		return nil, fmt.Errorf("invalid derived graph cache: %s is not one JSON document; run `fkf build graph`",
+			core.GraphGenerationFile)
+	}
+	return jsonSelection(ctx, uri, data)
+}
+
+// jsonSelection returns one bounded derived JSON document, applying `?jq=` when the URI carries
+// one. Both derived JSON reads answer with a selection, so the expression path stays single.
+func jsonSelection(ctx context.Context, uri URI, data []byte) (*ReadResult, error) {
 	result := &ReadResult{URI: uri.String(), Kind: "index", Selection: data}
 	if uri.JQ == "" {
 		return result, nil

@@ -925,6 +925,42 @@ func TestCollectWindowFailsTheWholeRangeOnAnOutOfWindowRecord(t *testing.T) {
 	}
 }
 
+// windowedFallbackTimeSource declares two `time:` paths, which the loader allows for a
+// max-one field so a base can fall back across providers that name the same instant
+// differently.
+const windowedFallbackTimeSource = `    enabled: true
+    layer: events
+    window: true
+    run: [cli, --since, "{{start}}", --until, "{{end}}"]
+    fields:
+      id: .id
+      time: [.created, .updated]
+      title: .subject
+`
+
+// TestCollectWindowNamesTheCardinalityFailureWhenTimeProjectsTwoValues pins the bucketing
+// diagnostic to the truth. Bucketing runs before VerifyRecords on the windowed path, so it is
+// the first check a record with two distinct timestamps meets; telling the author the field
+// "has no value" sends them hunting a timestamp that is present under both declared paths.
+func TestCollectWindowNamesTheCardinalityFailureWhenTimeProjectsTwoValues(t *testing.T) {
+	source := mustSource(t, windowedFallbackTimeSource)
+	runner := &fakeRunner{stdout: `[
+		{"id":"a1","created":"2026-05-04T09:00:00Z","updated":"2026-05-04T11:00:00Z","subject":"edited after creation"}
+	]`}
+	_, err := sources.CollectWindow(t.Context(), runner, source, testEnvironment(t),
+		sources.Window{}, []string{"2026-05-04"}, time.Minute, testDay)
+	if err == nil {
+		t.Fatal("CollectWindow() succeeded, want two distinct time values to fail the range")
+	}
+	if strings.Contains(err.Error(), "has no value") {
+		t.Fatalf("error = %v, want it to stop claiming the field is absent", err)
+	}
+	if !strings.Contains(err.Error(), "field time projects 2 values") ||
+		!strings.Contains(err.Error(), "schema cardinality one") {
+		t.Fatalf("error = %v, want it to name the cardinality failure the day-at-a-time path names", err)
+	}
+}
+
 // TestCollectWindowRunsTheCommandOnceAcrossADSTSpringForwardDay proves the bucketing survives
 // exactly the day sources.DayWindow was fixed for: a civil day whose local midnight does not
 // exist still receives its own records, filed under the correct calendar date, from one

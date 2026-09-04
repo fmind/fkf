@@ -1,16 +1,22 @@
 [tools]
 actionlint = "1.7.12"
-dprint = "0.56.1"
+dprint = "0.57.1"
 gitleaks = "8.30.1"
-go = "1.27.0"
-golangci-lint = "2.13.1"
+go = "1.27.1"
+golangci-lint = "2.13.2"
 goreleaser = "2.18.0"
 gotestsum = "1.13.0"
 hugo-extended = "0.165.0"
-lefthook = "2.1.11"
+jq = "1.8.2"
+lefthook = "2.1.12"
 lychee = "0.24.2"
+python = "3.14.7"
+ruff = "0.16.6"
 shellcheck = "0.11.0"
 trivy = "0.74.0"
+yq = "4.53.6"
+# 1.30 requires GitHub's new $/ self-reference, which actionlint 1.7.12 cannot parse yet
+# (rhysd/actionlint#711). Keep both strict gates warning-free rather than suppressing either.
 zizmor = "1.29.0"
 
 [settings]
@@ -39,10 +45,10 @@ run = [
 [tasks.build]
 alias = "b"
 description = "Build the fkf binary"
-# skills/ and presets/ are embedded by embed.go, so editing either must invalidate the build.
-sources = ["go.mod", "go.sum", "embed.go", "skills/**/*", "presets/**/*", "**/*.go"]
-outputs = ["bin/fkf"]
-run = 'go build -ldflags "-X github.com/fmind/fkf/core.version=$(git describe --tags --always)" -o bin/fkf ./cmd/fkf'
+# No `sources`/`outputs`: the version stamp reads the git tag, which no file glob can express
+# (packed refs make `.git/refs/tags/**` stop matching with no error), so a cached skip would
+# ship a binary stamped with the previous release. A warm re-link costs a second.
+run = 'go build -ldflags "-X github.com/fmind/fkf/core.version=$(git describe --tags --always --dirty)" -o bin/fkf ./cmd/fkf'
 
 [tasks.benchmark]
 description = "Measure the supported 100k-record and 500k-edge envelope"
@@ -53,16 +59,17 @@ run = "go test ./cmd/fkf -run '^TestScaleCorpusShape$' -bench '^BenchmarkScaleEn
 alias = "c"
 description = "Run every static check in parallel"
 depends = [
+  "check:actions",
   "check:docs",
   "check:format",
   "check:leaks",
   "check:links",
   "check:lint",
   "check:notices",
+  "check:python",
   "check:scan",
   "check:shell",
   "check:vuln",
-  "check:workflows",
 ]
 
 [tasks."check:docs"]
@@ -122,25 +129,36 @@ description = "Report drift in the pinned toolchain (needs the network, never fa
 # The pinned tools belong to no Dependabot ecosystem, so this is the only thing that looks at
 # them. --local excludes unrelated user-level pins. Non-blocking on purpose: a stale pin is a
 # decision to make, not a static check failure.
-run = "mise outdated --local || true"
+run = "mise outdated --local --bump || true"
 
 [tasks."check:scan"]
 description = "Scan the repository for vulnerabilities, secrets, licenses, and misconfigurations"
 run = "trivy --config trivy.yaml fs ."
 
+[tasks."check:python"]
+description = "Lint every shipped Python helper"
+# --no-cache keeps the check from writing a .ruff_cache into a contributor's tree.
+run = "ruff check --no-cache presets/bin"
+
 [tasks."check:shell"]
 description = "Lint every shipped and release shell helper"
-# Filter by language: presets/bin also contains reviewed jq programs.
-run = "find presets/bin -maxdepth 1 -type f -name '*.sh' -print0 | xargs -0 shellcheck -S warning install.sh scripts/release-notes"
+# Filter by language: presets/bin also holds reviewed jq programs and a Python helper, whose
+# gates are the internal/checks smoke run and check:python.
+run = "find presets/bin -type f -name '*.sh' -print0 | xargs -0 shellcheck -S warning install.sh scripts/release-notes"
 
 [tasks."check:vuln"]
 alias = "cv"
 description = "Scan Go code for known vulnerabilities (govulncheck)"
 run = "go tool govulncheck ./..."
 
-[tasks."check:workflows"]
+[tasks."check:actions"]
 description = "Validate the CI/CD workflows and the release configuration"
-run = ["actionlint", "zizmor --offline --persona=pedantic .github/workflows", "goreleaser check"]
+run = [
+  "actionlint",
+  "zizmor --offline --persona=pedantic .github/workflows",
+  "zizmor --offline --collect dependabot --strict-collection .",
+  "goreleaser check",
+]
 
 [tasks.clean]
 alias = "n"
@@ -169,7 +187,7 @@ run = ["go mod tidy", "mise run install:binary", "lefthook install"]
 [tasks."install:binary"]
 description = "Install fkf into ~/.local/bin"
 depends = ["build"]
-run = "install -Dm755 bin/fkf $HOME/.local/bin/fkf && $HOME/.local/bin/fkf --version"
+run = 'mkdir -p "$HOME/.local/bin" && install -m 0755 bin/fkf "$HOME/.local/bin/fkf" && "$HOME/.local/bin/fkf" --version'
 
 [tasks."generate:schema"]
 description = "Rewrite docs/static/fkf.schema.json from the configuration loader"

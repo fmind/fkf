@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"go.yaml.in/yaml/v3"
 
@@ -432,5 +433,55 @@ func TestBundledSkillsHaveValidFrontmatter(t *testing.T) {
 				t.Errorf("skill %s frontmatter license must be a non-empty string when present", name)
 			}
 		}
+	}
+}
+
+func TestSkillAuthoringLimits(t *testing.T) {
+	root := repositoryRoot(t)
+	var paths []string
+	for _, pattern := range []string{"skills/*/SKILL.md", ".agents/skills/*/SKILL.md"} {
+		matches, err := filepath.Glob(filepath.Join(root, filepath.FromSlash(pattern)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, matches...)
+	}
+	if len(paths) == 0 {
+		t.Fatal("repository has no skill packages")
+	}
+	totalDescriptionLength := 0
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if lines := strings.Count(strings.TrimSuffix(string(data), "\n"), "\n") + 1; lines >= 100 {
+			t.Errorf("%s has %d lines; skills must stay under 100", relative, lines)
+		}
+		text := strings.TrimPrefix(string(data), "\ufeff")
+		frontmatter, _, found := strings.Cut(strings.TrimPrefix(text, "---\n"), "\n---\n")
+		if !strings.HasPrefix(text, "---\n") || !found {
+			t.Errorf("%s has invalid frontmatter delimiters", relative)
+			continue
+		}
+		var manifest struct {
+			Description string `yaml:"description"`
+		}
+		if err := yaml.Unmarshal([]byte(frontmatter), &manifest); err != nil {
+			t.Errorf("%s frontmatter is invalid YAML: %v", relative, err)
+			continue
+		}
+		length := utf8.RuneCountInString(manifest.Description)
+		totalDescriptionLength += length
+		if length > 240 {
+			t.Errorf("%s description has %d characters; maximum is 240", relative, length)
+		}
+	}
+	if maximum := len(paths) * 175; totalDescriptionLength > maximum {
+		t.Errorf("skill descriptions total %d characters; maximum average is 175 across %d skills", totalDescriptionLength, len(paths))
 	}
 }

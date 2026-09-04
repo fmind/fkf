@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -37,7 +38,9 @@ func auditHealth(
 	if err := checkPermissions(ctx, base, status); err != nil {
 		return err
 	}
-	checkDerived(base, status)
+	if err := checkDerived(ctx, base, status); err != nil {
+		return err
+	}
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
@@ -149,13 +152,43 @@ func containsConflictMarker(data []byte) bool {
 	return false
 }
 
-func checkDerived(base *Base, status *Status) {
+func checkDerived(ctx context.Context, base *Base, status *Status) error {
 	graphURI := core.GraphFile
 	if !base.Exists(graphURI) {
 		status.addFinding("derived", SeverityWarning,
 			"the graph cache is absent, so `graph <uri>` and `context --expand` have nothing to read",
 			baseCommand(base.Root(), "build graph"), graphURI)
 	}
+	indexUse, err := lexicalIndexHealth(ctx, base)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		// status is the command a damaged base is diagnosed with, so a searchable input it cannot
+		// read becomes one finding beside the others rather than suppressing the whole report.
+		status.addFinding("derived", SeverityError,
+			fmt.Sprintf("the lexical index cache could not be validated against its inputs: %v", err),
+			"repair the input named in this message, then rebuild with `"+
+				baseCommand(base.Root(), "build index")+"`", LexicalIndexPath)
+		return nil
+	}
+	if !indexUse.Used {
+		switch indexUse.Reason {
+		case LexicalIndexFallbackMissing:
+			status.addFinding("derived", SeverityWarning,
+				"the lexical index cache is absent, so `context` and `find` must scan documents directly",
+				baseCommand(base.Root(), "build index"), LexicalIndexPath)
+		case LexicalIndexFallbackStale:
+			status.addFinding("derived", SeverityWarning,
+				"the lexical index cache is stale, so `context` and `find` must scan documents directly",
+				baseCommand(base.Root(), "build index"), LexicalIndexPath)
+		case LexicalIndexFallbackCorrupt:
+			status.addFinding("derived", SeverityError,
+				"the lexical index cache is corrupt: rebuild it with `fkf build index`",
+				baseCommand(base.Root(), "build index"), LexicalIndexPath)
+		}
+	}
+	return nil
 }
 
 func checkLearnedBacklog(ctx context.Context, base *Base, status *Status) error {

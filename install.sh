@@ -61,7 +61,8 @@ arm64 | aarch64) arch=arm64 ;;
 esac
 
 if [ "$version" = latest ]; then
-	version_url=$(curl --proto '=https' --tlsv1.2 -fsSLI -o /dev/null -w '%{url_effective}' "$repository/releases/latest")
+	version_url=$(curl --proto '=https' --tlsv1.2 -fsSLI -o /dev/null -w '%{url_effective}' "$repository/releases/latest") ||
+		fail "cannot resolve the latest release; check $repository/releases"
 	version=${version_url##*/}
 fi
 validate_version "$version"
@@ -87,8 +88,11 @@ trap cleanup EXIT HUP INT TERM
 
 archive=fkf_${version}_${os}_${arch}.tar.gz
 release_url=$repository/releases/download/$version
-curl --proto '=https' --tlsv1.2 -fsSL -o "$temporary/$archive" "$release_url/$archive"
-curl --proto '=https' --tlsv1.2 -fsSL -o "$temporary/checksums.txt" "$release_url/checksums.txt"
+# curl -f is silent about the body, so name the asset ourselves rather than leaking exit 22.
+curl --proto '=https' --tlsv1.2 -fsSL -o "$temporary/$archive" "$release_url/$archive" ||
+	fail "cannot download $archive; check $repository/releases"
+curl --proto '=https' --tlsv1.2 -fsSL -o "$temporary/checksums.txt" "$release_url/checksums.txt" ||
+	fail "cannot download checksums.txt for $version; check $repository/releases"
 
 expected=$(awk -v archive="$archive" '$2 == archive { print $1; found = 1; exit } END { if (!found) exit 1 }' "$temporary/checksums.txt") ||
 	fail "release checksum does not name $archive"

@@ -65,7 +65,7 @@ On `startup`, Claude receives yesterday's digest with a 600-token budget plus a 
 
 Antigravity has no session-start hook. Its documented `PreInvocation` integration runs before model calls, so the FKF adapter emits context only when `invocationNum` is zero. OpenCode similarly has no session-start context-output event: the managed local plugin calls the same adapter once per session from its documented system-transform hook.
 
-Copilot CLI runs the personal `sessionStart` hook, but that event ignores command output. FKF therefore installs it as a visible lifecycle integration without claiming context injection; MCP and the two skills are the supported retrieval paths.
+Copilot CLI runs the personal `sessionStart` hook, but that event ignores command output. FKF therefore installs it as a visible lifecycle integration without claiming context injection; MCP and the three skills are the supported retrieval paths.
 
 ### Grok limitation
 

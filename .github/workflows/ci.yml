@@ -3,10 +3,13 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call: # CD reuses this matrix so a tagged release is gated on every target it ships
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # A literal `ci-` rather than github.workflow, which reports the caller's name during a
+  # reusable call: sharing CD's group would queue this gate behind the run waiting on it.
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   verify:
@@ -32,9 +35,9 @@ jobs:
           fetch-depth: 0 # check:leaks scans history
           persist-credentials: false
       - name: Install locked toolchain
-        uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
-          version: 2026.8.12
+          version: 2026.9.1
       - name: Run project gate
         run: mise run all
       - name: Cross-build release archives

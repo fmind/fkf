@@ -204,8 +204,12 @@ type Receipt struct {
 	// Omitted when the tasks layer is disabled, where the backlog does not apply.
 	UnharvestedBullets int `json:"unharvested_bullets,omitempty"`
 	// ConsultedBodies names the verified local body-cache entries that participated in lexical
-	// scoring. Empty means no cached body influenced this offline read.
+	// scoring. Empty means no cached body influenced this offline read, unless
+	// ConsultedBodiesTotal says the list was shortened to fit the budget.
 	ConsultedBodies []string `json:"consulted_bodies,omitempty"`
+	// ConsultedBodiesTotal is set only when ConsultedBodies was cut to consultedBodiesCap, so
+	// the provenance a reader sees is never mistaken for every body that was scored.
+	ConsultedBodiesTotal int `json:"consulted_bodies_total,omitempty"`
 	// TruncatedEntities names hub nodes whose inbound expansion was deliberately limited to
 	// the newest bounded rows in the requested window.
 	TruncatedEntities []string `json:"truncated_entities,omitempty"`
@@ -280,6 +284,27 @@ const (
 // receipt byte for byte.
 func droppedCap(budget int) int {
 	return max(minDroppedReported, min(MaxDroppedReported, budget/4/tokensPerDroppedItem))
+}
+
+// MaxConsultedBodiesReported is the ceiling on the receipt's consulted-body list, and
+// consultedBodiesCap scales it down with the budget the same way droppedCap does. Provenance is
+// variable-length payload too: a base with a warm body cache consulted hundreds of entries whose
+// URIs each carry the record URI plus the cached document's own path, which spent every token of
+// a default-budget request on the receipt and left nothing for evidence. An eighth of the budget
+// is half the dropped allowance because the dropped list is re-added from what evidence leaves,
+// while this list is charged before any item is admitted.
+const (
+	MaxConsultedBodiesReported = 50
+	// tokensPerConsultedBody is one entry's encoded cost under the same four-bytes-to-a-token
+	// rule: a record URI plus the '#' and the cached body's own path.
+	tokensPerConsultedBody = 32
+)
+
+// consultedBodiesCap is a pure function of the budget, so the same query still reproduces the
+// same receipt byte for byte. It has no floor: at a budget too small for even one URI, the
+// total alone keeps the receipt honest.
+func consultedBodiesCap(budget int) int {
+	return min(MaxConsultedBodiesReported, budget/8/tokensPerConsultedBody)
 }
 
 // receiptReserve is what the receipt costs before any item is admitted: the dropped list plus

@@ -119,7 +119,7 @@ sources:
     # message are inert code blocks; git contributes changed paths only, never file contents.
     enabled: true
     layer: tasks
-    requires: [agent-session-trace.sh, agent-prompt-filter.jq, find, git, jq, xargs]
+    requires: [agent-session-trace.sh, agent-prompt-filter.jq, find, git, jq, mkfifo, xargs]
     window: true
     run: [agent-session-trace.sh, "{{start}}", "{{end}}"]
     timeout: 10m
@@ -157,7 +157,9 @@ sources:
       repo: .repo
     install: mise use -g yq@latest
 
-  rss-items: # edit feeds.opml; feeds expose a complete current document, not historical pages
+  # Create <base>/feeds.opml from your reader's OPML export before enabling this: `fkf init`
+  # writes no feed list, and a public OPML that does not exist is a hard collection failure.
+  rss-items: # feeds expose a complete current document, not historical pages
     enabled: false
     layer: index
     requires: [rss-json.sh, curl, jq, xargs, yq]
@@ -314,7 +316,7 @@ sources:
     fields:
       id: .url
       time: .commit.author.date
-      title: .commit.message
+      title: .title
       url: .url
       repo: .repository.fullName
       repository: .repository_uri
@@ -407,12 +409,12 @@ sources:
       visibility: .visibility
       participant: [".participant_uris[]"]
       attachment: [".attachment_uris[]"]
-    install: mise use -g gws@latest jq@latest
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
 
   google-calendar-events:
     enabled: false
     layer: events
-    requires: [gws-calendars-json.sh, gws-page-json.sh, gws, jq]
+    requires: [gws-calendar-body.sh, gws-calendars-json.sh, gws-page-json.sh, gws, head, jq, mkfifo]
     auth: [gws, auth, status]
     window: true
     # Walk every visible calendar with finite, token-validated pagination, then filter event
@@ -427,7 +429,8 @@ sources:
       visibility: .visibility
       participant: [".participant_uris[]"]
       attachment: [".attachment_uris[]"]
-    install: mise use -g gws@latest jq@latest
+    body: [gws-calendar-body.sh, "{{id}}"]
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
 
   meeting-notes:
     enabled: false
@@ -460,7 +463,7 @@ sources:
       owner: [".owner_uris[]"]
       attachment: [".attachment_uris[]"]
       meeting: [".meeting_uris[]"]
-    install: mise use -g gws@latest jq@latest
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
 
   google-calendars:
     enabled: false
@@ -485,12 +488,12 @@ sources:
     fields:
       id: .id
       title: .summary
-    install: mise use -g gws@latest jq@latest
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
 
   google-gmail-emails: # metadata only by default; the body is lazy, and jq reshapes before fkf sees it
     enabled: false
     layer: events
-    requires: [gmail-json.sh, gws, jq]
+    requires: [gmail-body.py, gmail-json.sh, gws, jq, python3]
     auth: [gws, auth, status]
     format: ndjson
     # The helper converts exact RFC3339 bounds to epoch seconds, widens Gmail's exclusive
@@ -508,8 +511,8 @@ sources:
       time: .internalDate
       title: .subject
       participant: [".participant_uris[]"]
-    body: [gws, gmail, users, messages, get, --params, '{"userId":"me","id":"{{id}}","format":"full"}']
-    install: mise use -g gws@latest jq@latest
+    body: [gmail-body.py, "{{id}}"]
+    install: mise use -g github:googleworkspace/cli@latest jq@latest python@latest
 
   google-chat-spaces:
     enabled: false
@@ -536,7 +539,7 @@ sources:
       time: .lastActiveTime
       title: .name
       url: .spaceUri
-    install: mise use -g gws@latest jq@latest
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
 
   google-chat-messages:
     enabled: false
@@ -551,7 +554,7 @@ sources:
       time: .createTime
       title: .title
     body: [gws-chat-message-body.sh, "{{id}}"]
-    install: mise use -g gws@latest jq@latest
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
 
   google-tasks-items:
     enabled: false
@@ -568,7 +571,7 @@ sources:
       time: .updated
       title: .title
       url: .webViewLink
-    install: mise use -g gws@latest jq@latest
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
 
   google-drive-files:
     # `fields` MUST name nextPageToken or --page-all has no token to follow and silently files
@@ -589,7 +592,7 @@ sources:
       files,
       list,
       --params,
-      '{"pageSize":1000,"orderBy":"modifiedTime desc","fields":"nextPageToken,files(id,name,mimeType,webViewLink,modifiedTime,createdTime,size,owners(emailAddress,displayName),shared,trashed,parents)"}',
+      '{"q":"trashed=false","pageSize":1000,"orderBy":"modifiedTime desc","fields":"nextPageToken,files(id,name,mimeType,webViewLink,modifiedTime,createdTime,size,owners(emailAddress,displayName),shared,trashed,parents)"}',
       --page-all,
       --page-limit,
       "100",
@@ -600,8 +603,10 @@ sources:
       id: .id
       url: .webViewLink
       title: .name
-      participant: [".owners[].uri"]
-    install: mise use -g gws@latest jq@latest
+      # Drive's owners[] is ownership, not generic involvement. The root schema separates
+      # `owner` from `participant`, and the role name is what becomes the graph edge kind.
+      owner: [".owners[].uri"]
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
 
   google-docs:
     enabled: false
@@ -627,8 +632,116 @@ sources:
       id: .id
       title: .name
       url: .webViewLink
-      participant: [".owners[].uri"]
-    install: mise use -g gws@latest jq@latest
+      owner: [".owners[].uri"]
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
+
+  google-forms:
+    enabled: false
+    layer: index
+    requires: [gws-page-json.sh, gws, jq]
+    auth: [gws, auth, status]
+    format: ndjson
+    records: .files
+    run: [
+      gws-page-json.sh,
+      files,
+      gws,
+      drive,
+      files,
+      list,
+      --params,
+      '{"q":"mimeType=''application/vnd.google-apps.form'' and trashed=false","pageSize":1000,"orderBy":"modifiedTime desc","fields":"nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,shared,trashed,owners(emailAddress,displayName))"}',
+      --page-all,
+      --page-limit,
+      "100",
+    ]
+    fields:
+      id: .id
+      title: .name
+      url: .webViewLink
+      owner: [".owners[].uri"]
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
+
+  google-scripts:
+    enabled: false
+    layer: index
+    requires: [gws-page-json.sh, gws, jq]
+    auth: [gws, auth, status]
+    format: ndjson
+    records: .files
+    run: [
+      gws-page-json.sh,
+      files,
+      gws,
+      drive,
+      files,
+      list,
+      --params,
+      '{"q":"mimeType=''application/vnd.google-apps.script'' and trashed=false","pageSize":1000,"orderBy":"modifiedTime desc","fields":"nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,shared,trashed,owners(emailAddress,displayName))"}',
+      --page-all,
+      --page-limit,
+      "100",
+    ]
+    fields:
+      id: .id
+      title: .name
+      url: .webViewLink
+      owner: [".owners[].uri"]
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
+
+  google-sheets:
+    enabled: false
+    layer: index
+    requires: [gws-page-json.sh, gws, jq]
+    auth: [gws, auth, status]
+    format: ndjson
+    records: .files
+    run: [
+      gws-page-json.sh,
+      files,
+      gws,
+      drive,
+      files,
+      list,
+      --params,
+      '{"q":"mimeType=''application/vnd.google-apps.spreadsheet'' and trashed=false","pageSize":1000,"orderBy":"modifiedTime desc","fields":"nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,shared,trashed,owners(emailAddress,displayName))"}',
+      --page-all,
+      --page-limit,
+      "100",
+    ]
+    fields:
+      id: .id
+      title: .name
+      url: .webViewLink
+      owner: [".owners[].uri"]
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
+
+  google-slides:
+    enabled: false
+    layer: index
+    requires: [gws-page-json.sh, gws, jq]
+    auth: [gws, auth, status]
+    format: ndjson
+    records: .files
+    run: [
+      gws-page-json.sh,
+      files,
+      gws,
+      drive,
+      files,
+      list,
+      --params,
+      '{"q":"mimeType=''application/vnd.google-apps.presentation'' and trashed=false","pageSize":1000,"orderBy":"modifiedTime desc","fields":"nextPageToken,files(id,name,mimeType,webViewLink,createdTime,modifiedTime,size,shared,trashed,owners(emailAddress,displayName))"}',
+      --page-all,
+      --page-limit,
+      "100",
+    ]
+    fields:
+      id: .id
+      title: .name
+      url: .webViewLink
+      owner: [".owners[].uri"]
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
 
   google-meet-calls:
     enabled: false
@@ -655,7 +768,7 @@ sources:
       id: .name
       time: .startTime
       title: .space
-    install: mise use -g gws@latest jq@latest
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
 
   google-contacts-people:
     enabled: false
@@ -682,7 +795,7 @@ sources:
       id: .resourceName
       title: .names[0].displayName
       participant: [".emailAddresses[].uri"]
-    install: mise use -g gws@latest jq@latest
+    install: mise use -g github:googleworkspace/cli@latest jq@latest
 
   # --- Google Cloud: the gcloud CLI owns the login ----------------------------------------
 
@@ -777,4 +890,4 @@ sources:
       title: .id
       url: .url
       visibility: .visibility
-    install: mise use -g hf@latest
+    install: mise use -g pipx:huggingface_hub@latest

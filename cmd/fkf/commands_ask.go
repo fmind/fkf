@@ -83,7 +83,7 @@ func newFindCommand() *cli.Command {
 			[2]string{"fkf find <terms>...", "every match, in wiki/, projects/, tasks/, and the records"},
 			[2]string{"fkf find <terms>... --layer wiki", "one layer only"},
 			[2]string{"fkf find --where .state=MERGED --since 7d", "records whose provider value matches"},
-			[2]string{"fkf find --count", "per-day, per-source volumes instead of items"},
+			[2]string{"fkf find --count", "source volumes over the window instead of items"},
 		),
 		Description: "This is the exhaustive half of retrieval: every match, flat and filterable. " +
 			"`fkf context` is the other half — the best few under a token budget, with a receipt. " +
@@ -100,7 +100,7 @@ func newFindCommand() *cli.Command {
 			&cli.StringSliceFlag{Name: "grep", Usage: "Term matched against record string, numeric, or boolean scalar values (repeatable, all must match)."},
 			&cli.StringSliceFlag{Name: "where", Usage: "<jq-path>=<value> equality over a record (repeatable); records only."},
 			&cli.IntFlag{Name: "limit", Usage: "Maximum items per half (search default all; bare find 200; 0 for no limit)."},
-			&cli.BoolFlag{Name: "count", Usage: "Print per-day, per-source volumes instead of items."},
+			&cli.BoolFlag{Name: "count", Usage: "Print per-day, per-source volumes instead of items; text totals each source over the window."},
 			&cli.BoolFlag{Name: "bodies", Usage: "Also search verified cached body text; never fetch or execute."},
 			&cli.BoolFlag{Name: "raw", Usage: "Keep raw provider records and the scanned days array in structured output."},
 		},
@@ -151,7 +151,7 @@ func newReadCommand() *cli.Command {
 		Flags: []cli.Flag{
 			&cli.BoolFlag{
 				Name:  "body",
-				Usage: "Read this record's cached body or fetch it on demand; cache policy may store it and fetching needs a trusted base." + markRun,
+				Usage: "Read this record's cached body or fetch it on demand; cache policy may store it and fetching needs a trusted base." + markWrite + markRun,
 			},
 			&cli.IntFlag{Name: "limit", Usage: "Bound a directory listing or an entity's neighbourhood."},
 		},

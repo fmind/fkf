@@ -1093,3 +1093,202 @@ func TestStatusLiveReportsAuthAndHarnessReadinessWithoutFailingLoggedOutSources(
 		}
 	}
 }
+
+func TestStatusReportsStaleOrCorruptLexicalIndex(t *testing.T) {
+	root := t.TempDir()
+	isolate(t)
+	if _, err := services.Init(t.Context(), services.InitRequest{Path: root, Demo: 2, SkipGit: true}, clock); err != nil {
+		t.Fatal(err)
+	}
+	base := openBase(t, root, nil)
+
+	metaPath := filepath.Join(root, "index", ".fkf-index.meta.json")
+	if err := os.WriteFile(metaPath, []byte("not-json"), core.BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	status, err := services.Report(t.Context(), base, services.StatusRequest{SkipGitAudit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corruptFinding *services.Finding
+	for i := range status.Findings {
+		if status.Findings[i].Check == "derived" && strings.Contains(status.Findings[i].Message, "corrupt") {
+			corruptFinding = &status.Findings[i]
+			break
+		}
+	}
+	if corruptFinding == nil {
+		t.Fatalf("expected corrupt lexical index finding, got findings: %+v", status.Findings)
+	}
+	if corruptFinding.Severity != services.SeverityError {
+		t.Fatalf("corrupt finding severity = %s, want error", corruptFinding.Severity)
+	}
+}
+
+// derivedFinding returns the derived finding that names the lexical index, which is the one
+// checkDerived writes beside the always-possible graph-absent warning.
+func lexicalIndexFinding(status *services.Status) *services.Finding {
+	for index := range status.Findings {
+		finding := &status.Findings[index]
+		if finding.Check == "derived" && strings.Contains(finding.Message, "lexical index") {
+			return finding
+		}
+	}
+	return nil
+}
+
+// The body cache is ignored, rebuildable, and never evidence, so a manifest entry whose file is
+// gone — the state an interrupted `fkf build bodies --prune` leaves — must leave status able to
+// report. It is the command a damaged base is diagnosed with.
+func TestStatusSurvivesAMissingCachedBodyFile(t *testing.T) {
+	config := strings.Replace(baseConfig,
+		"    body: [cli, view, \"{{id}}\"]\n",
+		"    body: [cli, view, \"{{id}}\"]\n    bodies: sync\n", 1)
+	runner := &fakeRunner{responses: map[string]string{
+		"cli --since": dayOne,
+		"cli view":    "cached body text",
+	}}
+	base := newBase(t, config, runner)
+	base.Now = func() time.Time { return time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC) }
+	trust(t, base)
+	report, err := services.Sync(t.Context(), base, services.SyncRequest{Days: 1, NoGraph: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.BodiesCached == 0 {
+		t.Fatalf("sync = %+v, want a prefetched body cache", report)
+	}
+	if _, err := services.BuildLexicalIndex(t.Context(), base); err != nil {
+		t.Fatal(err)
+	}
+	status, err := services.Report(t.Context(), base, services.StatusRequest{SkipGitAudit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding := lexicalIndexFinding(status); finding != nil {
+		t.Fatalf("freshly built index reports %+v, want no finding", finding)
+	}
+
+	manifestData, err := os.ReadFile(filepath.Join(base.Root(), services.BodiesDirectory, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest services.BodyManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Entries) == 0 {
+		t.Fatal("body manifest has no entries")
+	}
+	var removed string
+	for _, entry := range manifest.Entries {
+		removed = entry.Path
+		break
+	}
+	if err := os.Remove(filepath.Join(base.Root(), filepath.FromSlash(removed))); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err = services.Report(t.Context(), base, services.StatusRequest{SkipGitAudit: true})
+	if err != nil {
+		t.Fatalf("Report() with %s missing = %v, want a report", removed, err)
+	}
+	finding := lexicalIndexFinding(status)
+	if finding == nil || !strings.Contains(finding.Message, "stale") {
+		t.Fatalf("derived finding = %+v, want the index reported stale", finding)
+	}
+	if finding.Severity != services.SeverityWarning {
+		t.Fatalf("stale finding severity = %s, want warning", finding.Severity)
+	}
+}
+
+// status classifies the index from its sidecar, its inputs, and one stat of the artifact. The
+// whole-artifact hash and decode stays behind `build index --check`, which is what keeps the
+// routine command proportional to a base whose postings file is hundreds of megabytes.
+func TestStatusClassifiesTheLexicalIndexWithoutDecodingTheArtifact(t *testing.T) {
+	base := newBase(t, baseConfig, nil)
+	collect(t, base, "2026-05-04", dayOne)
+	if _, err := services.BuildLexicalIndex(t.Context(), base); err != nil {
+		t.Fatal(err)
+	}
+	rows := filepath.Join(base.Root(), filepath.FromSlash(services.LexicalIndexPath))
+	encoded, err := os.ReadFile(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded[len(encoded)/2] ^= 0xff
+	if err := os.WriteFile(rows, encoded, core.BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+
+	status, err := services.Report(t.Context(), base, services.StatusRequest{SkipGitAudit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finding := lexicalIndexFinding(status); finding != nil {
+		t.Fatalf("status reports %+v; byte corruption under an unchanged size belongs to "+
+			"`build index --check` and the query-time fallback", finding)
+	}
+	use, err := services.LexicalIndexStatus(t.Context(), base)
+	if err != nil || use.Used || use.Reason != services.LexicalIndexFallbackCorrupt {
+		t.Fatalf("LexicalIndexStatus() = %+v, %v; the explicit check must still hash the artifact", use, err)
+	}
+
+	if err := os.WriteFile(rows, encoded[:len(encoded)-1], core.BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	status, err = services.Report(t.Context(), base, services.StatusRequest{SkipGitAudit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finding := lexicalIndexFinding(status)
+	if finding == nil || !strings.Contains(finding.Message, "corrupt") {
+		t.Fatalf("truncated artifact reports %+v, want a corrupt finding", finding)
+	}
+
+	if err := os.Remove(rows); err != nil {
+		t.Fatal(err)
+	}
+	status, err = services.Report(t.Context(), base, services.StatusRequest{SkipGitAudit: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finding = lexicalIndexFinding(status)
+	if finding == nil || !strings.Contains(finding.Message, "absent") {
+		t.Fatalf("removed artifact reports %+v, want an absent finding", finding)
+	}
+}
+
+// A searchable input status cannot read must not suppress the report: the `documents` finding
+// that names the offending file, and every layer, source, and trust line, are the diagnosis.
+func TestStatusReportsAnUnreadableLexicalInputAsAFinding(t *testing.T) {
+	base := newBase(t, baseConfig, nil)
+	collect(t, base, "2026-05-04", dayOne)
+	if _, err := services.BuildLexicalIndex(t.Context(), base); err != nil {
+		t.Fatal(err)
+	}
+	day := filepath.Join(base.Root(), "events", "2026-05-04")
+	if err := os.Symlink("synthetic.json", filepath.Join(day, "zz-symlink.json")); err != nil {
+		t.Fatal(err)
+	}
+	status, err := services.Report(t.Context(), base, services.StatusRequest{SkipGitAudit: true})
+	if err != nil {
+		t.Fatalf("Report() with a symlinked event document = %v, want a report", err)
+	}
+	finding := lexicalIndexFinding(status)
+	if finding == nil || !strings.Contains(finding.Message, "could not be validated") {
+		t.Fatalf("derived finding = %+v, want the unvalidated-inputs finding", finding)
+	}
+	if finding.Severity != services.SeverityError {
+		t.Fatalf("unvalidated-inputs severity = %s, want error", finding.Severity)
+	}
+	if !strings.Contains(finding.Message, "zz-symlink.json") {
+		t.Fatalf("finding %q does not name the offending input", finding.Message)
+	}
+	if documents := findFinding(status, "documents"); documents == nil {
+		t.Fatalf("findings = %+v, want the documents finding that names the symlink", status.Findings)
+	}
+	if status.OK || len(status.Sources) != 1 {
+		t.Fatalf("status ok = %v, sources = %d; want a failing but complete report", status.OK, len(status.Sources))
+	}
+}

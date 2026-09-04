@@ -24,6 +24,18 @@ func TestAgentSessionTraceSelectsTheLatestCompleteGenerationAndOnlyPathEvidence(
 			t.Fatal(err)
 		}
 	}
+	wrongDepthManifest := `{"schema_version":1,"parser_version":"1","agent":"codex","session_id":"wrong-depth","completeness":"complete","ingested_at":"2026-05-04T11:00:00Z","high_water_mark":"2026-05-04T10:30:00Z","record_count":1}`
+	for _, path := range []string{
+		filepath.Join(store, "manifest.json"),
+		filepath.Join(store, "generation-c", "nested", "manifest.json"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(wrongDepthManifest+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	worktree := filepath.Join(home, "work", "fkf")
 	if err := os.MkdirAll(worktree, 0o700); err != nil {
 		t.Fatal(err)
@@ -89,6 +101,30 @@ esac
 	}
 }
 
+func TestAgentSessionTraceUsesPortableFindSyntax(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".agents", "sessions", "v1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := t.TempDir()
+	fakeFind := `#!/bin/sh
+set -eu
+case " $* " in
+  *" -mindepth "* | *" -maxdepth "*) exit 64 ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(bin, "find"), []byte(fakeFind), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	output := runAgentSessionTrace(t, home, bin, "2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
+	if strings.TrimSpace(string(output)) != "[]" {
+		t.Fatalf("empty trace output = %s, want []", output)
+	}
+}
+
 func TestAgentSessionTraceAppliesWindowAfterSelectingLatestGeneration(t *testing.T) {
 	home := t.TempDir()
 	store := filepath.Join(home, ".agents", "sessions", "v1", "codex", "lineage")
@@ -132,6 +168,84 @@ func TestAgentSessionTraceAppliesWindowAfterSelectingLatestGeneration(t *testing
 	if len(traces) != 1 || len(traces[0].Requests) != 1 ||
 		traces[0].Requests[0] != "Newest complete session snapshot." {
 		t.Fatalf("latest session traces = %+v, want only the newest complete generation", traces)
+	}
+}
+
+func TestAgentSessionTraceDoesNotExpireWhenTheStoreHasManyGenerations(t *testing.T) {
+	home := t.TempDir()
+	generation := filepath.Join(home, ".agents", "sessions", "v1", "codex", "lineage", "generation")
+	if err := os.MkdirAll(generation, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"schema_version":1,"parser_version":"1","agent":"codex","session_id":"session-1","completeness":"complete","ingested_at":"2026-05-04T10:00:00Z","high_water_mark":"2026-05-04T09:30:00Z","record_count":1}`
+	if err := os.WriteFile(filepath.Join(generation, "manifest.json"), []byte(manifest+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	transcript := `{"ts":"2026-05-04T09:00:00Z","agent":"codex","sid":"session-1","role":"user","content":"Keep an append-only store collectible."}` + "\n"
+	if err := os.WriteFile(filepath.Join(generation, "transcript.jsonl"), []byte(transcript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := t.TempDir()
+	fakeFind := `#!/bin/sh
+set -eu
+case " $* " in
+  *" -type f -name manifest.json -print0 "*)
+    manifest=$HOME/.agents/sessions/v1/codex/lineage/generation/manifest.json
+    count=0
+    while [ "$count" -lt 8193 ]; do
+      printf '%s\0' "$manifest"
+      count=$((count + 1))
+    done
+    ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "find"), []byte(fakeFind), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	output := runAgentSessionTrace(t, home, bin, "2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
+	var traces []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &traces); err != nil {
+		t.Fatalf("decode session traces: %v\n%s", err, output)
+	}
+	if len(traces) != 1 || traces[0].ID != "codex:session-1" {
+		t.Fatalf("session traces = %+v, want one latest session after more than 8192 generations", traces)
+	}
+}
+
+func TestAgentSessionTraceBoundsDistinctCandidatesWhileStreaming(t *testing.T) {
+	home := t.TempDir()
+	generation := filepath.Join(home, ".agents", "sessions", "v1", "codex", "lineage", "generation")
+	if err := os.MkdirAll(generation, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generation, "manifest.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := t.TempDir()
+	fakeXargs := `#!/bin/sh
+set -eu
+cat >/dev/null
+count=0
+while [ "$count" -le 8192 ]; do
+  printf '{"agent":"codex","session_id":"session-%s","ingested_at":"2026-05-04T10:00:00Z","high_water_mark":"2026-05-04T09:30:00Z","record_count":1,"ingested":1777888800,"last":1777887000,"path":"/generation"}\n' "$count"
+  count=$((count + 1))
+done
+`
+	if err := os.WriteFile(filepath.Join(bin, "xargs"), []byte(fakeXargs), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.CommandContext(t.Context(), "/bin/sh",
+		filepath.Join(repositoryRoot(t), "presets", "bin", "agent-session-trace.sh"),
+		"2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
+	command.Env = append(os.Environ(), "HOME="+home, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "more than 8192 completed sessions") {
+		t.Fatalf("unbounded distinct candidates = error %v, output %q", err, output)
 	}
 }
 

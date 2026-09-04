@@ -942,6 +942,76 @@ func TestGraphNamesTheRebuildWhenTheCacheIsAbsent(t *testing.T) {
 	}
 }
 
+// TestReadGraphGenerationAnswersThePublicationMarker pins the fifth root graph URI to the small
+// state document it is. It used to fall through to the evidence decoder, so a store-admitted,
+// documented address answered with an envelope error about a marker the file never carries.
+func TestReadGraphGenerationAnswersThePublicationMarker(t *testing.T) {
+	base := graphBase(t)
+	if _, err := services.BuildGraph(t.Context(), base); err != nil {
+		t.Fatal(err)
+	}
+	state, generation := readGraphGenerationMarker(t, base)
+	if state != "current" || len(generation) != 64 {
+		t.Fatalf("marker = %q %q, want the published generation", state, generation)
+	}
+	selected, err := services.Read(t.Context(), base,
+		core.GraphGenerationFile+"?jq=.state", services.ReadOptions{})
+	if err != nil || string(selected.Selection) != `"current"` {
+		t.Fatalf("Read(%s?jq=.state) = %+v, %v; want the marker state", core.GraphGenerationFile, selected, err)
+	}
+
+	// The marker is what gates the validated cache, so it has to stay readable exactly when
+	// that cache refuses: an interrupted publication is the one moment its state is asked for.
+	absolute, err := base.Store.Resolve(core.GraphGenerationFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interrupted := fmt.Sprintf("{\n  \"state\": \"building\",\n  \"generation\": %q\n}\n", strings.Repeat("0", 64))
+	if err := os.WriteFile(absolute, []byte(interrupted), core.BaseFileMode); err != nil {
+		t.Fatal(err)
+	}
+	if state, _ := readGraphGenerationMarker(t, base); state != "building" {
+		t.Fatalf("marker state = %q, want the interrupted publication reported as stored", state)
+	}
+	if _, err := services.Read(t.Context(), base, core.GraphFile, services.ReadOptions{}); err == nil ||
+		!strings.Contains(err.Error(), "invalid derived graph cache") {
+		t.Fatalf("Read(%s) error = %v, want the rows refused while the generation is not current",
+			core.GraphFile, err)
+	}
+
+	if err := os.Remove(absolute); err != nil {
+		t.Fatal(err)
+	}
+	_, err = services.Read(t.Context(), base, core.GraphGenerationFile, services.ReadOptions{})
+	if err == nil || !strings.Contains(err.Error(), "does not exist") ||
+		!strings.Contains(err.Error(), "fkf build graph") {
+		t.Fatalf("Read(%s) error = %v, want the absent marker to name the rebuild",
+			core.GraphGenerationFile, err)
+	}
+}
+
+// readGraphGenerationMarker resolves the publication marker through the read grammar, which is
+// the whole point of the path being addressable.
+func readGraphGenerationMarker(t *testing.T, base *services.Base) (state, generation string) {
+	t.Helper()
+	result, err := services.Read(t.Context(), base, core.GraphGenerationFile, services.ReadOptions{})
+	if err != nil {
+		t.Fatalf("Read(%s) = %v", core.GraphGenerationFile, err)
+	}
+	if result.Kind != "index" {
+		t.Fatalf("Read(%s).Kind = %q, want the marker answered as a JSON selection",
+			core.GraphGenerationFile, result.Kind)
+	}
+	var marker struct {
+		State      string `json:"state"`
+		Generation string `json:"generation"`
+	}
+	if err := json.Unmarshal(result.Selection, &marker); err != nil {
+		t.Fatalf("decode %s selection %q: %v", core.GraphGenerationFile, result.Selection, err)
+	}
+	return marker.State, marker.Generation
+}
+
 func TestGraphFactsRejectARowCompleteTruncatedCache(t *testing.T) {
 	base := graphBase(t)
 	if _, err := services.BuildGraph(t.Context(), base); err != nil {

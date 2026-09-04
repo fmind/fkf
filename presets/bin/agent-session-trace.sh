@@ -36,30 +36,25 @@ filter_dir=$(CDPATH='' cd -- "$(dirname -- "$script_path")" && pwd -P)
   exit 1
 }
 
-manifests=$(mktemp)
-candidates=$(mktemp)
 latest=$(mktemp)
 traces=$(mktemp)
 session=$(mktemp)
 files=$(mktemp)
-links=$(mktemp)
 repo_cache=$(mktemp -d)
-trap 'rm -f "$manifests" "$candidates" "$latest" "$traces" "$session" "$files" "$links"; rm -rf "$repo_cache"' EXIT
+manifest_path_pipe=$repo_cache/manifest-paths.pipe
+manifest_pipe=$repo_cache/manifests.pipe
+candidate_pipe=$repo_cache/candidates.pipe
+trap 'rm -f "$latest" "$traces" "$session" "$files"; rm -rf "$repo_cache"' EXIT
 
 # The store owns hash-only path segments, but still refuse links before opening any manifest.
 # `find` does not follow links by default; this explicit audit makes a linked generation an
-# error instead of a silently missing session.
-find "$store" -type l -print >"$links"
-[ ! -s "$links" ] || { echo "agent-session-trace.sh: session store contains a symlink" >&2; exit 1; }
-find "$store" -type f -name manifest.json -size +65536c -print >"$links"
-[ ! -s "$links" ] || { echo "agent-session-trace.sh: oversized session manifest" >&2; exit 1; }
-find "$store" -type f -name manifest.json -print0 >"$manifests"
-
-manifest_count=$(tr -cd '\000' <"$manifests" | wc -c | tr -d ' ')
-[ "$manifest_count" -le 8192 ] || {
-  echo "agent-session-trace.sh: session store has more than 8192 generations" >&2
-  exit 1
-}
+# error instead of a silently missing session. Markers keep the negative checks constant-size
+# even when a corrupt store contains many bad entries.
+find "$store" -type l -exec sh -c ': >"$1"' sh "$repo_cache/linked" {} +
+[ ! -e "$repo_cache/linked" ] || { echo "agent-session-trace.sh: session store contains a symlink" >&2; exit 1; }
+find "$store" -type f -name manifest.json -size +65536c \
+  -exec sh -c ': >"$1"' sh "$repo_cache/oversized" {} +
+[ ! -e "$repo_cache/oversized" ] || { echo "agent-session-trace.sh: oversized session manifest" >&2; exit 1; }
 
 # Fractional and offset RFC3339 values must compare as instants, not strings.
 rfc3339='
@@ -95,41 +90,73 @@ repo_name() {
   printf '%s/%s\n' "$owner" "$name"
 }
 
-: >"$candidates"
-if [ -s "$manifests" ]; then
-  # Batch size checks and JSON parsing: a large append-only store normally has thousands of
-  # generations, and one process per manifest made the source slower than the source timeout.
-  xargs -0 sh -c '
-    root=$1
-    shift
-    for manifest do
-      relative=${manifest#"$root"/}
-      case "$relative" in */*/*/manifest.json) ;; *) continue ;; esac
-      remainder=${relative%/manifest.json}
-      case "${remainder#*/*/}" in */*) continue ;; esac
-      printf "%s\0" "$manifest"
-    done
-  ' sh "$store" <"$manifests" >"$links"
+# Stream the exact four-level manifest shape through a parser and reducer. Named pipes let the
+# shell retain every producer exit status without materializing an append-only path/candidate
+# list; the reducer retains at most one generation per relevant session.
+mkfifo "$manifest_path_pipe" "$manifest_pipe" "$candidate_pipe"
+find "$store" -type f -name manifest.json -print0 >"$manifest_path_pipe" &
+find_pid=$!
+# macOS find has no -mindepth/-maxdepth. Filter the fixed
+# <agent>/<lineage>/<generation>/manifest.json shape in bounded xargs batches instead.
+xargs -0 sh -c '
+  root=$1
+  shift
+  for manifest do
+    relative=${manifest#"$root"/}
+    case "$relative" in */*/*/manifest.json) ;; *) continue ;; esac
+    remainder=${relative%/manifest.json}
+    case "${remainder#*/*/}" in */*) continue ;; esac
+    printf "%s\000" "$manifest"
+  done
+' sh "$store" <"$manifest_path_pipe" >"$manifest_pipe" &
+filter_pid=$!
+xargs -0 jq -c "$rfc3339"'
+  select(.schema_version == 1 and .parser_version == "1" and .completeness == "complete")
+  | select((.agent | type) == "string" and (.session_id | type) == "string"
+           and (.ingested_at | type) == "string" and (.record_count | type) == "number")
+  | select((.agent | utf8bytelength) <= 64 and (.session_id | utf8bytelength) <= 512)
+  | ((.ingested_at // "") | instant) as $ingested
+  | ((.high_water_mark // "") | instant) as $last
+  | select($ingested != null and $last != null)
+  | {agent, session_id, ingested_at, high_water_mark, record_count,
+     ingested: $ingested, last: $last,
+     path: (input_filename | sub("/manifest\\.json$"; ""))}
+' <"$manifest_pipe" >"$candidate_pipe" &
+parse_pid=$!
 
-  xargs -0 jq -c "$rfc3339"'
-    select(.schema_version == 1 and .parser_version == "1" and .completeness == "complete")
-    | select((.agent | type) == "string" and (.session_id | type) == "string"
-             and (.ingested_at | type) == "string" and (.record_count | type) == "number")
-    | ((.ingested_at // "") | instant) as $ingested
-    | ((.high_water_mark // "") | instant) as $last
-    | select($ingested != null and $last != null)
-    | {agent, session_id, ingested_at, high_water_mark, record_count,
-       ingested: $ingested, last: $last,
-       path: (input_filename | sub("/manifest\\.json$"; ""))}
-  ' <"$links" >"$candidates"
-fi
-
-jq -sc --arg start "$start" --arg end "$end" "$rfc3339"'
+if ! jq -nc --arg start "$start" --arg end "$end" "$rfc3339"'
   ($start | instant) as $since | ($end | instant) as $until
+  # Old sessions cannot produce a result. Newer generations remain relevant even after the
+  # window because they must suppress an older generation of the same session inside it.
+  | reduce inputs as $candidate ({};
+      if $candidate.last < $since then .
+      else ($candidate.agent + "\u0000" + $candidate.session_id) as $key
+        | if .[$key] == null
+            or [.[$key].ingested, .[$key].path] < [$candidate.ingested, $candidate.path]
+          then .[$key] = $candidate
+          else .
+          end
+        | if length > 8192 then
+            error("agent-session-trace.sh: more than 8192 completed sessions are relevant to the requested window")
+          else . end
+      end)
+  | [.[] | select(.last >= $since and .last < $until)]
   | sort_by(.agent, .session_id, .ingested, .path)
-  | group_by(.agent + "\u0000" + .session_id)
-  | map(last | select(.last >= $since and .last < $until) | del(.ingested, .last))
-' "$candidates" >"$latest"
+  | map(del(.ingested, .last))
+' "$candidate_pipe" >"$latest"; then
+  wait "$parse_pid" 2>/dev/null || true
+  wait "$filter_pid" 2>/dev/null || true
+  wait "$find_pid" 2>/dev/null || true
+  exit 1
+fi
+producer_failed=
+wait "$parse_pid" || producer_failed=1
+wait "$filter_pid" || producer_failed=1
+wait "$find_pid" || producer_failed=1
+[ -z "$producer_failed" ] || {
+  echo "agent-session-trace.sh: could not enumerate session manifests" >&2
+  exit 1
+}
 selected=$(jq 'length' <"$latest")
 [ "$selected" -le 1024 ] || {
   # The caller separately caps captured stdout at 64 MiB; this count keeps a malformed store

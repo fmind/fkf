@@ -52,12 +52,13 @@ func writeCLIError(stderr io.Writer, err error) {
 
 // Commands are grouped by the question you came with, because that is what a reader of `--help`
 // is looking for. What an invocation may DO is the other thing worth knowing, so the two groups
-// that only read say so in their heading and the individual commands that write the base or run
-// a declared command carry markWrite or markRun at the end of their usage line. Trust is a
-// property of the leaf — `build graph` writes inside a group that otherwise does not — and a
-// marker on the leaf is the only way to say that without a paragraph of prose.
+// carry a read-only heading only when every command is read-only. Individual commands or flags
+// that write the base or run a declared command carry markWrite or markRun at the end of their
+// usage line. Trust is a property of the leaf — `read --body` may write inside an otherwise
+// retrieval-focused group — and a marker on the leaf is the only way to say that without a
+// paragraph of prose.
 const (
-	groupAsk     = "Ask the base — retrieval, reads only"
+	groupAsk     = "Ask the base — retrieve evidence"
 	groupInspect = "Inspect and explore — reads only"
 	groupRun     = "Run and set up"
 

@@ -86,6 +86,15 @@ collect_range() {
 
   if [ "${count}" -lt 1000 ]; then
     jq -c '
+      def commit_title($sha):
+        split("\n")
+        | map(
+            gsub("\\p{Cf}"; "")
+            | gsub("[\\p{Cc}\\s]+"; " ")
+            | gsub("^ +| +$"; "")
+            | select(length > 0)
+          )
+        | ((first // ("Commit " + $sha[0:12]))[0:160]);
       def fkf_identity: @uri | gsub("%3A"; ":") | gsub("%2F"; "/")
         | gsub("%40"; "@") | gsub("%2B"; "+") | gsub("~"; "%7E");
       def participant_uri:
@@ -94,11 +103,14 @@ collect_range() {
         | if $github == null then "person:email/" + ($email | fkf_identity)
           else "actor:github.com/" + $github.login
           end;
-      .[] | . + {
-      repository_uri: ("repo:github.com/" + .repository.fullName),
-      participant_uris: (if (.commit.author.email // "") == "" then []
-        else [(.commit.author.email | participant_uri)] end)
-    }' "${page}" >> "${records}"
+      .[]
+      | .sha as $sha
+      | . + {
+          title: ((.commit.message // "") | commit_title($sha)),
+          repository_uri: ("repo:github.com/" + .repository.fullName),
+          participant_uris: (if (.commit.author.email // "") == "" then []
+            else [(.commit.author.email | participant_uri)] end)
+        }' "${page}" >> "${records}"
     return
   fi
   if [ "$(( $2 - $1 ))" -le 1 ]; then

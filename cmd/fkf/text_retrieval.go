@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -77,21 +78,33 @@ func pageSummary(hit services.SearchHit) string {
 	return hit.Excerpt
 }
 
+// writeVolumesText totals each source over the window rather than printing the per-day matrix
+// the JSON carries: a week of twenty sources is a hundred and forty lines nothing could read,
+// the same reason topSources names only the busiest few. The header states the window those
+// totals cover.
+//
+// Ordering is by volume, then name. Accumulating in first-seen order sorted the sources of the
+// first day and then appended whichever ones only appeared later, so the list read as sorted
+// until it visibly restarted, and the same base printed a different order for every window.
 func writeVolumesText(w *textWriter, result *services.FindResult) {
 	if len(result.Days) > 0 {
 		w.printf("%s .. %s  %d day(s)\n\n", result.Days[0], result.Days[len(result.Days)-1], len(result.Days))
 	}
-	totals, order := map[string]int{}, []string{}
+	totals := map[string]int{}
 	for _, day := range result.Volumes {
 		for _, entry := range day.Sources {
-			if _, known := totals[entry.Source]; !known {
-				order = append(order, entry.Source)
-			}
 			totals[entry.Source] += entry.Count
 		}
 	}
+	order := slices.SortedFunc(maps.Keys(totals), func(a, b string) int {
+		if totals[a] != totals[b] {
+			return totals[b] - totals[a]
+		}
+		return strings.Compare(a, b)
+	})
+	width := uriWidth(len(order), func(i int) string { return order[i] })
 	for _, source := range order {
-		w.printf("%-22s %6d\n", source, totals[source])
+		w.printf("%-*s %6d\n", width, source, totals[source])
 	}
 	w.printf("\n%d record(s) across %d day(s)\n", result.Matched, len(result.Volumes))
 }

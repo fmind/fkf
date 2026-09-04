@@ -179,7 +179,7 @@ func writeBuildText(w *textWriter, report *services.BuildReport) {
 		writeWikiIndexText(w, report.Wiki)
 	}
 	if report.Bodies != nil {
-		w.printf("%s: pruned %d cached body or bodies (%d bytes)\n", report.Bodies.Message, report.Bodies.Pruned, report.Bodies.Bytes)
+		w.printf("%s (%d bytes)\n", report.Bodies.Message, report.Bodies.Bytes)
 	}
 	if report.Index != nil {
 		writeLexicalIndexBuildText(w, report.Index)
@@ -187,11 +187,27 @@ func writeBuildText(w *textWriter, report *services.BuildReport) {
 }
 
 func writeLexicalIndexBuildText(w *textWriter, report *services.LexicalIndexBuild) {
+	if report.Stale {
+		w.printf("%s  STALE — run `fkf build index`\n", report.URI)
+		return
+	}
+	if report.Mode == "" {
+		w.printf("%s  unchanged\n", report.URI)
+		return
+	}
 	w.printf("%s  %d entries, %d postings, %d bytes in %s (%s)\n",
 		report.URI, report.Entries, report.Postings, report.Bytes, report.Elapsed, report.Mode)
 }
 
 func writeGraphBuildText(w *textWriter, typed *services.GraphBuild) {
+	if typed.Stale {
+		w.printf("%s  STALE — run `fkf build graph`\n", typed.URI)
+		return
+	}
+	if typed.Mode == "" {
+		w.printf("%s  unchanged\n", typed.URI)
+		return
+	}
 	w.printf("%s  %d edges from %d document(s) and %d page(s) in %s (%s)\n",
 		typed.URI, typed.Edges, typed.Documents, typed.Pages, typed.Elapsed, typed.Mode)
 }

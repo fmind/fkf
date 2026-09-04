@@ -4,12 +4,16 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 const releaseArchive = "fkf_v1.0.0_linux_amd64.tar.gz"
@@ -151,6 +155,33 @@ func TestInstallerRefusesAnArchiveWithTheWrongVersion(t *testing.T) {
 	}
 }
 
+func TestInstallerReportsAnUnreachableDownload(t *testing.T) {
+	tests := []struct{ name, unreachable, want string }{
+		{name: "latest release lookup", unreachable: "*/releases/latest", want: "latest release"},
+		{name: "release archive", unreachable: "*/fkf_*.tar.gz", want: releaseArchive},
+		{name: "release checksums", unreachable: "*/checksums.txt", want: "checksums.txt"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newInstallerFixture(t, false)
+			fixture.env = append(fixture.env, "FKF_TEST_CURL_FAIL="+test.unreachable)
+
+			output, err := fixture.run()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+				t.Fatalf("install.sh = %v, want the installer's own exit 1\n%s", err, output)
+			}
+			// curl -f prints only its own exit code, so the installer must name what it wanted.
+			if !strings.Contains(output, "fkf installer: ") || !strings.Contains(output, test.want) {
+				t.Fatalf("failure = %q, want an installer message naming %q", output, test.want)
+			}
+			if _, statErr := os.Stat(filepath.Join(fixture.installDir, "fkf")); !os.IsNotExist(statErr) {
+				t.Fatalf("unreachable download installed a binary: %v", statErr)
+			}
+		})
+	}
+}
+
 func TestInstallerPreservesAnExistingBinaryWhenStagingFails(t *testing.T) {
 	fixture := newInstallerFixture(t, false)
 	if err := os.MkdirAll(fixture.installDir, 0o700); err != nil {
@@ -231,12 +262,60 @@ func TestInstallationDocsExposeLatestAndAttestedPaths(t *testing.T) {
 	}
 }
 
+// The installer's trust story is that a published archive passed the project gate on the
+// platform it targets: a tag push does not trigger CI, so CD has to require that matrix itself.
+func TestReleasePublishRequiresTheVerificationMatrix(t *testing.T) {
+	var integration struct {
+		On map[string]any `yaml:"on"`
+	}
+	readWorkflow(t, ".github/workflows/ci.yml", &integration)
+	if _, callable := integration.On["workflow_call"]; !callable {
+		t.Fatalf("ci.yml must be callable so CD can reuse its matrix, got triggers %v", integration.On)
+	}
+
+	var delivery struct {
+		Jobs map[string]struct {
+			Uses  string `yaml:"uses"`
+			Needs any    `yaml:"needs"`
+		} `yaml:"jobs"`
+	}
+	readWorkflow(t, ".github/workflows/cd.yml", &delivery)
+	if uses := delivery.Jobs["verify"].Uses; uses != "./.github/workflows/ci.yml" {
+		t.Fatalf("cd.yml verify job uses = %q, want the CI workflow itself", uses)
+	}
+	if needs := delivery.Jobs["release"].Needs; !jobNeeds(needs, "verify") {
+		t.Fatalf("cd.yml release job needs = %v, want it gated on verify", needs)
+	}
+}
+
+// GitHub accepts `needs:` as one job name or as a list of them.
+func jobNeeds(declared any, job string) bool {
+	switch needs := declared.(type) {
+	case string:
+		return needs == job
+	case []any:
+		return slices.Contains(needs, any(job))
+	}
+	return false
+}
+
+func readWorkflow(t *testing.T, path string, into any) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal(content, into); err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+}
+
 func TestInstallerArchiveNameMatchesGoReleaser(t *testing.T) {
 	config, err := os.ReadFile(".goreleaser.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"`
+	want := `name_template: "{{ .ProjectName }}_v{{ .Version }}_{{ .Os }}_{{ .Arch }}"`
 	if !strings.Contains(string(config), want) {
 		t.Fatalf(".goreleaser.yml must retain the archive name install.sh downloads: %s", want)
 	}
@@ -307,6 +386,9 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 printf '%s\n' "$url" >> "$FKF_TEST_CURL_LOG"
+case "$url" in
+  ${FKF_TEST_CURL_FAIL:-__never__}) exit 22 ;;
+esac
 case "$url" in
   https://github.com/fmind/fkf/releases/latest)
     printf '%s' https://github.com/fmind/fkf/releases/tag/v1.0.0

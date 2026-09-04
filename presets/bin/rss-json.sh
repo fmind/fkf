@@ -107,10 +107,19 @@ while [ "$#" -gt 0 ]; do
       exit 1
       ;;
     *)
+      # The positional is polymorphic: an existing OPML path or a bare feed URL. Classify it
+      # here, or the scheme guard below blames the URL scheme for a public OPML the reader has
+      # not created yet, which is the first thing a new base hits.
       if [ -f "$1" ]; then
         expand_opml "$1" public
       else
-        printf 'public\t%s\t\n' "$1" >> "$tmp/raw-feeds"
+        case "$1" in
+          http://* | https://*) printf 'public\t%s\t\n' "$1" >> "$tmp/raw-feeds" ;;
+          *)
+            echo "rss-json.sh: not an existing OPML file or an http/https feed URL: $1" >&2
+            exit 1
+            ;;
+        esac
       fi
       ;;
   esac

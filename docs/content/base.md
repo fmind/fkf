@@ -95,7 +95,7 @@ The ordinary child command path is composed from `<base>/bin/`, declared externa
 
 ## Trust follows execution
 
-`fkf trust` hashes a canonical execution plan, not YAML bytes. Changes to `run:`, `test:`, `body:`, enabled state, body-bound paths, timeouts, retries, pacing, extra executable directories, or files and executable bits under `bin/` or `tests/` re-arm trust. Comments, YAML key order, schema descriptions and examples, `requires:`, retrieval-only field-path changes, and the inherited process environment do not.
+`fkf trust` hashes a canonical execution plan, not YAML bytes. Changes to `auth:`, `run:`, `test:`, `body:`, enabled state, body-bound paths, timeouts, retries, pacing, extra executable directories, or files and executable bits under `bin/` or `tests/` re-arm trust. Comments, YAML key order, schema descriptions and examples, `requires:`, retrieval-only field-path changes, and the inherited process environment do not.
 
 The disclosure printed before trust remains the authority. Trust is local change detection, never a shell sandbox.
 

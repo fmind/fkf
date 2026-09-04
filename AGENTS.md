@@ -11,7 +11,7 @@ The design is implemented. Do not add a compatibility path, migration, or second
 1. Use `.agents/skills/fkf-contribute/SKILL.md` as the route map. This file is authoritative if they disagree.
 1. Run focused tests after behavior changes, then `mise run all`. Never weaken, skip, or hide a failing check.
 1. Do not commit, push, publish, rename, delete outside the working tree, or take an irreversible action unless explicitly asked.
-1. Keep tests hermetic: use a temporary `HOME`, unset `FKF_BASE`, fake every declared command through `Runner`, and use synthetic fixtures. The narrow exceptions are tests of `core/shell`, the synthetic relative-base helper regression, and invariant or status-policy tests that run local `go list` or `git`.
+1. Keep tests hermetic: use a temporary `HOME`, unset `FKF_BASE`, use synthetic fixtures, and replace every provider-backed declared command through the `Runner` seam or a fake executable on a temporary `PATH`. No test makes a network or provider call. Local POSIX tools such as `sh`, `bash`, `python3`, `jq`, `sqlite3`, `git`, and `go list` may run for real only where they are the subject under test: the execution boundary in `core/shell` and `sources`, the shipped helpers and installer exercised by `internal/checks` and `install_test.go`, the synthetic relative-base helper regression, and repository invariant or status-policy checks.
 
 ## Product boundaries
 
@@ -40,7 +40,7 @@ The design is implemented. Do not add a compatibility path, migration, or second
 - Collection is all-or-nothing and atomic. Non-zero exit, timeout, excessive output, invalid or multiple JSON documents, or missing required values fails the day. `sync --preview` runs and validates one source once, returns at most three projected samples, and writes nothing.
 - A source may declare one `test:` argv. `fkf test` runs enabled hooks by default, named hooks regardless of enabled state, and disabled hooks with `--all`; an empty selection preserves the compatible successful 0/0 report, so completion gates should name mandatory sources. Hooks receive only `{{base}}` and `{{home}}`, write nothing, and resolve `<base>/tests/` before the ordinary command PATH. Reserve that whole trust-digested tree for source hooks, fixtures, and support code; generic repository checks belong elsewhere because every edit re-arms execution trust. Collection and body commands never search `tests/`.
 - A `window: true` source runs once per contiguous missing span. Preset helpers use finite pagination and fail before emitting partial output. Event documents retain their collection-time UTC bounds; `status` revalidates current structural rules.
-- Every mutating CLI path takes one fail-fast lock per physical base, including symlink aliases. Readers, dry runs, previews, `trust --check`, and `build wiki --check` remain lock-free.
+- Every mutating CLI path takes one fail-fast lock per physical base, including symlink aliases. Readers, dry runs, previews, `trust --check`, and `build [target] --check` remain lock-free.
 
 ## Derived content and retrieval
 
@@ -63,6 +63,7 @@ The design is implemented. Do not add a compatibility path, migration, or second
 | `skills/`    | Embedded `fkf-use`, `fkf-learn`, and `daily-brief`; edit these sources, not base copies.   |
 | `presets/`   | Source YAML and small reviewed helpers.                                                    |
 | `docs/`      | Hugo site and generated `static/fkf.schema.json`.                                          |
+| `internal/`  | Test-only package: repository invariants, notices, and shipped-preset helper checks.       |
 
 ## Verification
 

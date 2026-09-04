@@ -312,6 +312,14 @@ func executionTreeScripts(ctx context.Context, root, tree string) ([]BinScript, 
 		return nil, err
 	}
 	directory := filepath.Join(filepath.Clean(ExpandHome(root)), tree)
+	// Only a missing tree root means "nothing to review", and that is decided before the walk.
+	// Answering it afterwards let any ENOENT raised below the root — an editor's atomic save, a
+	// helper's temp file, a concurrent checkout — collapse a populated tree to the empty digest:
+	// the gate failing open on exactly the trees it exists to hash. Only ENOENT short-circuits;
+	// a permission or other stat failure falls through so the walk reports it.
+	if _, err := os.Lstat(directory); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
 	var scripts []BinScript
 	err := WalkOwnedTree(ctx, directory, func(path string, _ fs.DirEntry, info fs.FileInfo) error {
 		if path == directory {
@@ -343,9 +351,6 @@ func executionTreeScripts(ctx context.Context, root, tree string) ([]BinScript, 
 		}
 		return nil
 	})
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
 	}

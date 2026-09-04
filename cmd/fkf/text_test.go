@@ -511,3 +511,36 @@ func TestStatusTextNamesLiveAuthAndHarnessState(t *testing.T) {
 		}
 	}
 }
+
+// find --count totals each source over the window. Accumulating in first-seen order printed a
+// list that read as sorted until the sources that only appeared on a later day were appended
+// after it, and the order changed with the window; volume then name is stable and scannable.
+func TestVolumesTextOrdersSourcesByVolumeThenName(t *testing.T) {
+	result := &services.FindResult{
+		Days:    []string{"2026-08-31", "2026-09-01"},
+		Matched: 11,
+		Volumes: []services.DayVolume{
+			{Date: "2026-08-31", Sources: []services.SourceCount{{Source: "alpha", Count: 1}, {Source: "beta", Count: 4}}},
+			{Date: "2026-09-01", Sources: []services.SourceCount{
+				{Source: "alpha", Count: 1}, {Source: "google-developers-posts", Count: 4}, {Source: "zeta", Count: 1},
+			}},
+		},
+	}
+	var output bytes.Buffer
+	writeVolumesText(&textWriter{out: &output}, result)
+	sources := []string{}
+	for _, line := range strings.Split(strings.TrimSpace(output.String()), "\n") {
+		if fields := strings.Fields(line); len(fields) == 2 && fields[1] != ".." {
+			sources = append(sources, fields[0])
+		}
+	}
+	want := []string{"beta", "google-developers-posts", "alpha", "zeta"}
+	if !slices.Equal(sources, want) {
+		t.Fatalf("volume order = %v, want %v:\n%s", sources, want, output.String())
+	}
+	// The count column is aligned on the widest source name, not a hardcoded width that a
+	// twenty-three character source silently overflows.
+	if !strings.Contains(output.String(), "google-developers-posts      4\n") {
+		t.Errorf("volume column is misaligned:\n%s", output.String())
+	}
+}

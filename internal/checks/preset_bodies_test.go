@@ -90,7 +90,7 @@ func TestGitHubCommitHelperNormalizesNoreplyAuthorsToActors(t *testing.T) {
 	bin := t.TempDir()
 	fakeGH := `#!/bin/sh
 cat <<'JSON'
-[{"sha":"abc","url":"https://github.com/fmind/fkf/commit/abc","repository":{"fullName":"fmind/fkf"},"commit":{"author":{"date":"2026-05-04T09:00:00Z","email":"12345+Fmind@users.noreply.github.com"},"message":"Subject"}}]
+[{"sha":"abcdef0123456789","url":"https://github.com/fmind/fkf/commit/abc","repository":{"fullName":"fmind/fkf"},"commit":{"author":{"date":"2026-05-04T09:00:00Z","email":"12345+Fmind@users.noreply.github.com"},"message":"\n\u200d\tfix: preserve\tcomplete windows\r\nBody"}}]
 JSON
 `
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(fakeGH), 0o700); err != nil {
@@ -106,12 +106,14 @@ JSON
 	}
 	var records []struct {
 		Participants []string `json:"participant_uris"`
+		Title        string   `json:"title"`
 	}
 	if err := json.Unmarshal(output, &records); err != nil {
 		t.Fatalf("decode GitHub commits: %v\n%s", err, output)
 	}
 	if len(records) != 1 || len(records[0].Participants) != 1 ||
-		records[0].Participants[0] != "actor:github.com/fmind" {
+		records[0].Participants[0] != "actor:github.com/fmind" ||
+		records[0].Title != "fix: preserve complete windows" {
 		t.Fatalf("GitHub commit participants = %+v", records)
 	}
 }

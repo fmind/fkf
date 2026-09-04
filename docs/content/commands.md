@@ -15,7 +15,7 @@ fkf <command> --help
 
 Stable exit codes are `0` success, `1` partial or operational failure, `2` configuration or usage, `3` untrusted base, and `130` cancellation.
 
-Every mutating path takes one fail-fast cross-process writer lock for the physical base. A concurrent writer exits operationally instead of waiting or interleaving changes. Read-only commands, `sync --dry-run`, `sync --preview`, `learn propose --dry-run`, `learn review`, `trust --check`, and `build wiki --check` stay lock-free.
+Every mutating path takes one fail-fast cross-process writer lock for the physical base. A concurrent writer exits operationally instead of waiting or interleaving changes. Read-only commands, `sync --dry-run`, `sync --preview`, `learn propose --dry-run`, `learn review`, `trust --check`, and `build [target] --check` stay lock-free.
 
 ## Ask the base
 
@@ -88,7 +88,7 @@ Bare terms are the positional form of repeatable `--grep`; all terms must match.
 
 Structured results omit the raw provider `record` and internal `days` selection by default. Add `--raw` when diagnosing a collector and you explicitly need those payloads; ordinary results keep the URI and projected fields needed to cite and filter the match.
 
-With no term or filter, find lists records from the last seven populated days. `--count` reports per-day, per-source volume instead.
+With no term or filter, find lists records from the last seven populated days. `--count` reports per-day, per-source volumes instead of items; text output totals each source over the window.
 
 ### `read`
 
@@ -243,28 +243,26 @@ Schedule manages one hourly user unit for the selected base: a systemd user serv
 
 ```bash
 fkf status
-fkf status --all
 fkf status --max-age-hours 48
 fkf status --live
 ```
 
-Status is the whole-base view: layers, evidence-envelope integrity, explicitly declared ordinary command requirements, separately checked source-hook entrypoints, collector volume, trust, graph integrity, repository tracking policy, permissions, official-helper drift, managed skills, links, and unharvested task learning. It locates executables but never runs a probe or declared source command. The JSON summary keeps `missing_requirements` and `missing_test_hooks` distinct. Findings include exact repair commands, but status never mutates the base. With `--max-age-hours`, every enabled source must have evidence within the requested age.
+Status is the whole-base view: layers, evidence-envelope integrity, explicitly declared ordinary command requirements, separately checked source-hook entrypoints, collector volume, trust, graph integrity, lexical-index cache health, repository tracking policy, permissions, official-helper drift, managed skills, links, and unharvested task learning. It locates executables but never runs a probe or declared source command. The JSON summary keeps `missing_requirements` and `missing_test_hooks` distinct. Findings include exact repair commands, but status never mutates the base. With `--max-age-hours`, every enabled source must have evidence within the requested age.
 
 `--live` additionally runs each enabled source's trusted `auth:` probe and inspects user-scope harness registrations. Probe output is discarded; the report exposes only the source names that require login. Because this crosses the declared execution boundary, ordinary `status` remains the offline default.
 
 ### `build`
 
 ```bash
-fkf build
-fkf build graph
-fkf build index
-fkf build wiki
-fkf build wiki --check
+fkf build [--check]
+fkf build graph [--check]
+fkf build index [--check]
+fkf build wiki [--check]
 fkf build --if-stale
-fkf build bodies --prune
+fkf build bodies --prune [--older-than <dur>] [--source <name>]
 ```
 
-The bare command writes the managed wiki-index block first, rebuilds the graph from the bytes left on disk, then rebuilds the ignored lexical index. `build index` rebuilds only that lexical cache. `wiki --check` reports drift without writing. `--if-stale` checks every selected cache without a writer lock and rebuilds only after detecting drift; it cannot be combined with `--check`. `bodies --prune` requires the explicit flag and removes the ignored body cache; no evidence record or provider link changes. Derived outputs are caches.
+The bare command, spelled explicitly as `fkf build all`, writes the managed wiki-index block first, rebuilds the graph from the bytes left on disk, then rebuilds the ignored lexical index. `build index` rebuilds only that lexical cache. `--check` reports whether the selected target cache is stale and writes nothing. `--if-stale` checks every selected cache without a writer lock and rebuilds only after detecting drift; it cannot be combined with `--check`. `bodies --prune` requires the explicit flag and prunes the ignored body cache (with optional `--older-than <dur>` and `--source <name>` filters); no evidence record or provider link changes. Derived outputs are caches.
 
 ### `new`
 
@@ -299,6 +297,18 @@ fkf mcp serve --base ~/brain
 ```
 
 The stdio server is read-only and requires an explicit base. It exposes bounded `context`, `find`, `day`, `timeline`, `list`, `read`, and `graph` operations but no body execution. Pageable tools return strict opaque cursors bound to their arguments and exact result snapshot. See [MCP server](../mcp/).
+
+### `harness`
+
+```bash
+fkf harness list
+fkf harness print claude
+fkf harness install claude codex
+fkf harness install --all --dry-run
+fkf harness install --all --check
+```
+
+Harness manages one base's MCP, session-start hook, and skill integrations at user scope. `list` prints the closed supported vocabulary; `print` emits the exact managed fragments without writing; `install` preserves unrelated configuration and refuses an FKF key owned by something else. Use `--dry-run` to inspect changes and `--check` to fail when an installed bridge is missing or drifted. Every managed launch pins the executable and base by absolute path. See [Agent harnesses](../harnesses/).
 
 ### `upgrade`
 

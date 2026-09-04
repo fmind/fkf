@@ -77,12 +77,16 @@ Root `graph.tsv` stores one edge per line:
 src<TAB>dst<TAB>kind<TAB>at<TAB>via<TAB>indexed
 ```
 
-Edges have exactly four sources:
+Edges have exactly six sources:
 
 1. a collected field whose stored schema says `relation: true`;
 1. an authored Markdown link outside code;
 1. an authored page tag, which points to `tag:<name>`;
-1. an explicit Markdown frontmatter relation.
+1. an explicit Markdown frontmatter relation;
+1. a URI-shaped alias under root `identities:`, recorded `via identities.<name>.aliases`;
+1. an `aliases:` entry on an authored `type: person` or `type: organization` page, recorded `via frontmatter:aliases`.
+
+The last two transcribe a declared alias rather than a link: each records one `same-as` edge from the alias to its canonical URI, so an identity merge stays auditable under `--kind same-as`. [Declared identities](../identities/) has the alias grammar.
 
 For a collected relation, the schema field name is the edge kind and the stored canonical URI is the destination:
 
@@ -142,7 +146,7 @@ Graph metadata records each collected document and authored Markdown input with 
 
 `graph.tsv` stays source-sorted. `graph.dst.tsv` is its destination-sorted twin, while `graph.offsets.tsv` maps each source and destination to an exact byte range. A neighbourhood step binary-searches the offset file and reads only that range. One walk keeps all three validated descriptors open across its hops and rechecks their stats before return.
 
-`graph.meta.json` schema version 3 exposes the complete manifest:
+`graph.meta.json` schema version 3 records the generation's integrity fields alongside its column, edge-count, and observed-vocabulary summary:
 
 ```json
 {

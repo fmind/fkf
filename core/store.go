@@ -235,7 +235,7 @@ func relationFilePath(relative string) (relationFileCapabilities, bool) {
 		return relationFileCapabilities{}, true
 	case relative == BaseAgentsFile:
 		return relationFileCapabilities{Fragment: true}, true
-	case relative == GraphMetaFile:
+	case relative == GraphMetaFile, relative == GraphGenerationFile:
 		return relationFileCapabilities{JQ: true}, true
 	case len(parts) == 3 && parts[0] == string(LayerEvents) && validAddressDate(parts[1]):
 		if addressableSourceDocument(parts[2]) {
@@ -256,9 +256,9 @@ func relationFilePath(relative string) (relationFileCapabilities, bool) {
 }
 
 func notAddressable(relative string) error {
-	return fmt.Errorf("%w: %s (a base addresses the published shapes under the %s layers, plus %s, %s, %s, %s, %s and %s)",
+	return fmt.Errorf("%w: %s (a base addresses the published shapes under the %s layers, plus %s, %s, %s, %s, %s, %s and %s)",
 		ErrNotAddressable, relative, LayerNames(), GraphFile, GraphDstFile, GraphOffsetsFile,
-		GraphMetaFile, ConfigFileName, BaseAgentsFile)
+		GraphMetaFile, GraphGenerationFile, ConfigFileName, BaseAgentsFile)
 }
 
 // addressableLayerPath is deliberately a closed grammar. A layer directory may contain

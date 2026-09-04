@@ -312,11 +312,12 @@ func encodedTokens(pack *ContextPack) int {
 }
 
 // fitContextBudget turns the selection estimate into an exact delivery bound. Evidence is the
-// useful payload, so the variable-length dropped-item detail is reduced first; DroppedTotal
-// preserves the complete count. If the fixed, honest receipt itself cannot fit, the request is
-// rejected with the minimum that this specific query needs instead of returning an oversize
-// pack or stripping its trust notice.
+// useful payload, so the variable-length receipt detail — consulted bodies and dropped items —
+// is reduced first; ConsultedBodiesTotal and DroppedTotal preserve the complete counts. Only
+// once what remains is fixed and honest may the request be rejected, with the minimum that this
+// specific query needs instead of returning an oversize pack or stripping its trust notice.
 func fitContextBudget(pack *ContextPack, budget int) error {
+	boundConsultedBodies(&pack.Receipt, budget)
 	details := append([]DroppedItem(nil), pack.Receipt.Dropped...)
 	fullDropped := len(details)
 	if pack.Receipt.DroppedTotal > fullDropped {
@@ -383,6 +384,17 @@ func fitContextBudget(pack *ContextPack, budget int) error {
 	}
 	stabilizeEncodedTokens(pack)
 	return nil
+}
+
+// boundConsultedBodies keeps the receipt's provenance proportional to the request. The list is
+// charged against the budget by encodedTokens but, unlike the dropped detail, nothing ever gave
+// it back, so a long list starved the pack of the evidence it exists to explain.
+func boundConsultedBodies(receipt *Receipt, budget int) {
+	full := len(receipt.ConsultedBodies)
+	if limit := consultedBodiesCap(budget); full > limit {
+		receipt.ConsultedBodies = receipt.ConsultedBodies[:limit]
+		receipt.ConsultedBodiesTotal = full
+	}
 }
 
 func selfConsistentMinimum(pack *ContextPack, details []DroppedItem, minimum int) int {

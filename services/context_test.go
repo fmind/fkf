@@ -1307,3 +1307,73 @@ func TestContextIndexesCustomSourceFields(t *testing.T) {
 		t.Fatal("a same-length custom field edit left the semantic-input digest unchanged")
 	}
 }
+
+// TestContextBoundsConsultedBodiesSoEvidenceStillFits pins the receipt's provenance as bounded
+// payload. Every consulted-body URI is charged against the budget, so on a base with a warm body
+// cache the list alone outgrew the default budget and the flagship read command answered an
+// ordinary query with a budget error instead of a pack.
+func TestContextBoundsConsultedBodiesSoEvidenceStillFits(t *testing.T) {
+	config := strings.Replace(baseConfig,
+		"    body: [cli, view, \"{{id}}\"]\n",
+		"    body: [cli, view, \"{{id}}\"]\n    bodies: cache\n", 1)
+	runner := &fakeRunner{responses: map[string]string{
+		"":                "Archived provider narrative.",
+		"solitary-beacon": "Isolated cached narrative.",
+	}}
+	base := newBase(t, config, runner)
+	trust(t, base)
+
+	// Enough cached bodies for their URIs alone to outgrow the default budget, at the length real
+	// provider identifiers reach: the receipt names the record URI plus the cached document path.
+	const archived = 90
+	records := []string{
+		`{"id":"solitary-beacon","t":"2026-05-04T09:00:00Z","subject":"Solitary beacon"}`,
+	}
+	for index := range archived {
+		id := fmt.Sprintf(
+			"/home/agent/.local/state/provider/workspaces/synthetic-provider-workspace-%03d/memory/archived-provider-record-with-a-long-identifier-%03d.md",
+			index, index)
+		records = append(records, fmt.Sprintf(
+			`{"id":%q,"t":"2026-05-04T09:00:00Z","subject":"Archived item %03d"}`, id, index))
+	}
+	document := collect(t, base, "2026-05-04", "["+strings.Join(records, ",\n")+"]")
+	for index, record := range document.Records {
+		uri, ok := document.RecordURI(record)
+		if !ok {
+			t.Fatalf("record %d has no URI", index)
+		}
+		if _, err := services.Read(t.Context(), base, uri, services.ReadOptions{Body: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	broad, err := services.BuildContext(t.Context(), base, services.ContextRequest{
+		Query: "archived item", Budget: services.DefaultBudget,
+	})
+	if err != nil {
+		t.Fatalf("BuildContext at the default budget: %v", err)
+	}
+	if broad.Receipt.Selected == 0 || broad.Receipt.EncodedTokens > services.DefaultBudget {
+		t.Fatalf("selected = %d in %d tokens, want evidence delivered inside the default budget",
+			broad.Receipt.Selected, broad.Receipt.EncodedTokens)
+	}
+	if broad.Receipt.ConsultedBodiesTotal != archived ||
+		len(broad.Receipt.ConsultedBodies) == 0 ||
+		len(broad.Receipt.ConsultedBodies) > services.MaxConsultedBodiesReported ||
+		len(broad.Receipt.ConsultedBodies) >= broad.Receipt.ConsultedBodiesTotal {
+		t.Fatalf("consulted bodies = %d named of %d total, want a bounded sample and the full count",
+			len(broad.Receipt.ConsultedBodies), broad.Receipt.ConsultedBodiesTotal)
+	}
+
+	// A list that already fits stays whole, so the total never appears beside a complete list.
+	narrow, err := services.BuildContext(t.Context(), base, services.ContextRequest{
+		Query: "solitary beacon", Budget: services.DefaultBudget,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(narrow.Receipt.ConsultedBodies) != 1 || narrow.Receipt.ConsultedBodiesTotal != 0 {
+		t.Fatalf("consulted bodies = %+v, total = %d, want the short list reported unshortened",
+			narrow.Receipt.ConsultedBodies, narrow.Receipt.ConsultedBodiesTotal)
+	}
+}

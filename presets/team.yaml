@@ -4,7 +4,7 @@ sources:
   agent-session-traces:
     enabled: false
     layer: tasks
-    requires: [agent-session-trace.sh, agent-prompt-filter.jq, find, git, jq, xargs]
+    requires: [agent-session-trace.sh, agent-prompt-filter.jq, find, git, jq, mkfifo, xargs]
     window: true
     run: [agent-session-trace.sh, "{{start}}", "{{end}}"]
     install: mise use -g jq@latest

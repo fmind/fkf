@@ -51,6 +51,7 @@ sources:
     enabled: true
     layer: events
     requires: [github-search-json.sh, gh, jq]
+    auth: [gh, auth, status]
     window: true
     run: [github-search-json.sh, prs, assignee, "{{start}}", "{{end}}"]
     fields:
@@ -80,6 +81,7 @@ FKF neither assigns those names nor infers equivalence. It validates cardinality
 | `enabled`      | Whether sync may run the source; false by default             |
 | `layer`        | `events`, `index`, or the dedicated `tasks` trace importer    |
 | `requires`     | Explicit bare executable names checked by `status`            |
+| `auth`         | Optional literal argv probing provider login readiness        |
 | `run`          | Direct argv producing JSON; required                          |
 | `test`         | Optional direct argv verifying the source without collection  |
 | `format`       | `json` or `ndjson`; default `json`                            |
@@ -96,6 +98,8 @@ FKF neither assigns those names nor infers equivalence. It validates cardinality
 
 `requires:` is the ordinary collection/body readiness contract. Each item is a unique bare executable name such as `gh`, `jq`, `github-search-json.sh`, or `fish`; paths and inferred names are rejected. `status` checks all requirements for enabled sources without running them. It reports the `test[0]` entrypoint separately on the test-only PATH, so a base-owned hook need not duplicate its own name in `requires:`. External tools that the hook invokes still belong in `requires:`. FKF deliberately does not infer dependencies from argv or helper contents.
 
+`auth:` is the readiness half of that contract: literal argv such as `[gh, auth, status]`, run once per sync and only for a source that already has due work. It accepts no placeholder, and its stdout and stderr are discarded rather than logged, so a failing probe skips that source as `auth-required` without exposing provider output. `fkf brief` and `fkf status --live` run the same probes without collecting.
+
 Mapped event times accept a date, a Unix epoch, or a timestamp with an explicit `Z` or numeric UTC offset. A timezone-less date-time is rejected because the same provider value would otherwise move between civil days when a base runs on another machine.
 
 ## Commands and helpers
@@ -106,7 +110,7 @@ Use the smallest clear integration form:
 1. Put pipelines, glob expansion, or provider-specific projection in a helper under `<base>/bin/`, where trust covers its bytes and executable bit.
 1. Use another executable when it improves clarity. Python is a good choice for structured or stateful transformations; Go belongs in FKF only when the framework must own the behavior.
 
-Presets provide curated shell helpers for provider boundaries where pagination, privacy projection, or completeness checks are easy to get wrong. `fkf init` copies only the helpers required by enabled sources. Later, `fkf config helpers` shows the current or drifted state of installed official helpers plus any missing official helper required by the configuration; `fkf config helpers --refresh` is the only explicit refresh and never touches an unknown custom executable.
+Presets provide curated helpers for provider boundaries where pagination, privacy projection, or completeness checks are easy to get wrong. `fkf init` copies only the helpers required by enabled sources. Later, `fkf config helpers` shows the current or drifted state of installed official helpers plus any missing official helper required by the configuration; `fkf config helpers --refresh` is the only explicit refresh and never touches an unknown custom executable.
 
 This is the middle ground: FKF remains one static core and a set of helpers, while users can compose any executable without writing a new Go adapter.
 
@@ -133,7 +137,7 @@ For event and task sources the date values describe the requested completed rang
 
 `test:` is also one direct argv array. It may use only `{{base}}` and `{{home}}`, because a verification hook is independent of collection windows and stored values. Put a base-owned hook and its fixtures or support files under `tests/`; FKF hashes the complete tree and prepends it only for `test:` execution, so a fixture cannot shadow collection or body commands. With no names, `fkf test` selects enabled sources that declare a hook; explicit names also select disabled sources, and `--all` selects every declared hook. An empty selection preserves the compatible successful 0/0 report. Name every mandatory source in a project completion task so the gate also detects one accidentally removed hook. Hooks use the source timeout, run sequentially, discard stdout, expose no provider stderr, and never write evidence.
 
-Collected data never enters `run:`. `body:` is an argv array because its field placeholders come from a record. Every record-derived substituted value is valid Unicode, contains no invisible control or format character, cannot begin with an option marker, and stays one opaque argument even when it contains spaces or punctuation; FKF supplies trusted base and home paths separately. A body fetch runs the current trusted `body:` argv but evaluates its field placeholders through the map stored with that historical document. A newly added placeholder absent from the document is refused until the record is re-collected.
+Collected data never enters `run:`. `body:` is an argv array because its field placeholders come from a record. Every record-derived substituted value is valid Unicode, contains no invisible control or format character, cannot begin with an option marker (`-`) or a response-file selector (`@`), and stays one opaque argument even when it contains spaces or punctuation; FKF supplies trusted base and home paths separately. A body fetch runs the current trusted `body:` argv but evaluates its field placeholders through the map stored with that historical document. A newly added placeholder absent from the document is refused until the record is re-collected.
 
 ## Field paths and cardinality
 
@@ -211,7 +215,7 @@ A source may set `bodies: none`, `cache`, or `sync`; the default is `none`:
 - `cache` stores a body only after an explicit `read --body`.
 - `sync` prefetches new or provider-modified bodies after the evidence document is safely written. A fresh current index snapshot repairs missing cache entries. A failed new event document gets one later retry; after a complete cache prune, the newest selected event document for each opted-in source gets the same bounded retry cycle. An attempt marker prevents a vanished historical resource from becoming perpetual hourly work. Use an explicit `read --body` for any other historical miss or `sync --force` to re-collect and prefetch its document. Meeting notes and local harness memory files opt in.
 
-Cached text lives under ignored `bodies/<source>/` and is bound by `bodies/manifest.json` to its record URI, provider modification time, byte count, SHA-256, and the cache-local event restore markers. It is bounded to 4,096 entries, 512 MiB total, a 1 MiB manifest, and 4 MiB per body. FKF refuses growth before publishing a body that the manifest cannot name. The cache is UTF-8, machine-local, rebuildable data—not evidence and never mirrored by FKF. `read --body` uses a valid cached copy before executing. `find --bodies` and `context` consult valid cached text offline; neither fetches a miss. `fkf build bodies --prune` explicitly empties the cache and re-arms the one-time newest-event restoration for the next sync.
+Cached text lives under ignored `bodies/<source>/` and is bound by `bodies/manifest.json` to its record URI, provider modification time, byte count, SHA-256, and the cache-local event restore markers. It is bounded to 4,096 entries, 512 MiB total, a 1 MiB manifest, and 4 MiB per body. FKF refuses growth before publishing a body that the manifest cannot name. The cache is UTF-8, machine-local, rebuildable data—not evidence and never mirrored by FKF. `read --body` uses a valid cached copy before executing. `find --bodies` and `context` consult valid cached text offline; neither fetches a miss. `fkf build bodies --prune` explicitly empties the cache (or selectively prunes by `--older-than` and `--source`) and re-arms the one-time newest-event restoration for the next sync.
 
 Entity URIs remain graph nodes assembled from record relations or authored Markdown relations; they do not execute an on-demand resolver. Body execution is never available over MCP. `fkf validate records` warns when one title is shared by more than half of a source's records; `--strict` promotes that warning.
 

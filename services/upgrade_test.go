@@ -172,26 +172,35 @@ if [ -n "$output" ]; then : > "$output"; else printf '%s' 'https://github.com/fm
 	}
 }
 
-func TestUpgradeDoesNotReplaceAnEqualDevelopmentBuild(t *testing.T) {
-	executable, fetcher := upgradeFixture(t, "v1.2.3", false)
-	before, err := os.ReadFile(executable)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestUpgradeDoesNotReplaceAnEqualOrAheadDevelopmentBuild(t *testing.T) {
+	for _, current := range []string{
+		"v1.2.3+dirty",
+		"v1.2.3-dirty",
+		"v1.2.3-4-gdeadbeef",
+		"v1.2.3-4-gdeadbeef-dirty",
+	} {
+		t.Run(current, func(t *testing.T) {
+			executable, fetcher := upgradeFixture(t, "v1.2.3", false)
+			before, err := os.ReadFile(executable)
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	report, err := upgradeWith(t.Context(), executable, "v1.2.3+dirty", "linux", "amd64", fetcher)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Updated || report.Current != "v1.2.3+dirty" || len(fetcher.downloads) != 0 {
-		t.Fatalf("report = %+v, downloads = %v", report, fetcher.downloads)
-	}
-	after, err := os.ReadFile(executable)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(before) {
-		t.Fatal("equal development build was replaced")
+			report, err := upgradeWith(t.Context(), executable, current, "linux", "amd64", fetcher)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Updated || report.Current != current || len(fetcher.downloads) != 0 {
+				t.Fatalf("report = %+v, downloads = %v", report, fetcher.downloads)
+			}
+			after, err := os.ReadFile(executable)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatal("equal or ahead development build was replaced")
+			}
+		})
 	}
 }
 

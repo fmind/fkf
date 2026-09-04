@@ -253,6 +253,19 @@ func newTagsCommand() *cli.Command {
 	}
 }
 
+// validateReport is the envelope bare `fkf validate` returns. The checks are heterogeneous —
+// two Markdown layers, the collected records, and the optional cross-page lint — and only the
+// Markdown ones carry a layer of their own, so they are named fields rather than an array a
+// consumer would have to identify by sniffing keys. One command emits one JSON document:
+// concatenating the reports produced a stream that only a stream-tolerant reader accepted.
+type validateReport struct {
+	Wiki     *services.ValidationReport  `json:"wiki,omitempty"`
+	Projects *services.ValidationReport  `json:"projects,omitempty"`
+	Records  *services.RecordTitleReport `json:"records"`
+	Lint     *services.ValidationReport  `json:"lint,omitempty"`
+	OK       bool                        `json:"ok"`
+}
+
 func validateAll(ctx context.Context, cmd *cli.Command) error {
 	if cmd.Int("stale-days") < 1 {
 		return invalidUsage(fmt.Errorf("--stale-days is %d; expected a positive integer", cmd.Int("stale-days")))
@@ -265,57 +278,44 @@ func validateAll(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 	strict := cmd.Bool("strict")
-	hasErrors := false
+	report := &validateReport{OK: true}
 
 	if base.Config.Layers[core.LayerWiki] {
-		report, err := services.ValidateMarkdownLayer(ctx, base, core.LayerWiki, false, strict)
+		wiki, err := services.ValidateMarkdownLayer(ctx, base, core.LayerWiki, false, strict)
 		if err != nil {
 			return err
 		}
-		if err := emit(cmd, report, nil); err != nil {
-			return err
-		}
-		if !report.OK {
-			hasErrors = true
-		}
+		report.Wiki = wiki
+		report.OK = report.OK && wiki.OK
 	}
 
 	if base.Config.Layers[core.LayerProjects] {
-		report, err := services.ValidateMarkdownLayer(ctx, base, core.LayerProjects, true, strict)
+		projects, err := services.ValidateMarkdownLayer(ctx, base, core.LayerProjects, true, strict)
 		if err != nil {
 			return err
 		}
-		if err := emit(cmd, report, nil); err != nil {
-			return err
-		}
-		if !report.OK {
-			hasErrors = true
-		}
+		report.Projects = projects
+		report.OK = report.OK && projects.OK
 	}
 	records, err := services.ValidateRecordTitles(ctx, base, strict)
 	if err != nil {
 		return err
 	}
-	if err := emit(cmd, records, nil); err != nil {
-		return err
-	}
-	if !records.OK {
-		hasErrors = true
-	}
+	report.Records = records
+	report.OK = report.OK && records.OK
+
 	if cmd.Bool("lint") {
 		lint, err := services.ValidateKnowledgeLint(ctx, base, strict, cmd.Int("stale-days"))
 		if err != nil {
 			return err
 		}
-		if err := emit(cmd, lint, nil); err != nil {
-			return err
-		}
-		if !lint.OK {
-			hasErrors = true
-		}
+		report.Lint = lint
+		report.OK = report.OK && lint.OK
 	}
-
-	if hasErrors {
+	if err := emit(cmd, report, nil); err != nil {
+		return err
+	}
+	if !report.OK {
 		return partialFailure(errUsage("validation found errors"))
 	}
 	return nil

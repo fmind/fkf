@@ -39,6 +39,7 @@ type GraphBuild struct {
 	Mode      string       `json:"mode"`
 	Elapsed   string       `json:"elapsed"`
 	Meta      EdgeListMeta `json:"meta"`
+	Stale     bool         `json:"stale,omitempty"`
 }
 
 // BuildGraph rescans the whole base and replaces the derived edge cache. It is a pure function of

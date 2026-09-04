@@ -488,6 +488,45 @@ func TestListAppliesEachLayerSpecificFilter(t *testing.T) {
 	}
 }
 
+// TestListPagesTheTasksLayerWithinItsWindow is the tasks layer's only successful list: every
+// other case in this file either filters the layer out or is rejected before the dispatch, so
+// without it the whole tasks arm — window parse, snapshot binding, page copy — never runs.
+func TestListPagesTheTasksLayerWithinItsWindow(t *testing.T) {
+	base := newBase(t)
+	writeFile(t, base, "tasks/2026-05-04/a-session/"+core.TaskTraceFile, "# A session\n\nRequest.\n")
+	writeFile(t, base, "tasks/2026-05-06/later-session/"+core.TaskTraceFile, "# Later session\n\nRequest.\n")
+	session := connect(t, base)
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: "list", Arguments: map[string]any{
+			"layer": "tasks", "since": "2026-05-04", "until": "2026-05-04",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("list(tasks) returned an error: %+v", result.Content)
+	}
+	encoded, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listing services.TaskListing
+	if err := json.Unmarshal(encoded, &listing); err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Traces) != 1 {
+		t.Fatalf("list(tasks) traces = %+v, want only the trace inside the window", listing.Traces)
+	}
+	trace := listing.Traces[0]
+	if trace.URI != "tasks/2026-05-04/a-session/"+core.TaskTraceFile || trace.Title != "A session" {
+		t.Fatalf("trace = %+v, want the windowed trace's URI and heading", trace)
+	}
+	if listing.Window.Since != "2026-05-04" || listing.Window.Until != "2026-05-04" {
+		t.Fatalf("window = %+v, want the bounds the call asked for", listing.Window)
+	}
+}
+
 func TestListRejectsFiltersThatDoNotApplyToTheLayer(t *testing.T) {
 	session := connect(t, newBase(t))
 	for _, test := range []struct {

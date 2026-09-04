@@ -2,7 +2,7 @@
 
 This file is generated from the Go runtime and external-module union linked into the four supported `./cmd/fkf` release targets. Regenerate it with `mise run generate:notices`; `mise run check` rejects drift. The project itself is licensed separately in `LICENSE`.
 
-## Go runtime go1.27.0
+## Go runtime go1.27.1
 
 Source: <https://go.dev/>
 
@@ -499,9 +499,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-## github.com/yuin/goldmark v1.8.5
+## github.com/yuin/goldmark v1.8.6
 
-Source: <https://pkg.go.dev/github.com/yuin/goldmark@v1.8.5>
+Source: <https://pkg.go.dev/github.com/yuin/goldmark@v1.8.6>
 
 ### LICENSE
 

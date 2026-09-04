@@ -4,12 +4,16 @@
 /fkf
 /coverage.out
 
-# Machine-local: a developer's exported credentials, agent scratch space, prompts, and local
-# skills. The rest of .agents/ is versioned so this repository can carry contributor skills.
+# Machine-local: a developer's exported credentials, agent scratch space, prompts, plans, and
+# local skills. Contributor skills under .agents/skills/ stay versioned.
 /.env
 /.agents/AGENTS.md
+/.agents/PLAN.md
 /.agents/tmp/
 /.agents/prompts/
 /.agents/skills/local-*/
 
 .DS_Store
+__pycache__/
+*.pyc
+/.ruff_cache/

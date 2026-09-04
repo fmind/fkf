@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -779,4 +781,91 @@ func trustTestConfig(t *testing.T, root string) *Config {
 		t.Fatal(err)
 	}
 	return config
+}
+
+// TestBinScriptsFailsClosedWhenAnEntryVanishesMidWalk pins the direction the gate must fail in.
+// "Nothing to review" is an answer only an absent tree root may give. Reading it out of the
+// walk's error instead let a single ENOENT raised anywhere below the root — an editor's atomic
+// save, a helper's temp file, a concurrent checkout — return an empty listing with no error.
+// That empty listing is exactly the digest a base recorded when `fkf trust` ran before any
+// helper existed, so a bin/ full of unreviewed executables would match the stored record and
+// run, with bin/ prepended first on the child PATH.
+func TestBinScriptsFailsClosedWhenAnEntryVanishesMidWalk(t *testing.T) {
+	root := t.TempDir()
+	bin := filepath.Join(root, BaseBinDir)
+	if err := os.MkdirAll(bin, BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	const stable = 64
+	for i := range stable {
+		script := filepath.Join(bin, fmt.Sprintf("helper-%02d.sh", i))
+		if err := os.WriteFile(script, []byte("#!/bin/sh\necho helper\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// One file appearing and disappearing under the tree, so whichever syscall loses the race —
+	// the walk's readdir, the entry lstat, or the script read — reports ENOENT.
+	flapping := filepath.Join(bin, "zz-flapping.sh")
+	stop := make(chan struct{})
+	var flapper sync.WaitGroup
+	flapper.Add(1)
+	go func() {
+		defer flapper.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_ = os.WriteFile(flapping, []byte("#!/bin/sh\necho flapping\n"), 0o700)
+			_ = os.Remove(flapping)
+		}
+	}()
+	defer func() {
+		close(stop)
+		flapper.Wait()
+	}()
+	for range 200 {
+		scripts, err := BinScripts(t.Context(), root)
+		if err != nil {
+			// Refusing the whole tree is the correct answer to a vanished entry: the caller
+			// re-runs the check rather than trusting a listing it knows is incomplete.
+			continue
+		}
+		if len(scripts) < stable {
+			t.Fatalf(
+				"BinScripts(t.Context(), ) = %d scripts with a nil error, want the %d stable scripts or a refusal",
+				len(scripts), stable,
+			)
+		}
+	}
+}
+
+// Only a missing tree root means "nothing to review". Every other failure to enumerate the tree
+// leaves the reviewed set unknown, and an unknown set may not be hashed as the empty one.
+func TestBinScriptsTreatsOnlyAnAbsentTreeAsNothingToReview(t *testing.T) {
+	root := t.TempDir()
+	scripts, err := BinScripts(t.Context(), root)
+	if err != nil || scripts != nil {
+		t.Fatalf("BinScripts(t.Context(), ) = %v, %v, want no scripts and no error for an absent bin/", scripts, err)
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory permissions the rest of this test needs")
+	}
+	nested := filepath.Join(root, BaseBinDir, "lib")
+	if err := os.MkdirAll(nested, BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "impl.sh"), []byte("#!/bin/sh\necho impl\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Searchable but not listable, so the walk's readdir fails below the root.
+	if err := os.Chmod(nested, 0o100); err != nil {
+		t.Fatal(err)
+	}
+	// Restored before t.TempDir removes the tree, which needs the directory readable again.
+	t.Cleanup(func() { _ = os.Chmod(nested, BaseDirMode) })
+	if _, err := BinScripts(t.Context(), root); err == nil {
+		t.Fatal("BinScripts(t.Context(), ) error = nil, want the unreadable subdirectory refused")
+	}
 }

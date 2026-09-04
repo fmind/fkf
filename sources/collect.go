@@ -242,11 +242,21 @@ func recordCollectionDate(
 	bounds []collectionDayBound,
 	dates []string,
 ) (string, error) {
-	raw, ok := source.Fields.EvalString(core.FieldTime, map[string]any(record))
-	if !ok {
+	// EvalString returns the same !ok for zero projected values and for several distinct ones,
+	// and bucketing runs before VerifyRecords on the windowed path, so this is the first check a
+	// record meets. It has to separate the two cases itself: telling an author that a record
+	// "has no value" when it carries a value under each declared path sends them hunting a
+	// field that is present.
+	values := source.Fields.EvalStrings(core.FieldTime, map[string]any(record))
+	switch {
+	case len(values) == 0:
 		return "", fmt.Errorf("record %d has no value at the declared fields.time paths %v",
 			index, source.Fields.Paths(core.FieldTime))
+	case len(values) > 1:
+		return "", fmt.Errorf("record %d field %s projects %d values; schema cardinality %s",
+			index, core.FieldTime, len(values), source.Schema[core.FieldTime].Cardinality)
 	}
+	raw := values[0]
 	if date, dateOnly := civilDateValue(raw); dateOnly {
 		for _, candidate := range bounds {
 			if date == candidate.date {

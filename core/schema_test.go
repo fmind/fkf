@@ -234,9 +234,9 @@ func TestPublishedSchemaMatchesTheBinary(t *testing.T) {
 	path := filepath.Join("..", "docs", "static", "fkf.schema.json")
 	published, err := os.ReadFile(path)
 	if err != nil {
-		// Not a skip. `mise run check:schema` runs exactly this test, so skipping on a missing
-		// file made the gate report success for the one state it exists to catch: the published
-		// schema gone or moved while editors keep validating against it.
+		// Not a skip. The test gate runs this check, so skipping on a missing file made the
+		// gate report success for the one state it exists to catch: the published schema gone
+		// or moved while editors keep validating against it.
 		t.Fatalf("no published schema at %s: %v (regenerate it with `mise run generate:schema`)", path, err)
 	}
 	generated, err := EncodeConfigSchema()

@@ -224,7 +224,10 @@ func parseComparableVersion(version string) (comparableVersion, bool) {
 	if !strings.HasPrefix(numbers, "v") || len(parts) != 3 {
 		return comparableVersion{}, false
 	}
-	parsed := comparableVersion{prerelease: prerelease != ""}
+	// git describe's dirty and N-g<sha> suffixes identify a source build at or ahead of the
+	// named tag; they are not a SemVer release candidate older than that same tag. Treat only
+	// those closed forms as development metadata so `fkf upgrade` cannot downgrade the binary.
+	parsed := comparableVersion{prerelease: prerelease != "" && !gitDescribeMetadata(prerelease)}
 	for index, part := range parts {
 		value, err := strconv.ParseUint(part, 10, 64)
 		if err != nil {
@@ -233,6 +236,28 @@ func parseComparableVersion(version string) (comparableVersion, bool) {
 		parsed.parts[index] = value
 	}
 	return parsed, true
+}
+
+func gitDescribeMetadata(suffix string) bool {
+	if suffix == "dirty" {
+		return true
+	}
+	parts := strings.Split(suffix, "-")
+	if len(parts) != 2 && len(parts) != 3 {
+		return false
+	}
+	if _, err := strconv.ParseUint(parts[0], 10, 64); err != nil {
+		return false
+	}
+	if len(parts[1]) < 2 || parts[1][0] != 'g' {
+		return false
+	}
+	for _, char := range parts[1][1:] {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", char) {
+			return false
+		}
+	}
+	return len(parts) == 2 || parts[2] == "dirty"
 }
 
 func versionAtLeast(current, latest string) bool {

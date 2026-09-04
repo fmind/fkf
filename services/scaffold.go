@@ -47,7 +47,10 @@ var credentialPatterns = []string{
 	"id_rsa", "id_dsa", "id_ecdsa", "id_ecdsa_sk", "id_ed25519", "id_ed25519_sk", "*.ppk", ".ssh/",
 	"credentials.json", "token.json", "application_default_credentials.json", "service-account*.json", ".aws/",
 	".netrc", "_netrc", ".git-credentials", ".npmrc", ".pypirc",
-	"PRIVATE.md", core.LocalConfigName,
+	// The personal preset hardcodes this base-root path for the optional private feed list, and
+	// a feed endpoint is routinely a bearer-capability URL: the rss helper opaques those before
+	// they reach evidence, which the first commit of the file would undo.
+	"PRIVATE.md", "feeds.private.opml", core.LocalConfigName,
 }
 
 // machineLocalPatterns are ignored but are not secrets: they describe this machine rather

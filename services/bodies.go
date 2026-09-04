@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/fmind/fkf/core"
@@ -134,6 +135,9 @@ func validateBodyManifestEntry(base *Base, key string, entry BodyManifestEntry) 
 	if _, err := hex.DecodeString(entry.SHA256); err != nil {
 		return fmt.Errorf("body manifest entry %q sha256: %w", key, err)
 	}
+	if _, err := time.Parse(time.RFC3339, entry.FetchedAt); err != nil {
+		return fmt.Errorf("body manifest entry %q fetched_at: %w", key, err)
+	}
 	absolute := filepath.Join(base.Root(), filepath.FromSlash(entry.Path))
 	return core.ValidateWithinRoot(base.Root(), absolute)
 }
@@ -213,6 +217,12 @@ func readCachedBodyFromManifest(
 	absolute := filepath.Join(base.Root(), filepath.FromSlash(entry.Path))
 	data, err := core.ReadFileLimitContext(ctx, absolute, core.MaxNarrativeBytes)
 	if err != nil {
+		// The body cache is ignored, rebuildable, and never evidence, so an absent file is a
+		// miss rather than a failure: an interrupted prune leaves the manifest entry behind, and
+		// offline readers must degrade to the stored metadata instead of refusing the whole base.
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil, false, nil
+		}
 		return "", nil, false, fmt.Errorf("read cached body for %s: %w", uri, err)
 	}
 	digest := sha256.Sum256(data)
@@ -283,10 +293,29 @@ func bodyProviderModifiedAt(document *sources.Document, record sources.Record) s
 	return ""
 }
 
+// PruneBodiesOptions filters which cached bodies to delete.
+type PruneBodiesOptions struct {
+	OlderThan time.Duration
+	Source    string
+}
+
 // PruneBodies removes the entire rebuildable body cache and recreates no state.
 func PruneBodies(ctx context.Context, base *Base) (*BodiesBuildReport, error) {
+	return PruneBodiesWithOptions(ctx, base, PruneBodiesOptions{})
+}
+
+// PruneBodiesWithOptions removes cached bodies matching the given options.
+func PruneBodiesWithOptions(ctx context.Context, base *Base, options PruneBodiesOptions) (*BodiesBuildReport, error) {
 	if err := checkContext(ctx); err != nil {
 		return nil, err
+	}
+	if options.Source != "" {
+		if err := core.ValidateSourceName(options.Source); err != nil {
+			return nil, err
+		}
+	}
+	if options.OlderThan < 0 {
+		return nil, errors.New("older-than duration must not be negative")
 	}
 	directory := filepath.Join(base.Root(), BodiesDirectory)
 	if err := core.ValidateWithinRoot(base.Root(), directory); err != nil {
@@ -294,20 +323,190 @@ func PruneBodies(ctx context.Context, base *Base) (*BodiesBuildReport, error) {
 	}
 	manifest, manifestErr := loadBodyManifest(ctx, base)
 	report := &BodiesBuildReport{Message: "body cache is empty"}
-	if manifestErr == nil {
+	if manifestErr != nil {
+		if options.Source != "" || options.OlderThan > 0 {
+			return nil, fmt.Errorf("selective body prune requires a readable manifest: %w", manifestErr)
+		}
+		// Prune is the recovery path named by cache-integrity errors. The directory has already
+		// passed the base-root check above, and neither removal follows a symlink target.
+		report.Message = "body cache is empty; invalid manifest discarded"
+		if err := removeBodyCache(base, directory); err != nil {
+			return nil, err
+		}
+		return report, nil
+	}
+	if options.Source != "" {
+		if err := requireKnown("source", []string{options.Source}, prunableSourceNames(base, manifest)); err != nil {
+			return nil, err
+		}
+	}
+	if options.OlderThan <= 0 && options.Source == "" {
 		report.Pruned = len(manifest.Entries)
 		for _, entry := range manifest.Entries {
 			report.Bytes += int64(entry.Bytes)
 		}
-	} else {
-		// Prune is the recovery path named by cache-integrity errors. The directory has already
-		// passed the base-root check above, and RemoveAll never follows a symlink target.
-		report.Message = "body cache is empty; invalid manifest discarded"
+		report.Message = pruneMessage(report.Pruned, 0)
+		if err := removeBodyCache(base, directory); err != nil {
+			return nil, err
+		}
+		return report, nil
 	}
-	if err := os.RemoveAll(directory); err != nil {
-		return nil, fmt.Errorf("prune body cache: %w", err)
+	return pruneSelectedBodies(base, directory, manifest, options, report)
+}
+
+// pruneSelectedBodies owns the state transition after the caller has validated both the
+// manifest and the filter. Keeping it separate makes the publication order — manifest first,
+// now-inert files second — reviewable without the recovery and whole-cache cases around it.
+func pruneSelectedBodies(
+	base *Base,
+	directory string,
+	manifest *BodyManifest,
+	options PruneBodiesOptions,
+	report *BodiesBuildReport,
+) (*BodiesBuildReport, error) {
+	cutoff := base.Now().UTC().Add(-options.OlderThan)
+	toDelete, err := pruneCandidateURIs(manifest, options, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	affectedSources := make(map[string]bool)
+	paths := make([]string, 0, len(toDelete))
+	for _, uri := range toDelete {
+		entry := manifest.Entries[uri]
+		affectedSources[entry.Source] = true
+		paths = append(paths, filepath.Join(base.Root(), filepath.FromSlash(entry.Path)))
+		delete(manifest.Entries, uri)
+		report.Pruned++
+		report.Bytes += int64(entry.Bytes)
+	}
+
+	attemptsChanged := pruneEventAttempts(manifest, options, affectedSources)
+	report.Message = pruneMessage(report.Pruned, len(manifest.Entries))
+	if report.Pruned == 0 && !attemptsChanged {
+		// Nothing matched, so leave the manifest byte-identical rather than rewriting it: the
+		// lexical index keys a body input on size and mtime, and a no-op rewrite costs it that
+		// fingerprint for a file whose content did not change.
+		return report, nil
+	}
+
+	if len(manifest.Entries) == 0 && len(manifest.EventAttempts) == 0 {
+		if err := removeBodyCache(base, directory); err != nil {
+			return nil, err
+		}
+		return report, nil
+	}
+	// Publish the trimmed manifest before unlinking the bodies it no longer names. A manifest
+	// entry whose file is gone fails every offline read, while a file no entry names is inert
+	// and the next cacheBody for that URI overwrites it at the same deterministic path.
+	if err := writeBodyManifest(base, manifest); err != nil {
+		return nil, err
+	}
+	for _, filePath := range paths {
+		if err := os.Remove(filePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("prune cached body %s: %w", filepath.ToSlash(filePath), err)
+		}
+		_ = os.Remove(filepath.Dir(filePath)) // a source directory that still holds bodies is expected to stay
 	}
 	return report, nil
+}
+
+// removeBodyCache discards the whole cache, unlinking the manifest before the bodies it names
+// so an interrupted removal leaves inert orphan files rather than entries pointing at nothing.
+func removeBodyCache(base *Base, directory string) error {
+	if err := os.Remove(bodyManifestPath(base)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("prune body cache: %w", err)
+	}
+	if err := os.RemoveAll(directory); err != nil {
+		return fmt.Errorf("prune body cache: %w", err)
+	}
+	return nil
+}
+
+// prunableSourceNames is the closed vocabulary a --source filter may name: what the base
+// declares now, plus what the cache still holds for sources the configuration has since
+// dropped, which is the only way to prune one of those selectively.
+func prunableSourceNames(base *Base, manifest *BodyManifest) []string {
+	names := make(map[string]bool)
+	for _, name := range base.Config.SourceNames() {
+		names[name] = true
+	}
+	for _, entry := range manifest.Entries {
+		names[entry.Source] = true
+	}
+	for source := range manifest.EventAttempts {
+		names[source] = true
+	}
+	vocabulary := make([]string, 0, len(names))
+	for name := range names {
+		vocabulary = append(vocabulary, name)
+	}
+	sort.Strings(vocabulary)
+	return vocabulary
+}
+
+// pruneMessage names the outcome the same way on every prune path, so text output carries the
+// count the JSON envelope already reports and a no-op never reads as an action.
+func pruneMessage(pruned, remaining int) string {
+	switch {
+	case pruned > 0:
+		return fmt.Sprintf("pruned %d cached body or bodies", pruned)
+	case remaining > 0:
+		return "nothing matched; body cache unchanged"
+	default:
+		return "body cache is empty"
+	}
+}
+
+func pruneCandidateURIs(
+	manifest *BodyManifest, options PruneBodiesOptions, cutoff time.Time,
+) ([]string, error) {
+	var toDelete []string
+	for uri, entry := range manifest.Entries {
+		if options.Source != "" && entry.Source != options.Source {
+			continue
+		}
+		if options.OlderThan > 0 {
+			fetched, err := time.Parse(time.RFC3339, entry.FetchedAt)
+			if err != nil {
+				return nil, fmt.Errorf("body manifest entry %q fetched_at: %w", uri, err)
+			}
+			if fetched.After(cutoff) {
+				continue
+			}
+		}
+		toDelete = append(toDelete, uri)
+	}
+	return toDelete, nil
+}
+
+// pruneEventAttempts clears the restore markers a prune arms again, and reports whether it
+// actually removed one so the caller can tell a real state change from a no-op selection.
+func pruneEventAttempts(
+	manifest *BodyManifest, options PruneBodiesOptions, affectedSources map[string]bool,
+) bool {
+	changed := false
+	// A source-only prune explicitly resets that source even when it has only a marker. When age
+	// also filters the selection, preserve the marker unless at least one body actually matched.
+	resetExplicitSource := options.Source != "" &&
+		(options.OlderThan <= 0 || affectedSources[options.Source])
+	if resetExplicitSource {
+		// Presence, not truth: a marker stored as false is still state this prune removes.
+		if _, found := manifest.EventAttempts[options.Source]; found {
+			delete(manifest.EventAttempts, options.Source)
+			changed = true
+		}
+	}
+	remainingSources := make(map[string]bool)
+	for _, entry := range manifest.Entries {
+		remainingSources[entry.Source] = true
+	}
+	for source := range affectedSources {
+		if _, found := manifest.EventAttempts[source]; found && !remainingSources[source] {
+			delete(manifest.EventAttempts, source)
+			changed = true
+		}
+	}
+	return changed
 }
 
 // CachedBodiesForURIs reads only requested, manifest-verified body text. It is the offline

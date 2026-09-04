@@ -359,4 +359,25 @@ func TestDescribePolicyNamesWhatAppliesForTheTrustReview(t *testing.T) {
 	if !strings.Contains(windowed, "window") || !strings.Contains(windowed, "whole requested range") {
 		t.Fatalf("DescribePolicy() = %q, want it to disclose the windowed collection", windowed)
 	}
+	// The bodies policy is hashed into the source's execution trust digest, so flipping it
+	// reports the source as modified. A reviewer shown "modified" above an identical block
+	// learns to re-trust blind, which is the one thing the per-source diff exists to prevent.
+	body := []string{"cat", "{{id}}"}
+	unfetched := sources.DescribePolicy(&core.Source{Name: "s", Body: body, Bodies: core.BodiesNone})
+	wantUnfetched := "bodies none: every read --body runs the body command and stores nothing"
+	if unfetched != wantUnfetched {
+		t.Fatalf("DescribePolicy() = %q, want %q", unfetched, wantUnfetched)
+	}
+	prefetching := sources.DescribePolicy(&core.Source{Name: "s", Body: body, Bodies: core.BodiesSync})
+	wantPrefetching := "bodies sync: read --body runs on a cache miss; sync also prefetches missing or " +
+		"provider-modified index entries, new event records, and every missing body in one " +
+		"newest event document after prune"
+	if prefetching != wantPrefetching || prefetching == unfetched {
+		t.Fatalf("DescribePolicy() = %q, want %q distinct from %q", prefetching, wantPrefetching, unfetched)
+	}
+	cached := sources.DescribePolicy(&core.Source{Name: "s", Body: body, Bodies: core.BodiesCache})
+	wantCached := "bodies cache: read --body runs the body command on a cache miss, then caches it"
+	if cached != wantCached || cached == prefetching {
+		t.Fatalf("DescribePolicy() = %q, want %q distinct from %q", cached, wantCached, prefetching)
+	}
 }

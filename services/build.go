@@ -70,21 +70,115 @@ func BuildIfStale(ctx context.Context, base *Base, target string) (*BuildReport,
 	return Build(ctx, base, target, false)
 }
 
+// BuildOptions configures a build or check invocation.
+type BuildOptions struct {
+	Target       string
+	Check        bool
+	PruneOptions PruneBodiesOptions
+}
+
 // Build runs derived file generation for graph, wiki index, or both.
 func Build(ctx context.Context, base *Base, target string, check bool) (*BuildReport, error) {
-	return buildWithObserver(ctx, base, target, check, nil)
+	return BuildWithOptions(ctx, base, BuildOptions{Target: target, Check: check})
+}
+
+// BuildWithOptions runs derived file generation or checking with explicit options.
+func BuildWithOptions(ctx context.Context, base *Base, options BuildOptions) (*BuildReport, error) {
+	return buildWithObserverAndOptions(ctx, base, options, nil)
 }
 
 func buildWithObserver(
 	ctx context.Context, base *Base, target string, check bool, observe func() error,
 ) (*BuildReport, error) {
-	if check && target != "wiki" {
-		return nil, errors.New("--check is supported only for the wiki target; graph checks are not implemented")
+	return buildWithObserverAndOptions(ctx, base, BuildOptions{Target: target, Check: check}, observe)
+}
+
+func checkGraphTarget(ctx context.Context, base *Base) (*GraphBuild, error) {
+	summary, err := SummarizeGraph(ctx, base)
+	stale := false
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		stale = true
 	}
+	edges := 0
+	if summary != nil {
+		edges = summary.Edges
+	}
+	return &GraphBuild{URI: core.GraphFile, Edges: edges, Stale: stale}, nil
+}
+
+func checkIndexTarget(ctx context.Context, base *Base) (*LexicalIndexBuild, error) {
+	use, err := LexicalIndexStatus(ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	return &LexicalIndexBuild{URI: LexicalIndexPath, Stale: !use.Used}, nil
+}
+
+func buildCheck(ctx context.Context, base *Base, target string) (*BuildReport, error) {
 	report := &BuildReport{}
 	switch target {
 	case "bodies":
-		bodies, err := PruneBodies(ctx, base)
+		return nil, errors.New("--check is not supported for the bodies target")
+	case "wiki":
+		if !base.Store.Enabled(core.LayerWiki) {
+			return nil, fmt.Errorf("wiki layer is disabled in %s", core.ConfigFileName)
+		}
+		wiki, err := BuildWikiIndex(ctx, base, false)
+		if err != nil {
+			return nil, err
+		}
+		report.Wiki = wiki
+	case "graph":
+		graph, err := checkGraphTarget(ctx, base)
+		if err != nil {
+			return nil, err
+		}
+		report.Graph = graph
+	case "index":
+		index, err := checkIndexTarget(ctx, base)
+		if err != nil {
+			return nil, err
+		}
+		report.Index = index
+	case "", "all":
+		if base.Store.Enabled(core.LayerWiki) {
+			wiki, err := BuildWikiIndex(ctx, base, false)
+			if err != nil {
+				return nil, err
+			}
+			report.Wiki = wiki
+		}
+		graph, err := checkGraphTarget(ctx, base)
+		if err != nil {
+			return nil, err
+		}
+		report.Graph = graph
+		index, err := checkIndexTarget(ctx, base)
+		if err != nil {
+			return nil, err
+		}
+		report.Index = index
+	default:
+		return nil, fmt.Errorf("unknown build target %q; expected bodies, graph, index, wiki, or all", target)
+	}
+	return report, nil
+}
+
+func buildWithObserverAndOptions(
+	ctx context.Context, base *Base, options BuildOptions, observe func() error,
+) (*BuildReport, error) {
+	target := options.Target
+	if options.Check {
+		return buildCheck(ctx, base, target)
+	}
+
+	report := &BuildReport{}
+	switch target {
+	case "bodies":
+		bodies, err := PruneBodiesWithOptions(ctx, base, options.PruneOptions)
 		if err := observeBuildStep(err, observe); err != nil {
 			return nil, err
 		}
@@ -105,14 +199,14 @@ func buildWithObserver(
 		if !base.Store.Enabled(core.LayerWiki) {
 			return nil, fmt.Errorf("wiki layer is disabled in %s", core.ConfigFileName)
 		}
-		wiki, err := BuildWikiIndex(ctx, base, !check)
+		wiki, err := BuildWikiIndex(ctx, base, true)
 		if err := observeBuildStep(err, observe); err != nil {
 			return nil, err
 		}
 		report.Wiki = wiki
 	case "", "all":
 		if base.Store.Enabled(core.LayerWiki) {
-			wiki, err := BuildWikiIndex(ctx, base, !check)
+			wiki, err := BuildWikiIndex(ctx, base, true)
 			if err := observeBuildStep(err, observe); err != nil {
 				return nil, err
 			}

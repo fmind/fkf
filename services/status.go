@@ -109,7 +109,6 @@ func (s *Status) addFinding(check string, severity Severity, message, fix string
 // StatusRequest tunes the status report.
 type StatusRequest struct {
 	MaxAgeHours    int
-	All            bool
 	Executable     string
 	evaluationTime time.Time
 	// Live enables the two user-scope checks that are intentionally absent from MCP and other

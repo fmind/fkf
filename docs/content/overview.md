@@ -5,14 +5,16 @@ url: /docs/
 description: "Understand fkf's local-first knowledge base, command runner, URI graph, deterministic retrieval, and agent integrations."
 ---
 
-`fkf` (Fmind Knowledge Framework) keeps a dated, offline record of your actual work — meetings, tickets, pull requests, mail, commits, optional shell-activity metadata, and local agent activity — as plain JSON and Markdown in a git repository you own, turns it into a graph of URIs, and hands your coding agent a token-budgeted slice of it with a receipt.
+Your coding agent can read the repository. It cannot see the meeting that set a constraint, the review that rejected an approach, or the ticket that explains the final design.
+
+`fkf` (Fmind Knowledge Framework) keeps that work history as plain JSON and Markdown in a git repository you own, then gives the agent only the strongest cited evidence under a token budget. [Try the synthetic demo](getting-started/#explore-without-connecting-a-provider) without credentials, network access, or configuration.
 
 It is four things and nothing else:
 
 1. **A folder convention.** A base is one git repository holding five typed layers. Anyone can read it with `ls`, `jq`, and `rg`; in twenty years a one-off script still can.
 1. **A command runner.** A source is direct argv declared in the base's own `fkf.yaml`. The CLI that runs it owns the credential; `fkf` never reads a token.
 1. **An open graph over URIs.** Every record and page has a relative URI; a base may declare any non-reserved lowercase entity scheme and shared relation field. The root-level `graph.tsv` transcribes those declarations and authored links.
-1. **A bounded reader.** `context`, `find`, `day`, `timeline`, `read`, and `graph` answer across the base; `list`, `validate`, and `tags` inspect its layers. A context pack fits a token budget and carries a receipt saying what was selected and why.
+1. **A bounded reader.** `context`, `find`, `day`, `timeline`, `who`, `read`, and `graph` answer across the base, `brief` narrows today to what needs attention, and `list`, `validate`, and `tags` inspect the layers. A context pack fits a token budget and carries a receipt saying what was selected and why.
 
 ## Where to start
 

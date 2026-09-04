@@ -57,6 +57,19 @@ func renderWhoText(output io.Writer, report *services.WhoReport) error {
 	return nil
 }
 
+// whoNodesText names the first few neighbours of a kind and counts the rest. A well-connected
+// identity carries hundreds of record neighbours, and joining them all put a seventeen-kilobyte
+// line in a terminal — the one unbounded renderer in a command group where every sibling takes
+// a --budget or a --limit. The count is the honest part of the answer, so it is kept; a fixed
+// cap keeps `who` flagless, and --format json still returns every node.
+func whoNodesText(nodes []string) string {
+	const shown = 8
+	if len(nodes) <= shown {
+		return strings.Join(nodes, ", ")
+	}
+	return fmt.Sprintf("%s, +%d more", strings.Join(nodes[:shown], ", "), len(nodes)-shown)
+}
+
 func renderWhoMatch(output io.Writer, match services.WhoMatch) error {
 	if _, err := fmt.Fprintf(output, "%s [%s]\n", match.Canonical, match.Kind); err != nil {
 		return err
@@ -82,7 +95,7 @@ func renderWhoMatch(output io.Writer, match services.WhoMatch) error {
 		}
 	}
 	for _, group := range match.Neighbourhood {
-		if _, err := fmt.Fprintf(output, "%s: %s\n", group.Kind, strings.Join(group.Nodes, ", ")); err != nil {
+		if _, err := fmt.Fprintf(output, "%s: %s\n", group.Kind, whoNodesText(group.Nodes)); err != nil {
 			return err
 		}
 	}

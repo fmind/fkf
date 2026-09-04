@@ -5,13 +5,15 @@ builds:
     binary: fkf
     env: [CGO_ENABLED=0]
     flags: [-trimpath]
-    ldflags: -s -w -X github.com/fmind/fkf/core.version={{ .Tag }}
+    # .Version, not .Tag: a snapshot resolves to <tag>-SNAPSHOT-<sha>, so an untagged build
+    # never reports itself as the release, in `fkf --version` or in the archive name below.
+    ldflags: -s -w -X github.com/fmind/fkf/core.version=v{{ .Version }}
     mod_timestamp: "{{ .CommitTimestamp }}"
     goos: [linux, darwin]
     goarch: [amd64, arm64]
 # Each archive is one attestable install unit: binary, license, usage, and linked-dependency notices.
 archives:
-  - name_template: "{{ .ProjectName }}_{{ .Tag }}_{{ .Os }}_{{ .Arch }}"
+  - name_template: "{{ .ProjectName }}_v{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
     builds_info:
       owner: root

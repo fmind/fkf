@@ -46,6 +46,7 @@ func TestValidateRelationValueRequiresCanonicalEntityText(t *testing.T) {
 		"wiki/retrieval-boundary.md#decision",
 		"graph.tsv",
 		"graph.meta.json?jq=.edges",
+		"graph.generation.json?jq=.state",
 		"AGENTS.md#invariants",
 		ConfigFileName,
 	} {

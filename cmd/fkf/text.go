@@ -111,6 +111,8 @@ func renderOperations(w *textWriter, result any) bool {
 		writeSourceTestText(w, typed)
 	case *services.HelperReport:
 		writeHelpersText(w, typed)
+	case *validateReport:
+		writeValidateReportText(w, typed)
 	case *services.ValidationReport:
 		writeValidationText(w, typed)
 	case *services.RecordTitleReport:
@@ -125,6 +127,31 @@ func renderOperations(w *textWriter, result any) bool {
 		return false
 	}
 	return true
+}
+
+// writeValidateReportText names each check before delegating to the renderer that already
+// knows how to print it. Bare `fkf validate` prints three or four blocks whose summary lines
+// are near-identical, so without the heading a reader cannot tell which layer failed — the
+// JSON has carried the layer all along. The heading is the same section form `fkf status`
+// uses, and its leading blank line is what separates one block from the next.
+func writeValidateReportText(w *textWriter, report *validateReport) {
+	if report.Wiki != nil {
+		w.printf("\n%s\n", report.Wiki.Layer)
+		writeValidationText(w, report.Wiki)
+	}
+	if report.Projects != nil {
+		w.printf("\n%s\n", report.Projects.Layer)
+		writeValidationText(w, report.Projects)
+	}
+	if report.Records != nil {
+		// RecordTitleReport has no layer of its own: it summarises every collected source.
+		w.printf("\nrecords\n")
+		writeRecordTitleValidationText(w, report.Records)
+	}
+	if report.Lint != nil {
+		w.printf("\n%s\n", report.Lint.Layer)
+		writeValidationText(w, report.Lint)
+	}
 }
 
 func writeReadText(w *textWriter, result *services.ReadResult) {

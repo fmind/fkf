@@ -45,6 +45,10 @@ const (
 var (
 	errLexicalIndexStale   = errors.New("lexical index is stale")
 	errLexicalIndexCorrupt = errors.New("lexical index is corrupt")
+	// errLexicalInputAbsent marks an input the body manifest names but whose file is gone. That
+	// cache is ignored, rebuildable, and never evidence, so a dangling entry must drop out of the
+	// input set — leaving the stored generation stale — instead of failing every walk that sees it.
+	errLexicalInputAbsent = errors.New("lexical input is absent")
 )
 
 // LexicalIndexUse is the explicit execution-path diagnostic carried by retrieval receipts.
@@ -102,6 +106,7 @@ type LexicalIndexBuild struct {
 	Mode           string           `json:"mode"`
 	Elapsed        string           `json:"elapsed"`
 	Meta           LexicalIndexMeta `json:"meta"`
+	Stale          bool             `json:"stale,omitempty"`
 }
 
 // LexicalInputFile binds one exact searchable file and supports stat-first freshness checks.
@@ -261,9 +266,32 @@ func LexicalIndexStatus(ctx context.Context, base *Base) (LexicalIndexUse, error
 	return use, nil
 }
 
+// lexicalIndexHealth classifies the current generation from the sidecar, the source-of-truth
+// inputs, and one stat of the postings artifact. `fkf status` reports from here so the routine
+// diagnostic stays proportional to the base: hashing and decoding the whole artifact belongs to
+// the explicit `fkf build index --check` path, and byte corruption under an unchanged size is
+// caught at query time by the per-shard digests, which is what makes retrieval fall back.
+func lexicalIndexHealth(ctx context.Context, base *Base) (LexicalIndexUse, error) {
+	meta, use, err := currentLexicalIndexMeta(ctx, base)
+	if err != nil || !use.Used {
+		return use, err
+	}
+	file, err := openLexicalIndexFile(base, meta)
+	if err != nil {
+		use.Used = false
+		use.Reason = LexicalIndexFallbackCorrupt
+		if errors.Is(err, os.ErrNotExist) {
+			use.Reason = LexicalIndexFallbackMissing
+		}
+		return use, nil
+	}
+	_ = file.Close()
+	return use, nil
+}
+
 // currentLexicalIndexMeta validates the sidecar and the source-of-truth inputs without reading
 // the postings file. A query then authenticates the complete entry prefix and each requested
-// lookup partition and posting row; status separately hashes and validates the full artifact.
+// lookup partition and posting row; `build index --check` hashes and validates the full artifact.
 func currentLexicalIndexMeta(
 	ctx context.Context, base *Base,
 ) (LexicalIndexMeta, LexicalIndexUse, error) {
@@ -482,12 +510,15 @@ func lexicalInputs(
 	}
 	close(jobs)
 	workers.Wait()
-	inputs := make([]LexicalInputFile, len(paths))
-	for index, result := range results {
+	inputs := make([]LexicalInputFile, 0, len(paths))
+	for _, result := range results {
+		if errors.Is(result.err, errLexicalInputAbsent) {
+			continue
+		}
 		if result.err != nil {
 			return nil, "", "", result.err
 		}
-		inputs[index] = result.input
+		inputs = append(inputs, result.input)
 	}
 	semantics, err := lexicalSemanticsSHA256(base)
 	if err != nil {
@@ -519,8 +550,13 @@ func inspectLexicalInput(
 	if err != nil {
 		return LexicalInputFile{}, err
 	}
+	// Only the body cache may vanish between listing and inspection; every other input is evidence.
+	cached := strings.HasPrefix(relative, BodiesDirectory+"/")
 	info, err := os.Lstat(absolute)
 	if err != nil {
+		if cached && errors.Is(err, os.ErrNotExist) {
+			return LexicalInputFile{}, errLexicalInputAbsent
+		}
 		return LexicalInputFile{}, fmt.Errorf("inspect lexical input %s: %w", relative, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
@@ -528,6 +564,9 @@ func inspectLexicalInput(
 	}
 	digest, err := resolveLexicalInputDigest(ctx, absolute, relative, info, known, hashLexicalFile)
 	if err != nil {
+		if cached && errors.Is(err, os.ErrNotExist) {
+			return LexicalInputFile{}, errLexicalInputAbsent
+		}
 		return LexicalInputFile{}, fmt.Errorf("hash lexical input %s: %w", relative, err)
 	}
 	return LexicalInputFile{

@@ -1,6 +1,6 @@
 ---
 name: fkf-contribute
-description: Contribute to the fkf repository without breaking its one-binary, offline-read, trust, source, documentation, or generated-artifact contracts. Invoke when changing fkf code, presets, skills, CLI behavior, tests, release metadata, or the Hugo site.
+description: Contribute to fkf without breaking its one-binary, offline-read, trust, source, docs, or generated-artifact contracts. Use for code, presets, skills, CLI, tests, releases, or Hugo docs.
 license: MIT
 ---
 

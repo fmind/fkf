@@ -4,13 +4,7 @@
 
 ## Supported versions
 
-Only the latest published v1 minor release receives security fixes.
-
-| Version          | Supported |
-| ---------------- | --------- |
-| 1.1.x            | Yes       |
-| 1.0.x            | No        |
-| Earlier versions | No        |
+Only the latest published release receives security fixes. Every earlier release is unsupported, including earlier majors and minors. Upgrade before reporting, then confirm the defect still reproduces.
 
 ## Report a vulnerability
 

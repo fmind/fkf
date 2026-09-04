@@ -210,9 +210,24 @@ func DescribePolicy(source *core.Source) string {
 	if source == nil {
 		return ""
 	}
-	parts := make([]string, 0, 4)
+	parts := make([]string, 0, 5)
 	if source.Window {
 		parts = append(parts, "window: one command for the whole requested range")
+	}
+	// The bodies policy is invocation, not content. It is hashed into the source's execution
+	// digest, so leaving it out reported the source as modified above a block byte-identical to
+	// the one the reviewer had already approved.
+	if source.HasBody() {
+		detail := "bodies none: every read --body runs the body command and stores nothing"
+		switch source.Bodies {
+		case core.BodiesCache:
+			detail = "bodies cache: read --body runs the body command on a cache miss, then caches it"
+		case core.BodiesSync:
+			detail = "bodies sync: read --body runs on a cache miss; sync also prefetches missing or " +
+				"provider-modified index entries, new event records, and every missing body in one " +
+				"newest event document after prune"
+		}
+		parts = append(parts, detail)
 	}
 	if source.Retry.Attempts > 1 {
 		detail := fmt.Sprintf("retry %d attempts on %s", source.Retry.Attempts,

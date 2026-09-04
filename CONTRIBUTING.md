@@ -5,7 +5,7 @@ Thanks for helping make `fkf` a small, dependable knowledge layer for developers
 ## Before you start
 
 - Read [AGENTS.md](AGENTS.md). It defines the design invariants and the required workflow for human and agent contributors.
-- Search existing issues before proposing a substantial feature. `fkf` keeps its v1 contracts narrow; an incompatible change needs an explicit new contract rather than an implicit migration path.
+- Search existing issues before proposing a substantial feature. The separate configuration and evidence contracts marked `fkf: 1` stay narrow; an incompatible change needs an explicit new contract rather than an implicit migration path.
 - Never include credentials, personal data, customer names, or records from a real base in an issue, fixture, test, or commit. Use synthetic data only.
 
 ## Set up the checkout
@@ -29,8 +29,8 @@ Keep the affected contracts together:
 - A CLI change includes focused tests, help output, and the matching README or Hugo documentation.
 - A loader change includes `mise run generate:schema`; never edit the published schema by hand.
 - A Go toolchain or linked-dependency change updates `THIRD_PARTY_NOTICES.md`; the invariant test rejects missing runtime and module entries.
-- A preset source includes one small, synthetic fixture under `services/testdata/sources/` that matches the provider CLI's real JSON shape and exercises its open `fields:` map. Keep a short command inline; put longer glue in a shell helper under the base `bin/` template.
-- A URI, retrieval, or learning change keeps `skills/fkf-use/SKILL.md` or `skills/fkf-learn/SKILL.md` aligned with the executable behavior.
+- A preset source includes one small, synthetic fixture under `services/testdata/sources/` that matches the provider CLI's real JSON shape and exercises its open `fields:` map. Keep a short command inline; put longer glue in a `.sh` or `.py` helper under the base `bin/` template.
+- A URI, retrieval, learning, or brief change keeps the affected bundled skill under `skills/` — `fkf-use`, `fkf-learn`, or `daily-brief` — aligned with the executable behavior.
 
 Tests must be hermetic: temporary homes, no real base discovery, no provider call, and every provider-backed declared command replaced through the runner seam. The relative-base CLI regression may execute only its deterministic helper created inside the temporary base; AGENTS.md records the other narrow local-tool exceptions.
 

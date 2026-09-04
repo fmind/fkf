@@ -163,7 +163,7 @@ func newSyncCommand() *cli.Command {
 			&cli.BoolFlag{Name: "force", Usage: "Re-collect days that already have a document."},
 			&cli.BoolFlag{Name: "dry-run", Usage: "Print every substituted command and execute none."},
 			&cli.BoolFlag{Name: "preview", Usage: "Run and validate exactly one source, show up to three projected records, and write nothing." + markRun},
-			&cli.BoolFlag{Name: "if-due", Usage: "Return a compact success without taking the writer lock when every selected document already exists."},
+			&cli.BoolFlag{Name: "if-due", Usage: "Return a compact success without taking the writer lock when no selected source has due work."},
 			&cli.BoolFlag{Name: "no-graph", Usage: "Skip the derived edge-list rebuild."},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -218,7 +218,6 @@ func newStatusCommand() *cli.Command {
 			"git tracked files, permissions, skill drift, and JSON document schema verification.",
 		Flags: []cli.Flag{
 			&cli.IntFlag{Name: "max-age-hours", Usage: fmt.Sprintf("Exit 1 when any enabled source is missing or older than this, 1 to %d.", core.MaxFreshnessAgeHours)},
-			&cli.BoolFlag{Name: "all", Usage: "Include all sources in full detail."},
 			&cli.BoolFlag{Name: "live", Usage: "Probe trusted source login readiness and inspect user-scope harness registrations." + markRun},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -235,8 +234,7 @@ func newStatusCommand() *cli.Command {
 			}
 			run := func() error {
 				status, err := services.Report(ctx, base, services.StatusRequest{
-					MaxAgeHours: cmd.Int("max-age-hours"), All: cmd.Bool("all"), Live: cmd.Bool("live"),
-					Executable: executable,
+					MaxAgeHours: cmd.Int("max-age-hours"), Live: cmd.Bool("live"), Executable: executable,
 				})
 				if err := emit(cmd, status, err); err != nil {
 					return err
@@ -308,7 +306,7 @@ func newNewCommand() *cli.Command {
 			},
 			{
 				Name: "helper", Aliases: []string{"h"},
-				Usage:     "Create a portable, fail-closed /bin/sh source helper in bin/." + markWrite,
+				Usage:     "Create a portable, fail-closed .sh or .py source helper in bin/." + markWrite,
 				ArgsUsage: "<name>",
 				Action: func(ctx context.Context, cmd *cli.Command) error {
 					if err := requireOneArg(cmd, "fkf new helper <name>"); err != nil {

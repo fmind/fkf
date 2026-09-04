@@ -8,13 +8,11 @@ FKF is one Go binary and one base: a git repository of plain JSON and Markdown. 
 
 ## Install
 
-The installer selects the latest Linux or macOS release archive for amd64 or arm64, verifies it against the published checksums, and writes to `~/.local/bin` without `sudo`:
+The installer selects the latest Linux or macOS archive for amd64 or arm64, verifies its checksum and binary, and atomically writes it to `~/.local/bin` without `sudo`. An existing installation remains intact if staging fails:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/fmind/fkf/main/install.sh | sh
 ```
-
-The installer selects the published Linux or macOS archive for the current architecture, verifies its checksum, validates the binary, and atomically replaces the destination. An existing installation remains intact if staging fails.
 
 For cryptographic release-provenance verification, authenticate the GitHub CLI and require the published attestation before installation:
 
@@ -22,7 +20,7 @@ For cryptographic release-provenance verification, authenticate the GitHub CLI a
 curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/fmind/fkf/main/install.sh | FKF_VERIFY_ATTESTATION=1 sh
 ```
 
-Set `FKF_INSTALL_DIR` to an absolute directory to change the destination, or `FKF_VERSION=v3.0.2` to pin a release. You can also download an archive and `checksums.txt` directly from the [latest release](https://github.com/fmind/fkf/releases/latest). Each archive contains the binary, project license, README, and checked-in notices for the linked Go runtime and dependencies.
+Set `FKF_INSTALL_DIR` to an absolute directory to change the destination, or `FKF_VERSION=vX.Y.Z` to pin a release. You can also download an archive and `checksums.txt` directly from the [latest release](https://github.com/fmind/fkf/releases/latest). Each archive contains the binary, project license, README, and checked-in notices for the linked Go runtime and dependencies.
 
 The module intentionally remains `github.com/fmind/fkf`. Go's major-version import rules therefore keep `go install github.com/fmind/fkf/cmd/fkf@latest` on the v1 line; use a release archive for v2 and later. Source builds remain available from a tagged checkout.
 
@@ -34,7 +32,7 @@ fkf upgrade
 
 The command uses `curl` only against fixed `github.com` release endpoints, selects the archive for the current Linux or macOS architecture, verifies its published SHA-256 checksum, runs the downloaded binary to confirm its version, and atomically replaces the current executable. It never opens or changes a base. If the executable is not user-writable, upgrade through the mechanism that installed it. To require GitHub's release attestation as well as its checksum, rerun the installer with `FKF_VERIFY_ATTESTATION=1`.
 
-From a clone, the project gate builds the canonical repository artifact at `bin/fkf`:
+To install from a clone with the repository's pinned toolchain:
 
 ```bash
 git clone https://github.com/fmind/fkf.git
@@ -76,7 +74,7 @@ export FKF_BASE=~/brain
 fkf status
 ```
 
-The personal preset declares a small supported set of local and provider sources. Three local metadata collectors start enabled: git commits, coding-agent session metadata without prompts or responses, and touched agent-memory files without bodies. They use `git`, `jq`, `sqlite3`, and the standard `find`, `stat`, and `touch` utilities on supported Linux and macOS systems. Shell-history metadata and every network source start disabled. Enable only the sources whose data boundary and prerequisites you have reviewed.
+The personal preset declares a small supported set of local and provider sources, and four of them start enabled — `fkf status` names them. Three write metadata-only evidence to `events/`: git commits, coding-agent session metadata without prompts or responses, and touched agent-memory file metadata. The memory-file source also prefetches each full file into the ignored, manifest-verified body cache under its declared `bodies: sync` policy; the text does not enter the stored document. The fourth, `agent-session-traces`, writes one bounded task skeleton per completed session into `tasks/`: your requests and the last assistant message as inert code blocks, plus changed paths from `git status`. It makes no model call and reads no changed file content; [Agent harnesses](../harnesses/) describes that store. Together they use `git`, `jq`, `sqlite3`, and the standard `find`, `stat`, `touch`, and `xargs` utilities on supported Linux and macOS systems. Shell-history metadata and every network source start disabled. Enable only the sources whose data boundary and prerequisites you have reviewed.
 
 Initialization creates:
 
@@ -86,80 +84,26 @@ Initialization creates:
 - a minimal base-specific `AGENTS.md` and the copied `fkf-use`, `fkf-learn`, and `daily-brief` skills;
 - non-overwriting Claude bridges;
 - helpers required by initially enabled sources and the session-start hook under trust-digested `bin/`;
+- `evals/queries.yaml`, the owner-controlled retrieval acceptance set `fkf eval` runs;
 - a git repository with owner-only files.
 
 Running `fkf init ~/brain` again refreshes FKF-owned skills and managed blocks. It preserves `fkf.yaml`, `AGENTS.md`, custom skills, existing bridges, and existing helpers. After enabling a preset source, run `fkf config helpers --refresh` to install any newly required official helper. `fkf config helpers` compares official helpers with the running binary, and refresh leaves custom scripts untouched.
 
-## Understand fields before enabling sources
+## Enable and collect one source
 
-The root schema defines shared meanings. Each source only maps provider paths to those names:
-
-```yaml
-fkf: 1
-schema:
-  id: { description: Stable record identity., cardinality: one }
-  time: { description: Record timestamp when the provider exposes one., cardinality: optional }
-  title: { description: Human-readable record label., cardinality: optional }
-  repo: { description: Raw repository value used by body argv., cardinality: optional }
-  repository:
-    description: Repository associated with the record.
-    cardinality: optional
-    relation: true
-    examples: [repo:github.com/fmind/fkf]
-  participant:
-    description: Person or account involved in the record.
-    cardinality: many
-    relation: true
-    examples: [person:email/user@example.test, actor:github.com/login]
-  owner:
-    description: Person or account assigned to the record.
-    cardinality: many
-    relation: true
-
-sources:
-  github-pull-requests:
-    enabled: true
-    layer: events
-    requires: [github-search-json.sh, gh, jq]
-    window: true
-    run: [github-search-json.sh, prs, assignee, "{{start}}", "{{end}}"]
-    fields:
-      id: .url
-      time: .updatedAt
-      title: .title
-      repo: .repository.nameWithOwner
-      repository: .repository_uri
-      owner: [".assignee_uris[]"]
-      participant: [".participant_uris[]"]
-    body: [gh, pr, view, "{{id}}", --repo, "{{repo}}", --json, "body,comments"]
-```
-
-The field name states the role; the URI states the identity namespace. `participant` is unambiguous where `people` is not, while values can distinguish an email person from a GitHub actor. FKF validates and transcribes those choices without merging identities or inferring relationships.
-
-Every collected source maps `title`, and every new record must produce a non-empty, control-free value. A metadata source uses the provider's natural subject; a content-first helper derives one stable line, at most 160 characters, while leaving the full text behind `body:`.
-
-Keep direct provider argv in `run:`. Move pipelines and expansion to a `.sh` or `.py` helper under `bin/`; use Python when structured or stateful logic would be clearer. The helper's shebang selects its interpreter, so the same base works on a Mac whose interactive shell is Zsh and on a Linux host using Bash or Fish.
-
-Declare each ordinary collection/body dependency and every external tool a hook invokes explicitly in `requires:`. `status` locates those bare names without parsing command text or executing a version probe. Put the base-owned `test[0]` entrypoint under `tests/`; status reports it separately on the test-only PATH.
-
-## Review execution, then collect
-
-Changing a command or helper invalidates local trust:
+Open `fkf.yaml`, enable one source whose provider and data boundary you understand, then inspect every executable step before collecting:
 
 ```bash
+$EDITOR "$FKF_BASE/fkf.yaml"
 fkf config helpers --refresh
 fkf sync --dry-run
-fkf sync github-pull-requests --preview --date 2026-08-24
 fkf trust --check
 fkf trust --all
+fkf sync github-pull-requests --preview --date 2026-08-24
 fkf sync --days 7
 ```
 
-`trust` prints the executable plan before recording its canonical digest. Command, policy, body-bound path, executable path, and `bin/` or `tests/` changes re-arm trust. Comments, YAML order, descriptions, examples, `requires:`, retrieval-only mappings, and the inherited process environment do not.
-
-`--preview` performs one real trusted execution and every decode, projection, cardinality, relation, and completeness check for exactly one source, shows at most three projected records, and writes nothing. Normal sync never collects today. A completed day is complete or absent: failed commands, invalid or oversized output, missing identities or times, cardinality errors, and invalid relation URIs write nothing. Existing documents are skipped unless `--force` is used; a `window: true` source runs once per contiguous missing span instead of crossing an existing day. The graph cache is rebuilt unless `--no-graph` is supplied.
-
-This makes normal sync safe to run repeatedly: existing event documents and still-fresh index snapshots are skipped, due index snapshots are refreshed, and a failed unit remains absent. Rerunning the same command resumes missing collection and retries a failed derived rebuild. Only `--force` deliberately re-collects and atomically replaces existing documents.
+Sources are direct argv, not shell strings. The root [configuration schema](../schema/) defines shared field meanings; the [source guide](../sources/) covers helpers, requirements, windows, bodies, and failure behavior; [privacy and security](../privacy/) explains the trust digest. `--preview` executes and validates one source once but writes nothing. Normal sync is resumable and all-or-nothing per source/day.
 
 After collection:
 
