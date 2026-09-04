@@ -2,6 +2,13 @@
 
 All notable changes to `fkf` are documented here. This project follows [Semantic Versioning](https://semver.org/) from its first public release.
 
+## [v4.0.1](https://github.com/fmind/fkf/releases/tag/v4.0.1) - 2026-09-04
+
+### Fixed
+
+- Make Ruff linting independent of contributor-level configuration and use the correct exception types in the Gmail body helper, restoring the clean four-platform release gate.
+- Keep historical agent-session collection available as the append-only store grows by bounding in-window identities before selecting their newest complete generation, while rejecting a partial manifest scan.
+
 ## [v4.0.0](https://github.com/fmind/fkf/releases/tag/v4.0.0) - 2026-09-04
 
 ### Highlights
