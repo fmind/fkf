@@ -249,6 +249,99 @@ done
 	}
 }
 
+func TestAgentSessionTraceHistoricalWindowIgnoresLaterDistinctSessions(t *testing.T) {
+	home := t.TempDir()
+	generation := filepath.Join(home, ".agents", "sessions", "v1", "codex", "lineage", "generation")
+	if err := os.MkdirAll(generation, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generation, "manifest.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	transcript := `{"ts":"2026-05-04T09:00:00Z","agent":"codex","sid":"in-window","role":"user","content":"Keep historical collection available."}` + "\n"
+	if err := os.WriteFile(filepath.Join(generation, "transcript.jsonl"), []byte(transcript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := t.TempDir()
+	fakeXargs := `#!/bin/sh
+set -eu
+cat >/dev/null
+printf '{"agent":"codex","session_id":"in-window","ingested_at":"2026-05-04T10:00:00Z","high_water_mark":"2026-05-04T09:30:00Z","record_count":1,"ingested":1777888800,"last":1777887000,"path":"%s"}\n' "$HOME/.agents/sessions/v1/codex/lineage/generation"
+count=0
+while [ "$count" -le 8192 ]; do
+  printf '{"agent":"codex","session_id":"later-%s","ingested_at":"2026-05-06T10:00:00Z","high_water_mark":"2026-05-06T09:30:00Z","record_count":1,"ingested":1778061600,"last":1778059800,"path":"/later"}\n' "$count"
+  count=$((count + 1))
+done
+`
+	if err := os.WriteFile(filepath.Join(bin, "xargs"), []byte(fakeXargs), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	output := runAgentSessionTrace(t, home, bin, "2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
+	var traces []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(output, &traces); err != nil {
+		t.Fatalf("decode historical session traces: %v\n%s", err, output)
+	}
+	if len(traces) != 1 || traces[0].ID != "codex:in-window" {
+		t.Fatalf("historical session traces = %+v, want the in-window session after later store growth", traces)
+	}
+}
+
+func TestAgentSessionTraceRejectsAPartialSecondCandidateScan(t *testing.T) {
+	home := t.TempDir()
+	generation := filepath.Join(home, ".agents", "sessions", "v1", "codex", "lineage", "generation")
+	if err := os.MkdirAll(generation, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `{"schema_version":1,"parser_version":"1","agent":"codex","session_id":"session-1","completeness":"complete","ingested_at":"2026-05-04T10:00:00Z","high_water_mark":"2026-05-04T09:30:00Z","record_count":1}`
+	if err := os.WriteFile(filepath.Join(generation, "manifest.json"), []byte(manifest+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(generation, "transcript.jsonl"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	realFind, err := exec.LookPath("find")
+	if err != nil {
+		t.Skip("find is unavailable")
+	}
+	bin := t.TempDir()
+	if err := os.Symlink(realFind, filepath.Join(bin, "real-find")); err != nil {
+		t.Fatal(err)
+	}
+	fakeFind := `#!/bin/sh
+set -eu
+real_find=${0%/*}/real-find
+case " $* " in
+  *" -type f -name manifest.json -print0 "*)
+    count_file=$HOME/find-print0-count
+    count=0
+    [ ! -f "$count_file" ] || count=$(cat "$count_file")
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$count_file"
+    "$real_find" "$@"
+    [ "$count" -ne 2 ] || exit 7
+    exit 0
+    ;;
+  *) exec "$real_find" "$@" ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "find"), []byte(fakeFind), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.CommandContext(t.Context(), "/bin/sh",
+		filepath.Join(repositoryRoot(t), "presets", "bin", "agent-session-trace.sh"),
+		"2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
+	command.Env = append(os.Environ(), "HOME="+home, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "could not enumerate session manifests") {
+		t.Fatalf("partial second candidate scan = error %v, output %q", err, output)
+	}
+}
+
 func TestAgentSessionTraceBoundsMultibyteExcerptsByUTF8Bytes(t *testing.T) {
 	home := t.TempDir()
 	generation := filepath.Join(home, ".agents", "sessions", "v1", "codex", "lineage", "generation")

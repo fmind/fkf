@@ -137,8 +137,9 @@ run = "trivy --config trivy.yaml fs ."
 
 [tasks."check:python"]
 description = "Lint every shipped Python helper"
+# --isolated keeps user-level Ruff config from making the local and clean-CI rule sets differ;
 # --no-cache keeps the check from writing a .ruff_cache into a contributor's tree.
-run = "ruff check --no-cache presets/bin"
+run = "ruff check --isolated --no-cache presets/bin"
 
 [tasks."check:shell"]
 description = "Lint every shipped and release shell helper"

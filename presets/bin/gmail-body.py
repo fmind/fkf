@@ -99,7 +99,7 @@ def _decode_message(value: dict[str, object]) -> EmailMessage:
     except (UnicodeEncodeError, ValueError) as error:
         raise RuntimeError("provider returned invalid base64url mail") from error
     if not isinstance(parsed, EmailMessage):
-        raise RuntimeError("mail parser returned an unsupported message")
+        raise TypeError("mail parser returned an unsupported message")
     return parsed
 
 
@@ -114,7 +114,7 @@ def _body_text(message: EmailMessage) -> str:
     except (LookupError, UnicodeError) as error:
         raise RuntimeError("message body has an unsupported text encoding") from error
     if not isinstance(content, str):
-        raise RuntimeError("message body is not text")
+        raise TypeError("message body is not text")
     if body.get_content_subtype() == "html":
         parser = _HTMLText()
         parser.feed(content)
@@ -131,7 +131,7 @@ def main() -> int:
         return _fail("usage: gmail-body.py <message-id>", 2)
     try:
         body = _body_text(_decode_message(_fetch(sys.argv[1])))
-    except RuntimeError as error:
+    except (RuntimeError, TypeError) as error:
         return _fail(str(error))
     encoded = body.encode("utf-8")
     if len(encoded) > MAX_BODY_BYTES:

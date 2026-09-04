@@ -37,6 +37,7 @@ filter_dir=$(CDPATH='' cd -- "$(dirname -- "$script_path")" && pwd -P)
 }
 
 latest=$(mktemp)
+relevant=$(mktemp)
 traces=$(mktemp)
 session=$(mktemp)
 files=$(mktemp)
@@ -44,7 +45,7 @@ repo_cache=$(mktemp -d)
 manifest_path_pipe=$repo_cache/manifest-paths.pipe
 manifest_pipe=$repo_cache/manifests.pipe
 candidate_pipe=$repo_cache/candidates.pipe
-trap 'rm -f "$latest" "$traces" "$session" "$files"; rm -rf "$repo_cache"' EXIT
+trap 'rm -f "$latest" "$relevant" "$traces" "$session" "$files"; rm -rf "$repo_cache"' EXIT
 
 # The store owns hash-only path segments, but still refuse links before opening any manifest.
 # `find` does not follow links by default; this explicit audit makes a linked generation an
@@ -90,27 +91,7 @@ repo_name() {
   printf '%s/%s\n' "$owner" "$name"
 }
 
-# Stream the exact four-level manifest shape through a parser and reducer. Named pipes let the
-# shell retain every producer exit status without materializing an append-only path/candidate
-# list; the reducer retains at most one generation per relevant session.
-mkfifo "$manifest_path_pipe" "$manifest_pipe" "$candidate_pipe"
-find "$store" -type f -name manifest.json -print0 >"$manifest_path_pipe" &
-find_pid=$!
-# macOS find has no -mindepth/-maxdepth. Filter the fixed
-# <agent>/<lineage>/<generation>/manifest.json shape in bounded xargs batches instead.
-xargs -0 sh -c '
-  root=$1
-  shift
-  for manifest do
-    relative=${manifest#"$root"/}
-    case "$relative" in */*/*/manifest.json) ;; *) continue ;; esac
-    remainder=${relative%/manifest.json}
-    case "${remainder#*/*/}" in */*) continue ;; esac
-    printf "%s\000" "$manifest"
-  done
-' sh "$store" <"$manifest_path_pipe" >"$manifest_pipe" &
-filter_pid=$!
-xargs -0 jq -c "$rfc3339"'
+candidate_filter=$rfc3339'
   select(.schema_version == 1 and .parser_version == "1" and .completeness == "complete")
   | select((.agent | type) == "string" and (.session_id | type) == "string"
            and (.ingested_at | type) == "string" and (.record_count | type) == "number")
@@ -121,42 +102,96 @@ xargs -0 jq -c "$rfc3339"'
   | {agent, session_id, ingested_at, high_water_mark, record_count,
      ingested: $ingested, last: $last,
      path: (input_filename | sub("/manifest\\.json$"; ""))}
-' <"$manifest_pipe" >"$candidate_pipe" &
-parse_pid=$!
+'
 
+# Stream the exact four-level manifest shape through a parser. Named pipes let the shell retain
+# every producer exit status without materializing an append-only path or candidate list.
+mkfifo "$manifest_path_pipe" "$manifest_pipe" "$candidate_pipe"
+start_candidate_stream() {
+  find "$store" -type f -name manifest.json -print0 >"$manifest_path_pipe" &
+  find_pid=$!
+  # macOS find has no -mindepth/-maxdepth. Filter the fixed
+  # <agent>/<lineage>/<generation>/manifest.json shape in bounded xargs batches instead.
+  xargs -0 sh -c '
+    root=$1
+    shift
+    for manifest do
+      relative=${manifest#"$root"/}
+      case "$relative" in */*/*/manifest.json) ;; *) continue ;; esac
+      remainder=${relative%/manifest.json}
+      case "${remainder#*/*/}" in */*) continue ;; esac
+      printf "%s\000" "$manifest"
+    done
+  ' sh "$store" <"$manifest_path_pipe" >"$manifest_pipe" &
+  filter_pid=$!
+  xargs -0 jq -c "$candidate_filter" <"$manifest_pipe" >"$candidate_pipe" &
+  parse_pid=$!
+}
+
+discard_candidate_stream() {
+  wait "$parse_pid" 2>/dev/null || true
+  wait "$filter_pid" 2>/dev/null || true
+  wait "$find_pid" 2>/dev/null || true
+}
+
+finish_candidate_stream() {
+  producer_failed=
+  wait "$parse_pid" || producer_failed=1
+  wait "$filter_pid" || producer_failed=1
+  wait "$find_pid" || producer_failed=1
+  [ -z "$producer_failed" ] || {
+    echo "agent-session-trace.sh: could not enumerate session manifests" >&2
+    return 1
+  }
+}
+
+# First retain only identities with some complete generation inside the requested window. A
+# later-only session cannot affect a historical result, so unbounded future store growth must
+# not consume the reducer's finite identity budget.
+start_candidate_stream
 if ! jq -nc --arg start "$start" --arg end "$end" "$rfc3339"'
   ($start | instant) as $since | ($end | instant) as $until
-  # Old sessions cannot produce a result. Newer generations remain relevant even after the
-  # window because they must suppress an older generation of the same session inside it.
   | reduce inputs as $candidate ({};
-      if $candidate.last < $since then .
+      if $candidate.last < $since or $candidate.last >= $until then .
       else ($candidate.agent + "\u0000" + $candidate.session_id) as $key
-        | if .[$key] == null
-            or [.[$key].ingested, .[$key].path] < [$candidate.ingested, $candidate.path]
-          then .[$key] = $candidate
-          else .
-          end
+        | .[$key] = true
         | if length > 8192 then
             error("agent-session-trace.sh: more than 8192 completed sessions are relevant to the requested window")
           else . end
       end)
-  | [.[] | select(.last >= $since and .last < $until)]
-  | sort_by(.agent, .session_id, .ingested, .path)
-  | map(del(.ingested, .last))
-' "$candidate_pipe" >"$latest"; then
-  wait "$parse_pid" 2>/dev/null || true
-  wait "$filter_pid" 2>/dev/null || true
-  wait "$find_pid" 2>/dev/null || true
+' "$candidate_pipe" >"$relevant"; then
+  discard_candidate_stream
   exit 1
 fi
-producer_failed=
-wait "$parse_pid" || producer_failed=1
-wait "$filter_pid" || producer_failed=1
-wait "$find_pid" || producer_failed=1
-[ -z "$producer_failed" ] || {
-  echo "agent-session-trace.sh: could not enumerate session manifests" >&2
-  exit 1
-}
+finish_candidate_stream || exit 1
+
+relevant_count=$(jq 'length' <"$relevant")
+if [ "$relevant_count" -eq 0 ]; then
+  printf '[]\n' >"$latest"
+else
+  # Select the newest complete generation across the whole store only for the bounded identities
+  # discovered above. This second streaming pass lets a post-window generation suppress an older
+  # in-window snapshot without retaining every unrelated session created since that window.
+  start_candidate_stream
+  if ! jq -nc --slurpfile relevant "$relevant" --arg start "$start" --arg end "$end" "$rfc3339"'
+    ($start | instant) as $since | ($end | instant) as $until
+    | reduce inputs as $candidate ({};
+        ($candidate.agent + "\u0000" + $candidate.session_id) as $key
+        | if $relevant[0][$key] != true then .
+          elif .[$key] == null
+              or [.[$key].ingested, .[$key].path] < [$candidate.ingested, $candidate.path]
+            then .[$key] = $candidate
+            else .
+          end)
+    | [.[] | select(.last >= $since and .last < $until)]
+    | sort_by(.agent, .session_id, .ingested, .path)
+    | map(del(.ingested, .last))
+  ' "$candidate_pipe" >"$latest"; then
+    discard_candidate_stream
+    exit 1
+  fi
+  finish_candidate_stream || exit 1
+fi
 selected=$(jq 'length' <"$latest")
 [ "$selected" -le 1024 ] || {
   # The caller separately caps captured stdout at 64 MiB; this count keeps a malformed store
