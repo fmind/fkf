@@ -147,7 +147,7 @@ fkf harness install claude codex gemini kiro --workspace ~/fmind --base ~/brain
 
 The first command shows exactly what FKF would manage. The second registers read-only MCP under the base-scoped key `fkf-<name>` in all ten adapters. The third opts the four adapters with verified passive output into automatic context for one physical workspace. FKF does not create global links to a base's skills. If you manage client configuration yourself, the primitive is `fkf mcp serve --base ~/brain`.
 
-The MCP server is read-only and bounded: `context`, `find`, `day`, `timeline`, `list`, `read`, and `graph`. It cannot write, run a shell, or fetch bodies. Connecting does not preload your base or train anything—the agent asks for a pack when it needs one. The bundled `fkf-use`, `fkf-learn`, and `daily-brief` skills teach it how. See the [harness guide](https://fmind.github.io/fkf/docs/harnesses/).
+The MCP server is read-only and bounded: `context`, `find`, `day`, `timeline`, `list`, `read`, and `graph`. It cannot write, run a shell, or fetch bodies. The agent asks for a pack when it needs one. Ordinary lookups use `context` and a cited `read`; configuration inspection and task traces belong to setup or meaningful work. The bundled `fkf-use`, `fkf-learn`, and `daily-brief` skills teach it how. See the [harness guide](https://fmind.github.io/fkf/docs/harnesses/).
 
 ## Trust and privacy
 

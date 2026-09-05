@@ -12,7 +12,7 @@ import (
 func newBriefCommand() *cli.Command {
 	return &cli.Command{
 		Name: "brief", Category: groupAsk,
-		Usage: "What needs attention today? Build one budgeted daily control surface." + markRun,
+		Usage: "What needs attention today? Build one budgeted daily control surface.",
 		UsageText: usageLines(
 			[2]string{"fkf brief", "freshness, recent evidence, authored due work, and active projects"},
 			[2]string{"fkf brief --budget 800", "the same receipt under a smaller complete-output budget"},

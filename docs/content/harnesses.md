@@ -99,3 +99,9 @@ A session record contains its id, first activity time inside the collected day, 
 The separate `agent-session-traces` source reads only `~/.agents/sessions/v1`, the normalized append-only store shared across harnesses. For each newest complete session generation in the requested window it projects bounded user requests, changed paths from `git status`, verification-looking lines from the last assistant message, harness, and model into ordinary JSON event records. It makes no model call, reads no changed file content, and refuses links in the store. Collection never creates or overwrites `tasks/` pages. The personal preset enables this source; the team preset leaves it disabled because session prose may cross a shared-base privacy boundary.
 
 A nightly learning routine belongs to an owner-scheduled agent, not to FKF. That agent may sync, inspect authored task traces, JSON session evidence, and cached memory bodies, and stage `.agents/tmp/learn/*.diff`; it must stop at `fkf learn review <id> --diff` until the owner approves or rejects the exact diff.
+
+## Use the connection
+
+For a coding task, ask the selected MCP server for `context` with the repository identity and an 850-token budget, then `read` the cited project decisions when needed. Reuse a relevant startup pack; after compaction, start at 600 tokens. A successful lookup does not require a full configuration read, source sync, task trace, or learning proposal.
+
+Keep shared skills neutral about the selected base. If a retrieval miss is reported, the bundled `fkf-use` feedback reference turns its query and expected URI into a reviewed case in the existing evaluation file. Registration, a successful protocol call, retrieval acceptance, and improved agent decisions are separate checks.
