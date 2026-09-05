@@ -149,7 +149,6 @@ func (snapshot *statusDocuments) applyIndex(entry *SourceStatus) {
 
 func (snapshot *statusDocuments) indexListing(base *Base, now time.Time) (*IndexListing, error) {
 	listing := &IndexListing{Entries: []IndexEntry{}}
-	maxAge := time.Duration(base.Config.Sync.IndexMaxAgeHours) * time.Hour
 	for _, stored := range snapshot.ordered {
 		if !strings.HasPrefix(stored.uri, string(core.LayerIndex)+"/") {
 			continue
@@ -164,6 +163,11 @@ func (snapshot *statusDocuments) indexListing(base *Base, now time.Time) (*Index
 			return nil, fmt.Errorf("parse %s collected_at: %w", stored.uri, err)
 		}
 		age := now.Sub(collected)
+		maxAgeHours := base.Config.Sync.IndexMaxAgeHours
+		if source := base.Config.Sources[stored.document.Source]; source != nil && source.Layer == core.LayerIndex {
+			maxAgeHours = source.EffectiveMaxAgeHours(maxAgeHours)
+		}
+		maxAge := time.Duration(maxAgeHours) * time.Hour
 		listing.Entries = append(listing.Entries, IndexEntry{
 			Name: stored.document.Source, URI: stored.uri, Count: stored.document.Count,
 			Bytes: int64(len(stored.data)), CollectedAt: stored.document.CollectedAt,

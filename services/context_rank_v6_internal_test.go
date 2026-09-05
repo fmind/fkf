@@ -12,9 +12,9 @@ import (
 	"github.com/fmind/fkf/core"
 )
 
-func TestRankingV6TermGrammarAndMatching(t *testing.T) {
-	if RankingVersion != 6 {
-		t.Fatalf("RankingVersion = %d, want 6", RankingVersion)
+func TestRankingTermGrammarAndMatching(t *testing.T) {
+	if RankingVersion != 7 {
+		t.Fatalf("RankingVersion = %d, want 7", RankingVersion)
 	}
 	terms, err := queryTerms(t.Context(), "go graph fkf-v6 docs/context person:email/marc@x.test")
 	if err != nil {
@@ -99,6 +99,34 @@ func TestRankingV6PrefersDirectIdentityThenCoverageAndRelatedIdentity(t *testing
 	sortCandidates(candidates)
 	if candidates[0] != page || candidates[1] != change || candidates[2] != generic {
 		t.Fatalf("ranked URIs = %q, %q, %q; want direct page, multi-term related evidence, then generic prose",
+			candidates[0].URI, candidates[1].URI, candidates[2].URI)
+	}
+}
+
+func TestLexicalRankingKeepsNamedTopicsAheadOfSharedBodyMentions(t *testing.T) {
+	person := &ContextItem{URI: "wiki/ada-lin.md", Title: "Ada Lin"}
+	organization := &ContextItem{URI: "wiki/ember-research-circle.md", Title: "Ember Research Circle"}
+	project := &ContextItem{URI: "projects/ember.md", Title: organization.Title}
+	navigation := &ContextItem{URI: "wiki/overview.md", Title: "Overview"}
+	navigation.addSegment("body", "Ada Lin and Ember Research Circle are linked here.", core.DefaultFieldWeight)
+	candidates := []*ContextItem{navigation, person, organization, project}
+	for _, item := range candidates {
+		item.addSegment(core.FieldTitle, item.Title, core.DefaultTitleFieldWeight)
+	}
+	for index := range 16 {
+		noise := &ContextItem{URI: fmt.Sprintf("index/noise.json#%02d", index)}
+		noise.addSegment(core.FieldTitle, "unrelated material", core.DefaultTitleFieldWeight)
+		candidates = append(candidates, noise)
+	}
+	query := "Ada Lin Ember Research Circle"
+	terms, err := queryTerms(t.Context(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoreCandidates(candidates, query, terms, time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC), nil)
+	sortCandidates(candidates)
+	if !slices.Contains(candidates[:3], person) || !slices.Contains(candidates[:3], organization) {
+		t.Fatalf("top three = %q, %q, %q; want both named topics before shared body mentions",
 			candidates[0].URI, candidates[1].URI, candidates[2].URI)
 	}
 }
@@ -508,8 +536,8 @@ func TestRankingV6CategoryVisibilityDefaultsAreExplicitAndDeterministic(t *testi
 		t.Fatalf("explicit visibility query did not recover private evidence: %+v", explicitPack.Items)
 	}
 
-	digestA := inputDigest(ContextRequest{Query: "design"}, generic, "2026-09-02", nil, nil, nil)
-	digestB := inputDigest(ContextRequest{Query: "design"}, generic, "2026-09-02", nil, nil, nil)
+	digestA := inputDigest("", ContextRequest{Query: "design"}, generic, "2026-09-02", nil, nil, nil)
+	digestB := inputDigest("", ContextRequest{Query: "design"}, generic, "2026-09-02", nil, nil, nil)
 	if digestA == "" || digestA != digestB {
 		t.Fatalf("policy-bound receipt digest = %q then %q, want deterministic", digestA, digestB)
 	}

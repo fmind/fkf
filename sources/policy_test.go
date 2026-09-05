@@ -342,13 +342,15 @@ func TestDescribePolicyNamesWhatAppliesForTheTrustReview(t *testing.T) {
 	if quiet != "" {
 		t.Fatalf("DescribePolicy() = %q, want empty for a source declaring no policy", quiet)
 	}
+	maxAgeHours := 48
 	full := sources.DescribePolicy(&core.Source{
 		Name:        "s",
+		MaxAgeHours: &maxAgeHours,
 		Retry:       core.RetryPolicy{Attempts: 3, Backoff: 30 * time.Second, On: []string{"exit:7"}},
 		MinInterval: 5 * time.Second,
 		Timeout:     2 * time.Minute,
 	})
-	for _, want := range []string{"retry 3 attempts", "exit:7", "backoff 30s", "min interval 5s", "timeout 2m0s"} {
+	for _, want := range []string{"index max age 48h", "retry 3 attempts", "exit:7", "backoff 30s", "min interval 5s", "timeout 2m0s"} {
 		if !strings.Contains(full, want) {
 			t.Fatalf("DescribePolicy() = %q, want it to contain %q", full, want)
 		}

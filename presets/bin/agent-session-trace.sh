@@ -1,11 +1,11 @@
 #!/bin/sh
-# agent-session-trace.sh <start> <end> -- emit completed normalized sessions as bounded JSON.
+# agent-session-trace.sh <start> <end> [not-before] -- emit completed normalized sessions as bounded JSON.
 #
 # The only input is ~/.agents/sessions/v1, the harness-independent append-only store shared by
 # the supported agent integrations. The helper does not know a harness's native transcript
 # format and makes no model call. It selects the newest complete generation of each session
 # whose last recorded turn falls in the exact half-open window, then projects enough evidence
-# for fkf to write one deterministic TASKS.md skeleton.
+# for fkf to store one ordinary event record.
 #
 # Requests and the last assistant message are bounded excerpts. Git contributes only its
 # porcelain status paths at collection time; no file content, diff, credential, or environment
@@ -15,11 +15,50 @@ set -eu
 
 case "${1:-}" in --version | -v) echo "agent-session-trace.sh (fkf preset helper)"; exit 0 ;; esac
 
-start=${1:?usage: agent-session-trace.sh <start> <end>}
-end=${2:?usage: agent-session-trace.sh <start> <end>}
+start=${1:?usage: agent-session-trace.sh <start> <end> [not-before]}
+end=${2:?usage: agent-session-trace.sh <start> <end> [not-before]}
+not_before=${3-}
+case "$not_before" in
+  "" | *T*Z | *T*+??:?? | *T*-??:??) ;;
+  *) echo "agent-session-trace.sh: start, end, and not-before must be RFC3339 instants forming a positive range" >&2; exit 1 ;;
+esac
 command -v jq >/dev/null 2>&1 || { echo "agent-session-trace.sh: jq is required" >&2; exit 1; }
 command -v find >/dev/null 2>&1 || { echo "agent-session-trace.sh: find is required" >&2; exit 1; }
 command -v git >/dev/null 2>&1 || { echo "agent-session-trace.sh: git is required" >&2; exit 1; }
+
+# Fractional and offset RFC3339 values compare as instants, not strings. Validate the optional
+# lower boundary before inspecting the session store, then clamp the requested range to it.
+rfc3339='
+def instant:
+  try (
+    capture("^(?<whole>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<fraction>\\.[0-9]+)?(?<zone>Z|[+-][0-9]{2}:[0-9]{2})$") as $part
+    | (($part.whole + "Z" | fromdateiso8601)
+       + (("0" + ($part.fraction // "")) | tonumber)
+       - (if $part.zone == "Z" then 0
+          else (((($part.zone[1:3] | tonumber) * 60) + ($part.zone[4:6] | tonumber)) * 60)
+               * (if $part.zone[0:1] == "+" then 1 else -1 end)
+          end))
+  ) catch null;
+'
+if ! effective_start=$(jq -nr --arg start "$start" --arg end "$end" --arg boundary "$not_before" "$rfc3339"'
+  ($start | instant) as $since
+  | ($end | instant) as $until
+  | (if $boundary == "" then null else ($boundary | instant) end) as $minimum
+  | if $since == null or $until == null or ($boundary != "" and $minimum == null) or $since >= $until
+    then error("invalid range")
+    elif $minimum != null and $until <= $minimum then "__empty__"
+    elif $minimum != null and $since < $minimum then $boundary
+    else $start
+    end
+'); then
+  echo "agent-session-trace.sh: start, end, and not-before must be RFC3339 instants forming a positive range" >&2
+  exit 1
+fi
+if [ "$effective_start" = "__empty__" ]; then
+  printf '[]\n'
+  exit 0
+fi
+start=$effective_start
 
 case "${HOME:-}" in /*) ;; *) echo "agent-session-trace.sh: HOME must be absolute" >&2; exit 1 ;; esac
 store=$HOME/.agents/sessions/v1
@@ -56,20 +95,6 @@ find "$store" -type l -exec sh -c ': >"$1"' sh "$repo_cache/linked" {} +
 find "$store" -type f -name manifest.json -size +65536c \
   -exec sh -c ': >"$1"' sh "$repo_cache/oversized" {} +
 [ ! -e "$repo_cache/oversized" ] || { echo "agent-session-trace.sh: oversized session manifest" >&2; exit 1; }
-
-# Fractional and offset RFC3339 values must compare as instants, not strings.
-rfc3339='
-def instant:
-  try (
-    capture("^(?<whole>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<fraction>\\.[0-9]+)?(?<zone>Z|[+-][0-9]{2}:[0-9]{2})$") as $part
-    | (($part.whole + "Z" | fromdateiso8601)
-       + (("0" + ($part.fraction // "")) | tonumber)
-       - (if $part.zone == "Z" then 0
-          else (((($part.zone[1:3] | tonumber) * 60) + ($part.zone[4:6] | tonumber)) * 60)
-               * (if $part.zone[0:1] == "+" then 1 else -1 end)
-          end))
-  ) catch null;
-'
 
 # repo_name accepts only an exact GitHub owner/name from the clone's configured origin.
 # Userinfo, other hosts, queries, fragments, and extra path segments stay out of the trace.
@@ -321,7 +346,12 @@ jq -c '.[]' <"$latest" | while IFS= read -r candidate; do
   # display metadata; it never becomes a command or path.
   repo=$(repo_name "$repo")
   jq -c --arg repo "$repo" --rawfile files "$files" '
+    def title:
+      ((.requests[0] // "") | gsub("[[:space:]]+"; " ") | gsub("^ | $"; "")) as $request
+      | if $request == "" then "Agent session " + .harness + " " + .sid else $request[0:160] end;
     . + (if $repo == "" then {} else {repo: $repo} end)
+      + (if $repo == "" then {} else {repository_uri: ("repo:github.com/" + $repo)} end)
+      + {time: .last_at, title: title}
       + {files: ($files | split("\n") | map(select(. != "")) | unique | .[0:200])}
   ' "$session" >>"$traces"
 done

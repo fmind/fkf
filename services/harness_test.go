@@ -26,66 +26,55 @@ func TestHarnessVocabularyAndFragmentsAreComplete(t *testing.T) {
 	}
 
 	base := makeHarnessBase(t)
+	workspace := t.TempDir()
 	for _, name := range want {
 		t.Run(name, func(t *testing.T) {
-			plan, err := HarnessPlanFor(base, name, testHarnessExecutable)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if plan.Name != name || plan.Base != base {
-				t.Fatalf("plan identity = %#v", plan)
-			}
-			joined := ""
-			for _, fragment := range plan.Fragments {
-				joined += fragment.Content + "\n"
-			}
-			for _, required := range []string{
-				testHarnessExecutable, "mcp", "serve", "--base", base, "fkf-hook.sh", name,
-				"trust", "--check",
-			} {
-				if !strings.Contains(joined, required) {
-					t.Fatalf("fragments do not contain %q:\n%s", required, joined)
-				}
-			}
-			if !strings.Contains(joined, filepath.Join(base, ".agents", "skills")) {
-				t.Fatalf("fragments do not expose the skills bridge:\n%s", joined)
-			}
+			assertHarnessPlanComplete(t, base, workspace, name)
 		})
 	}
 
-	if _, err := HarnessPlanFor(base, "Devin", testHarnessExecutable); !errors.Is(err, ErrHarnessName) {
+	if _, err := HarnessPlanFor(base, "Devin", testHarnessExecutable, ""); !errors.Is(err, ErrHarnessName) {
 		t.Fatalf("unknown harness error = %v", err)
+	}
+}
+
+func assertHarnessPlanComplete(t *testing.T, base, workspace, name string) {
+	t.Helper()
+	plan, err := HarnessPlanFor(base, name, testHarnessExecutable, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Name != name || plan.Base != base {
+		t.Fatalf("plan identity = %#v", plan)
+	}
+	joined := ""
+	for _, fragment := range plan.Fragments {
+		joined += fragment.Content + "\n"
+	}
+	for _, required := range []string{testHarnessExecutable, "mcp", "serve", "--base", base} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("fragments do not contain %q:\n%s", required, joined)
+		}
+	}
+	hookSupported := name == "claude" || name == "codex" || name == "gemini" || name == "kiro"
+	if got := strings.Contains(joined, "fkf-hook.sh"); got != hookSupported {
+		t.Fatalf("hook presence = %v, want %v:\n%s", got, hookSupported, joined)
+	}
+	if !hookSupported {
+		return
+	}
+	for _, required := range []string{name, "trust", "--check", workspace} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("hook fragments do not contain %q:\n%s", required, joined)
+		}
 	}
 }
 
 func TestHarnessPlansUseCurrentVendorSchemas(t *testing.T) {
 	base := makeHarnessBase(t)
+	workspace := t.TempDir()
 
-	copilot := harnessFragmentFor(t, base, "copilot", "~/.copilot/hooks/fkf.json", "hooks.sessionStart")
-	copilotHook, ok := copilot.value.(map[string]any)
-	if !ok {
-		t.Fatalf("Copilot hook value = %#v", copilot.value)
-	}
-	if copilotHook["bash"] == nil || copilotHook["timeoutSec"] != json.Number("20") {
-		t.Fatalf("Copilot hook = %#v", copilotHook)
-	}
-	if _, oldKey := copilotHook["command"]; oldKey {
-		t.Fatalf("Copilot hook uses the legacy command key: %#v", copilotHook)
-	}
-
-	antigravity := harnessFragmentFor(t, base, "antigravity", "~/.gemini/config/hooks.json", "fkf")
-	antigravityHook, ok := antigravity.value.(map[string]any)
-	if !ok {
-		t.Fatalf("Antigravity hook value = %#v", antigravity.value)
-	}
-	if _, wrapper := antigravityHook["hooks"]; wrapper {
-		t.Fatalf("Antigravity hook has a Gemini-style wrapper: %#v", antigravityHook)
-	}
-	if entries, ok := antigravityHook["PreInvocation"].([]any); !ok || len(entries) != 1 {
-		t.Fatalf("Antigravity PreInvocation = %#v", antigravityHook["PreInvocation"])
-	}
-
-	kiro := harnessFragmentFor(t, base, "kiro", "~/.kiro/hooks/fkf.json", "hooks")
+	kiro := harnessFragmentFor(t, base, "kiro", "~/.kiro/hooks/fkf-test-base.json", "hooks", workspace)
 	kiroHook, ok := kiro.value.(map[string]any)
 	if !ok {
 		t.Fatalf("Kiro hook value = %#v", kiro.value)
@@ -98,27 +87,30 @@ func TestHarnessPlansUseCurrentVendorSchemas(t *testing.T) {
 		t.Fatalf("Kiro hook uses the pre-v3 shape: %#v", kiroHook)
 	}
 
-	opencode := harnessFragmentFor(t, base, "opencode", "~/.config/opencode/plugins/fkf.js", "")
-	if !strings.Contains(opencode.Content, testHarnessExecutable) {
-		t.Fatalf("OpenCode hook does not pin the installing FKF executable:\n%s", opencode.Content)
-	}
-
-	cline := harnessFragmentFor(t, base, "cline", "~/.cline/data/settings/cline_mcp_settings.json", "mcpServers.fkf")
+	cline := harnessFragmentFor(t, base, "cline", "~/.cline/data/settings/cline_mcp_settings.json", "mcpServers.fkf-test-base")
 	if cline.Kind != HarnessFragmentJSON {
 		t.Fatalf("Cline MCP fragment = %#v", cline)
 	}
-	hook := harnessFragmentFor(t, base, "cline", "~/.cline/hooks/TaskStart", "")
-	if hook.Kind != HarnessFragmentFile {
-		t.Fatalf("Cline hook fragment = %#v", hook)
-	}
-	if !strings.Contains(hook.Content, testHarnessExecutable) {
-		t.Fatalf("Cline hook does not pin the installing FKF executable:\n%s", hook.Content)
+	for _, name := range []string{"copilot", "antigravity", "opencode", "grok", "cursor", "cline"} {
+		plan, err := HarnessPlanFor(base, name, testHarnessExecutable, workspace)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, fragment := range plan.Fragments {
+			if strings.Contains(fragment.Content, "fkf-hook.sh") {
+				t.Fatalf("%s emitted an unsupported hook: %+v", name, fragment)
+			}
+		}
 	}
 }
 
-func harnessFragmentFor(t *testing.T, base, harness, path, selector string) HarnessFragment {
+func harnessFragmentFor(t *testing.T, base, harness, path, selector string, workspace ...string) HarnessFragment {
 	t.Helper()
-	plan, err := HarnessPlanFor(base, harness, testHarnessExecutable)
+	selectedWorkspace := ""
+	if len(workspace) == 1 {
+		selectedWorkspace = workspace[0]
+	}
+	plan, err := HarnessPlanFor(base, harness, testHarnessExecutable, selectedWorkspace)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +128,7 @@ func TestInstallHarnessesPreservesFixturesAndIsIdempotent(t *testing.T) {
 	for _, name := range HarnessNames() {
 		t.Run(name, func(t *testing.T) {
 			home := t.TempDir()
-			plan, err := HarnessPlanFor(base, name, testHarnessExecutable)
+			plan, err := HarnessPlanFor(base, name, testHarnessExecutable, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -163,6 +155,193 @@ func TestInstallHarnessesPreservesFixturesAndIsIdempotent(t *testing.T) {
 				t.Fatalf("idempotent install report = %#v", again)
 			}
 		})
+	}
+}
+
+func TestInstallHarnessesKeepsTwoNamedBasesAndUnrelatedEntries(t *testing.T) {
+	home := t.TempDir()
+	baseA := makeHarnessBaseNamed(t, "alpha")
+	baseB := makeHarnessBaseNamed(t, "beta")
+	workspaceA := t.TempDir()
+	workspaceB := t.TempDir()
+	for _, setup := range []struct {
+		base      string
+		workspace string
+	}{
+		{base: baseA, workspace: workspaceA},
+		{base: baseB, workspace: workspaceB},
+	} {
+		report, err := InstallHarnesses(t.Context(), setup.base, HarnessInstallRequest{
+			All: true, Home: home, Executable: testHarnessExecutable, Workspace: setup.workspace,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !report.Complete {
+			t.Fatalf("install report = %+v", report)
+		}
+	}
+
+	for _, path := range []string{".claude.json", ".gemini/settings.json", ".cursor/mcp.json"} {
+		data, err := os.ReadFile(filepath.Join(home, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		for _, want := range []string{"fkf-alpha", "fkf-beta", baseA, baseB} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%s omits %q:\n%s", path, want, text)
+			}
+		}
+	}
+	for _, skill := range BundledSkills {
+		if _, err := os.Lstat(filepath.Join(home, ".agents", "skills", skill)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("global skill bridge %s exists after multi-base install: %v", skill, err)
+		}
+	}
+
+	again, err := InstallHarnesses(t.Context(), baseA, HarnessInstallRequest{
+		All: true, Home: home, Executable: testHarnessExecutable, Workspace: workspaceA,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.Complete || len(again.Changes) != 0 {
+		t.Fatalf("reinstall A = %+v, want idempotent", again)
+	}
+}
+
+func TestInstallHarnessesRefusesSameNameForDifferentPhysicalBases(t *testing.T) {
+	home := t.TempDir()
+	first := makeHarnessBaseNamed(t, "shared")
+	second := makeHarnessBaseNamed(t, "shared")
+	workspace := t.TempDir()
+	request := HarnessInstallRequest{
+		Names: []string{"claude"}, Home: home, Executable: testHarnessExecutable, Workspace: workspace,
+	}
+	if _, err := InstallHarnesses(t.Context(), first, request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallHarnesses(t.Context(), second, request); !errors.Is(err, ErrHarnessConflict) {
+		t.Fatalf("same-name second base error = %v, want conflict", err)
+	}
+}
+
+func TestInstallHarnessesRefusesOverlappingAutomaticHookWorkspaces(t *testing.T) {
+	for _, name := range []string{"claude", "codex", "gemini", "kiro"} {
+		t.Run(name, func(t *testing.T) { assertHarnessRejectsOverlappingWorkspaces(t, name) })
+	}
+}
+
+func assertHarnessRejectsOverlappingWorkspaces(t *testing.T, name string) {
+	t.Helper()
+	home := t.TempDir()
+	baseA := makeHarnessBaseNamed(t, "alpha")
+	baseB := makeHarnessBaseNamed(t, "beta")
+	workspace := t.TempDir()
+	nested := filepath.Join(workspace, "nested")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallHarnesses(t.Context(), baseA, HarnessInstallRequest{
+		Names: []string{name}, Home: home, Executable: testHarnessExecutable, Workspace: workspace,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InstallHarnesses(t.Context(), baseB, HarnessInstallRequest{
+		Names: []string{name}, Home: home, Executable: testHarnessExecutable, Workspace: nested,
+	}); !errors.Is(err, ErrHarnessConflict) || !strings.Contains(err.Error(), "overlapping") {
+		t.Fatalf("overlapping workspace error = %v, want actionable conflict", err)
+	}
+}
+
+func TestHarnessMCPRefreshPreservesWorkspaceHooks(t *testing.T) {
+	base, home, workspace := makeHarnessBase(t), t.TempDir(), t.TempDir()
+	if _, err := InstallHarnesses(t.Context(), base, HarnessInstallRequest{
+		All: true, Home: home, Executable: testHarnessExecutable, Workspace: workspace,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registrations, err := InspectHarnesses(t.Context(), base, home, testHarnessExecutable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range registrations {
+		if !entry.Registered {
+			t.Errorf("installed MCP with workspace hook reported drift: %+v", entry)
+		}
+	}
+	refreshed, err := InstallHarnesses(t.Context(), base, HarnessInstallRequest{
+		All: true, Home: home, Executable: testHarnessExecutable,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshed.Changes) != 0 {
+		t.Fatalf("MCP-only refresh changed existing hooks: %+v", refreshed)
+	}
+}
+
+func TestHarnessWorkspaceMoveChecksEveryOtherBase(t *testing.T) {
+	for _, name := range []string{"claude", "codex", "gemini", "kiro"} {
+		t.Run(name, func(t *testing.T) {
+			baseA, baseB := makeHarnessBaseNamed(t, "alpha"), makeHarnessBaseNamed(t, "beta")
+			home, workspaceA, workspaceB := t.TempDir(), t.TempDir(), t.TempDir()
+			request := HarnessInstallRequest{Names: []string{name}, Home: home, Executable: testHarnessExecutable, Workspace: workspaceA}
+			if _, err := InstallHarnesses(t.Context(), baseA, request); err != nil {
+				t.Fatal(err)
+			}
+			request.Workspace = workspaceB
+			if _, err := InstallHarnesses(t.Context(), baseB, request); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := InstallHarnesses(t.Context(), baseA, request); !errors.Is(err, ErrHarnessConflict) {
+				t.Fatalf("moving first hook onto second base workspace: %v, want conflict", err)
+			}
+		})
+	}
+}
+
+func TestHarnessTOMLBaseNamesMayShareAPrefix(t *testing.T) {
+	for _, name := range []string{"codex", "grok"} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			for _, baseName := range []string{"alpha-team", "alpha"} {
+				base := makeHarnessBaseNamed(t, baseName)
+				if _, err := InstallHarnesses(t.Context(), base, HarnessInstallRequest{
+					Names: []string{name}, Home: home, Executable: testHarnessExecutable,
+				}); err != nil {
+					t.Fatalf("install %s after prefix-sharing base: %v", baseName, err)
+				}
+			}
+		})
+	}
+}
+
+func TestHarnessPlanEmitsHooksOnlyForAnExplicitWorkspace(t *testing.T) {
+	base := makeHarnessBaseNamed(t, "brain")
+	without, err := HarnessPlanFor(base, "claude", testHarnessExecutable, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range without.Fragments {
+		if strings.Contains(fragment.Content, "fkf-hook.sh") {
+			t.Fatalf("workspace-free plan emitted a hook: %+v", fragment)
+		}
+	}
+	workspace := t.TempDir()
+	with, err := HarnessPlanFor(base, "claude", testHarnessExecutable, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := ""
+	for _, fragment := range with.Fragments {
+		joined += fragment.Content
+	}
+	for _, want := range []string{"fkf-brain", "fkf-hook.sh", workspace, "--base", base} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("workspace plan omits %q:\n%s", want, joined)
+		}
 	}
 }
 
@@ -213,7 +392,7 @@ func TestInstallHarnessesAllCombinesSharedTargetsAndIsIdempotent(t *testing.T) {
 	plans := make([]*HarnessPlan, 0, len(HarnessNames()))
 	wantPaths := map[string]struct{}{}
 	for _, name := range HarnessNames() {
-		plan, err := HarnessPlanFor(base, name, testHarnessExecutable)
+		plan, err := HarnessPlanFor(base, name, testHarnessExecutable, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -298,7 +477,7 @@ func TestInstallHarnessesDryRunCheckRepairAndBackup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	drifted := strings.Replace(string(before), base, filepath.Join(t.TempDir(), "other-base"), 1)
+	drifted := strings.Replace(string(before), `"env": {}`, `"env": {"drift": true}`, 1)
 	if drifted == string(before) {
 		t.Fatal("fixture did not contain base path")
 	}
@@ -359,9 +538,9 @@ func TestManagedHarnessJSONTreatsExtraKeysAsDriftAndPreservesSurroundingConfig(t
 		t.Fatal(err)
 	}
 	servers := harnessJSONMap(t, config["mcpServers"], "mcpServers")
-	managed := harnessJSONMap(t, servers["fkf"], "mcpServers.fkf")
+	managed := harnessJSONMap(t, servers["fkf-test-base"], "mcpServers.fkf-test-base")
 	managed["disabled"] = true
-	harnessJSONMap(t, managed["env"], "mcpServers.fkf.env")["FKF_BEHAVIOR_CHANGE"] = "1"
+	harnessJSONMap(t, managed["env"], "mcpServers.fkf-test-base.env")["FKF_BEHAVIOR_CHANGE"] = "1"
 	servers["keep"] = map[string]any{"command": "other"}
 	config["unrelated"] = map[string]any{"keep": true}
 	drifted, err := json.MarshalIndent(config, "", "  ")
@@ -409,11 +588,11 @@ func TestManagedHarnessJSONTreatsExtraKeysAsDriftAndPreservesSurroundingConfig(t
 		t.Fatal(err)
 	}
 	servers = harnessJSONMap(t, config["mcpServers"], "mcpServers")
-	managed = harnessJSONMap(t, servers["fkf"], "mcpServers.fkf")
+	managed = harnessJSONMap(t, servers["fkf-test-base"], "mcpServers.fkf-test-base")
 	if _, exists := managed["disabled"]; exists {
 		t.Fatalf("repair retained behavior-changing managed key: %#v", managed)
 	}
-	if len(harnessJSONMap(t, managed["env"], "mcpServers.fkf.env")) != 0 {
+	if len(harnessJSONMap(t, managed["env"], "mcpServers.fkf-test-base.env")) != 0 {
 		t.Fatalf("repair retained behavior-changing managed environment: %#v", managed)
 	}
 	if harnessJSONMap(t, servers["keep"], "mcpServers.keep")["command"] != "other" ||
@@ -435,7 +614,7 @@ func TestInstallHarnessesRefusesUnmanagedConflictsBeforeWriting(t *testing.T) {
 	base := makeHarnessBase(t)
 	home := t.TempDir()
 	conflict := filepath.Join(home, ".claude.json")
-	if err := os.WriteFile(conflict, []byte(`{"mcpServers":{"fkf":{"command":"not-fkf"}},"keep":true}`), 0o600); err != nil {
+	if err := os.WriteFile(conflict, []byte(`{"mcpServers":{"fkf-test-base":{"command":"not-fkf"}},"keep":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -492,31 +671,10 @@ func TestInstallHarnessesRefusesASymlinkedBaseHook(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := InstallHarnesses(t.Context(), base, HarnessInstallRequest{
-		Names: []string{"codex"}, Home: t.TempDir(), Executable: testHarnessExecutable,
+		Names: []string{"codex"}, Home: t.TempDir(), Executable: testHarnessExecutable, Workspace: t.TempDir(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "non-symlink") {
 		t.Fatalf("symlinked harness hook error = %v, want explicit refusal", err)
-	}
-}
-
-func TestInstallHarnessesRefusesASymlinkedBaseSkill(t *testing.T) {
-	base := makeHarnessBase(t)
-	skill := filepath.Join(base, ".agents", "skills", BundledSkills[0])
-	if err := os.Remove(skill); err != nil {
-		t.Fatal(err)
-	}
-	target := filepath.Join(t.TempDir(), "skill")
-	if err := os.Mkdir(target, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, skill); err != nil {
-		t.Fatal(err)
-	}
-	_, err := InstallHarnesses(t.Context(), base, HarnessInstallRequest{
-		Names: []string{"codex"}, Home: t.TempDir(), Executable: testHarnessExecutable,
-	})
-	if !errors.Is(err, core.ErrUnsafePath) {
-		t.Fatalf("symlinked harness skill error = %v, want unsafe-path refusal", err)
 	}
 }
 
@@ -551,34 +709,11 @@ func TestApplyHarnessFilesRefusesDriftAfterPreflight(t *testing.T) {
 	}
 }
 
-func TestApplyHarnessLinksRefusesDriftAfterPreflight(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "fkf-use")
-	oldTarget := filepath.Join(root, "old", ".agents", "skills", "fkf-use")
-	newTarget := filepath.Join(root, "new", ".agents", "skills", "fkf-use")
-	if err := os.Symlink(oldTarget, path); err != nil {
-		t.Fatal(err)
-	}
-	mutation := harnessLinkMutation{harness: "codex", path: path, after: newTarget}
-	if err := preflightHarnessLink(&mutation); err != nil {
-		t.Fatal(err)
-	}
-	concurrent := filepath.Join(root, "concurrent", ".agents", "skills", "fkf-use")
-	if err := replaceSymlink(path, concurrent); err != nil {
-		t.Fatal(err)
-	}
-	if err := applyHarnessLinks(t.Context(), []harnessLinkMutation{mutation}); !errors.Is(err, ErrHarnessConflict) {
-		t.Fatalf("apply drift error = %v, want harness conflict", err)
-	}
-	if got, err := os.Readlink(path); err != nil || got != concurrent {
-		t.Fatalf("link after drift refusal = %q, %v; want %q", got, err, concurrent)
-	}
-	if _, err := os.Lstat(path + harnessBackupSuffix); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("drift created a stale link backup: %v", err)
-	}
+func makeHarnessBase(t *testing.T) string {
+	return makeHarnessBaseNamed(t, "test-base")
 }
 
-func makeHarnessBase(t *testing.T) string {
+func makeHarnessBaseNamed(t *testing.T, name string) string {
 	t.Helper()
 	base := filepath.Join(t.TempDir(), "base with spaces")
 	directories := []string{filepath.Join(base, "bin")}
@@ -591,6 +726,10 @@ func makeHarnessBase(t *testing.T) string {
 		}
 	}
 	if err := os.WriteFile(filepath.Join(base, "bin", "fkf-hook.sh"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := "fkf: 1\nname: " + name + "\nschema:\n  id: {description: Stable identity., cardinality: one}\nlayers: {}\n"
+	if err := os.WriteFile(filepath.Join(base, core.ConfigFileName), []byte(config), core.BaseFileMode); err != nil {
 		t.Fatal(err)
 	}
 	return base
@@ -632,16 +771,6 @@ func assertHarnessFragmentsInstalled(t *testing.T, home string, plan *HarnessPla
 	seen := map[string]bool{}
 	for _, fragment := range plan.Fragments {
 		target := expandHarnessTestPath(t, home, fragment.Path)
-		if fragment.Kind == HarnessFragmentLink {
-			got, err := os.Readlink(target)
-			if err != nil {
-				t.Fatalf("read skill link %s: %v", target, err)
-			}
-			if got != fragment.Content {
-				t.Fatalf("skill link %s = %q, want %q", target, got, fragment.Content)
-			}
-			continue
-		}
 		if seen[target] {
 			continue
 		}

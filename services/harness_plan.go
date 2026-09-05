@@ -3,7 +3,7 @@ package services
 import (
 	"bytes"
 	"encoding/json"
-	"os"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -11,117 +11,101 @@ import (
 	"github.com/fmind/fkf/core"
 )
 
-func buildHarnessPlan(baseRoot, name, executable string) *HarnessPlan {
+func buildHarnessPlan(baseRoot, baseName, name, executable, workspace string) *HarnessPlan {
+	key := harnessRegistrationKey(baseName)
 	hook := filepath.Join(baseRoot, core.BaseBinDir, "fkf-hook.sh")
-	hookCommand := guardedHookCommand(baseRoot, hook, name, executable)
+	hookCommand := guardedHookCommand(baseRoot, key, workspace, hook, name, executable)
 	mcpArgs := []any{"mcp", "serve", "--base", baseRoot}
 	stdioMCP := map[string]any{"command": executable, "args": mcpArgs}
-	plan := &HarnessPlan{Name: name, Base: baseRoot}
+	plan := &HarnessPlan{Name: name, Base: baseRoot, BaseName: baseName, Workspace: workspace}
 
 	switch name {
 	case "claude":
 		claudeMCP := cloneMap(stdioMCP)
 		claudeMCP["type"] = "stdio"
 		claudeMCP["env"] = map[string]any{}
-		plan.Fragments = append(plan.Fragments,
-			jsonFragment("~/.claude.json", "mcpServers.fkf", claudeMCP, false, "mcp"),
-			jsonFragment("~/.claude/settings.json", "hooks.SessionStart", hookGroup("startup|compact", hookCommand, 20), true, "hook"),
-		)
+		plan.Fragments = append(plan.Fragments, jsonFragment("~/.claude.json", "mcpServers."+key, claudeMCP, false, "mcp", baseRoot, key, ""))
+		if workspace != "" {
+			plan.Fragments = append(plan.Fragments,
+				jsonFragment("~/.claude/settings.json", "hooks.SessionStart", hookGroup("startup|compact", hookCommand, 20), true, "hook", baseRoot, key, workspace))
+		}
 	case "codex":
-		block := managedTOMLBlock(name, strings.Join([]string{
-			"[mcp_servers.fkf]", "command = " + strconv.Quote(executable),
-			"args = [\"mcp\", \"serve\", \"--base\", " + strconv.Quote(baseRoot) + "]", "",
-			"[[hooks.SessionStart]]", `matcher = "startup|compact"`, "", "[[hooks.SessionStart.hooks]]",
-			`type = "command"`, "command = " + strconv.Quote(hookCommand), "timeout = 20",
-			`statusMessage = "Loading FKF context"`,
-		}, "\n"))
-		plan.Fragments = append(plan.Fragments, tomlFragment("~/.codex/config.toml", block))
+		lines := []string{
+			"# base: " + strconv.Quote(baseRoot),
+			"[mcp_servers." + key + "]", "command = " + strconv.Quote(executable),
+			"args = [\"mcp\", \"serve\", \"--base\", " + strconv.Quote(baseRoot) + "]",
+		}
+		if workspace != "" {
+			lines = append(lines, "", "[[hooks.SessionStart]]", `matcher = "startup|compact"`, "", "[[hooks.SessionStart.hooks]]",
+				`type = "command"`, "command = "+strconv.Quote(hookCommand), "timeout = 20",
+				`statusMessage = "Loading FKF context"`)
+		}
+		block := managedTOMLBlock(name, key, strings.Join(lines, "\n"))
+		plan.Fragments = append(plan.Fragments, tomlFragment("~/.codex/config.toml", block, baseRoot, key, workspace))
 	case "gemini":
-		plan.Fragments = append(plan.Fragments,
-			jsonFragment("~/.gemini/settings.json", "mcpServers.fkf", stdioMCP, false, "mcp"),
-			jsonFragment("~/.gemini/settings.json", "hooks.SessionStart", hookGroup("startup|compact", hookCommand, 20000), true, "hook"),
-		)
+		plan.Fragments = append(plan.Fragments, jsonFragment("~/.gemini/settings.json", "mcpServers."+key, stdioMCP, false, "mcp", baseRoot, key, ""))
+		if workspace != "" {
+			plan.Fragments = append(plan.Fragments,
+				jsonFragment("~/.gemini/settings.json", "hooks.SessionStart", hookGroup("startup|compact", hookCommand, 20000), true, "hook", baseRoot, key, workspace))
+		}
 	case "copilot":
 		copilotMCP := cloneMap(stdioMCP)
 		copilotMCP["type"] = "local"
 		copilotMCP["tools"] = []any{"*"}
 		plan.Fragments = append(plan.Fragments,
-			jsonFragment("~/.copilot/mcp-config.json", "mcpServers.fkf", copilotMCP, false, "mcp"),
-			jsonFragment("~/.copilot/hooks/fkf.json", "version", 1, false, "scalar"),
-			jsonFragment("~/.copilot/hooks/fkf.json", "hooks.sessionStart", map[string]any{
-				"type": "command", "bash": hookCommand, "timeoutSec": 20,
-			}, true, "hook"),
-		)
-		plan.Notes = append(plan.Notes, "Copilot CLI runs sessionStart hooks but ignores their output; MCP and skills remain fully usable.")
+			jsonFragment("~/.copilot/mcp-config.json", "mcpServers."+key, copilotMCP, false, "mcp", baseRoot, key, ""))
+		plan.Notes = append(plan.Notes, "Copilot CLI ignores command output from sessionStart; this adapter is MCP-only.")
 	case "antigravity":
 		plan.Fragments = append(plan.Fragments,
-			jsonFragment("~/.gemini/config/mcp_config.json", "mcpServers.fkf", stdioMCP, false, "mcp"),
-			jsonFragment("~/.gemini/config/hooks.json", "fkf", map[string]any{
-				"enabled": true,
-				"PreInvocation": []any{map[string]any{
-					"type": "command", "command": hookCommand, "timeout": 20,
-				}},
-			}, false, "hook"),
-		)
+			jsonFragment("~/.gemini/config/mcp_config.json", "mcpServers."+key, stdioMCP, false, "mcp", baseRoot, key, ""))
+		plan.Notes = append(plan.Notes, "Antigravity ignores PreInvocation output; this adapter is MCP-only.")
 	case "opencode":
 		command := []any{executable, "mcp", "serve", "--base", baseRoot}
 		plan.Fragments = append(plan.Fragments,
-			jsonFragment("~/.config/opencode/opencode.json", "mcp.fkf", map[string]any{
+			jsonFragment("~/.config/opencode/opencode.json", "mcp."+key, map[string]any{
 				"type": "local", "command": command, "enabled": true,
-			}, false, "mcp"),
-			fileFragment("~/.config/opencode/plugins/fkf.js", openCodePlugin(baseRoot, hook, executable), 0o600),
+			}, false, "mcp", baseRoot, key, ""),
 		)
+		plan.Notes = append(plan.Notes, "OpenCode's current plugin contract has no stable passive session-context transform; this adapter is MCP-only.")
 	case "grok":
-		block := managedTOMLBlock(name, strings.Join([]string{
-			"[mcp_servers.fkf]", "command = " + strconv.Quote(executable),
+		block := managedTOMLBlock(name, key, strings.Join([]string{
+			"# base: " + strconv.Quote(baseRoot),
+			"[mcp_servers." + key + "]", "command = " + strconv.Quote(executable),
 			"args = [\"mcp\", \"serve\", \"--base\", " + strconv.Quote(baseRoot) + "]", "enabled = true",
 		}, "\n"))
-		plan.Fragments = append(plan.Fragments,
-			tomlFragment("~/.grok/config.toml", block),
-			jsonFragment("~/.grok/hooks/fkf.json", "hooks.SessionStart", hookGroup("startup|compact", hookCommand, 20), true, "hook"),
-		)
-		plan.Notes = append(plan.Notes, "Grok 1.0.5 runs SessionStart but ignores passive-hook stdout; MCP remains fully usable.")
+		plan.Fragments = append(plan.Fragments, tomlFragment("~/.grok/config.toml", block, baseRoot, key, ""))
+		plan.Notes = append(plan.Notes, "Grok runs SessionStart but ignores passive-hook output; this adapter is MCP-only.")
 	case "cursor":
 		plan.Fragments = append(plan.Fragments,
-			jsonFragment("~/.cursor/mcp.json", "mcpServers.fkf", stdioMCP, false, "mcp"),
-			jsonFragment("~/.cursor/hooks.json", "version", 1, false, "scalar"),
-			jsonFragment("~/.cursor/hooks.json", "hooks.sessionStart", map[string]any{
-				"command": hookCommand,
-			}, true, "hook"),
-		)
+			jsonFragment("~/.cursor/mcp.json", "mcpServers."+key, stdioMCP, false, "mcp", baseRoot, key, ""))
+		plan.Notes = append(plan.Notes, "Cursor has no verified per-base user hook filename contract; this adapter is MCP-only.")
 	case "kiro":
 		kiroMCP := cloneMap(stdioMCP)
 		kiroMCP["disabled"] = false
 		kiroMCP["autoApprove"] = []any{}
 		plan.Fragments = append(plan.Fragments,
-			jsonFragment("~/.kiro/settings/mcp.json", "mcpServers.fkf", kiroMCP, false, "mcp"),
-			jsonFragment("~/.kiro/hooks/fkf.json", "version", "v1", false, "scalar"),
-			jsonFragment("~/.kiro/hooks/fkf.json", "hooks", map[string]any{
-				"name": "FKF context", "trigger": "SessionStart",
-				"action":  map[string]any{"type": "command", "command": hookCommand},
-				"timeout": 20, "enabled": true,
-			}, true, "hook"),
-		)
+			jsonFragment("~/.kiro/settings/mcp.json", "mcpServers."+key, kiroMCP, false, "mcp", baseRoot, key, ""))
+		if workspace != "" {
+			hookPath := "~/.kiro/hooks/" + key + ".json"
+			plan.Fragments = append(plan.Fragments,
+				jsonFragment(hookPath, "version", "v1", false, "scalar", baseRoot, key, workspace),
+				jsonFragment(hookPath, "hooks", map[string]any{
+					"name": "FKF context", "trigger": "SessionStart",
+					"action":  map[string]any{"type": "command", "command": hookCommand},
+					"timeout": 20, "enabled": true,
+				}, true, "hook", baseRoot, key, workspace))
+		}
 	case "cline":
 		plan.Fragments = append(plan.Fragments,
-			jsonFragment("~/.cline/data/settings/cline_mcp_settings.json", "mcpServers.fkf", stdioMCP, false, "mcp"),
-			fileFragment("~/.cline/hooks/TaskStart", clineHook(hookCommand), 0o700),
+			jsonFragment("~/.cline/data/settings/cline_mcp_settings.json", "mcpServers."+key, stdioMCP, false, "mcp", baseRoot, key, ""),
 		)
+		plan.Notes = append(plan.Notes, "Cline exposes one global TaskStart filename rather than per-base files; this adapter is MCP-only.")
 	}
-
-	bridgeRoot := map[string]string{
-		"claude": "~/.claude/skills", "codex": "~/.agents/skills", "gemini": "~/.gemini/skills",
-		"copilot": "~/.copilot/skills", "antigravity": "~/.gemini/antigravity-cli/skills", "opencode": "~/.agents/skills",
-		"grok": "~/.grok/skills", "cursor": "~/.cursor/skills", "kiro": "~/.kiro/skills", "cline": "~/.cline/skills",
-	}[name]
-	for _, skill := range BundledSkills {
-		plan.Fragments = append(plan.Fragments, HarnessFragment{
-			Path: bridgeRoot + "/" + skill, Kind: HarnessFragmentLink,
-			Content: filepath.Join(baseRoot, core.BaseSkillsDir, skill),
-		})
-	}
+	plan.Notes = append(plan.Notes, "Skills remain base-local. Install neutral shared FKF skills separately if the harness needs user-scope discovery.")
 	return plan
 }
+
+func harnessRegistrationKey(baseName string) string { return "fkf-" + baseName }
 
 func hookGroup(matcher, command string, timeout int) map[string]any {
 	return map[string]any{
@@ -133,68 +117,55 @@ func hookGroup(matcher, command string, timeout int) map[string]any {
 	}
 }
 
-func jsonFragment(path, selector string, value any, array bool, managedKind string) HarnessFragment {
+func jsonFragment(path, selector string, value any, array bool, managedKind string, metadata ...string) HarnessFragment {
+	baseRoot, key, workspace := "", "", ""
+	if len(metadata) > 0 {
+		baseRoot = metadata[0]
+	}
+	if len(metadata) > 1 {
+		key = metadata[1]
+	}
+	if len(metadata) > 2 {
+		workspace = metadata[2]
+	}
 	encoded, _ := json.MarshalIndent(value, "", "  ")
 	return HarnessFragment{
 		Path: path, Kind: HarnessFragmentJSON, Selector: selector, Content: string(encoded),
-		value: normalizeJSON(value), array: array, managedKind: managedKind, mode: 0o600,
+		value: normalizeJSON(value), array: array, managedKind: managedKind,
+		managedBase: baseRoot, managedKey: key, workspace: workspace, mode: 0o600,
 	}
 }
 
-func tomlFragment(path, block string) HarnessFragment {
-	return HarnessFragment{Path: path, Kind: HarnessFragmentTOML, Content: block, mode: 0o600}
+func tomlFragment(path, block string, metadata ...string) HarnessFragment {
+	fragment := HarnessFragment{Path: path, Kind: HarnessFragmentTOML, Content: block, mode: 0o600}
+	if len(metadata) > 0 {
+		fragment.managedBase = metadata[0]
+	}
+	if len(metadata) > 1 {
+		fragment.managedKey = metadata[1]
+	}
+	if len(metadata) > 2 {
+		fragment.workspace = metadata[2]
+	}
+	return fragment
 }
 
-func fileFragment(path, content string, mode os.FileMode) HarnessFragment {
-	return HarnessFragment{Path: path, Kind: HarnessFragmentFile, Content: content, mode: mode}
+func managedTOMLBlock(name, key, content string) string {
+	marker := name + " " + key
+	return harnessManagedStart + marker + "\n" + strings.TrimSpace(content) + "\n" + harnessManagedEnd + marker + "\n"
 }
 
-func managedTOMLBlock(name, content string) string {
-	return harnessManagedStart + name + "\n" + strings.TrimSpace(content) + "\n" + harnessManagedEnd + name + "\n"
-}
-
-func openCodePlugin(baseRoot, hook, executable string) string {
-	return `// Managed by fkf harness install: opencode
-// OpenCode has no SessionStart context hook. Inject once per session at its documented
-// system-transform seam, preserving the hook's fail-open behavior. Verify the base's
-// execution trust before dispatch because the hook itself is base-owned executable code.
-const seen = new Set()
-
-export const Fkf = async ({ directory }) => ({
-  "experimental.chat.system.transform": async (input, output) => {
-    if (seen.has(input.sessionID)) return
-    seen.add(input.sessionID)
-    const trust = Bun.spawn([` + strconv.Quote(executable) + `, "trust", "--check", "--base", ` + strconv.Quote(baseRoot) + `], {
-      cwd: directory,
-      stdout: "ignore",
-      stderr: "ignore",
-    })
-    if ((await trust.exited) !== 0) return
-    const child = Bun.spawn([` + strconv.Quote(hook) + `, "opencode", ` + strconv.Quote(executable) + `], {
-      cwd: directory,
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "ignore",
-    })
-    child.stdin.write(JSON.stringify({ cwd: directory }))
-    child.stdin.end()
-    const text = await new Response(child.stdout).text()
-    if ((await child.exited) === 0 && text.trim()) output.system.push(text.trimEnd())
-  },
-})
-`
-}
-
-func clineHook(command string) string {
-	return "#!/bin/sh\n# Managed by fkf harness install: cline\n" + command + "\n"
-}
-
-func guardedHookCommand(baseRoot, hook, harness, executable string) string {
+func guardedHookCommand(baseRoot, key, workspace, hook, harness, executable string) string {
+	if workspace == "" {
+		return ""
+	}
 	// Harness configuration lives outside the trust digest, so it must verify the current
 	// base plan before dispatching a base-owned executable hook.
+	marker := ": fkf-key=" + url.PathEscape(key) + " fkf-base=" + url.PathEscape(baseRoot) +
+		" fkf-workspace=" + url.PathEscape(workspace)
 	check := shellQuote(executable) + " trust --check --base " + shellQuote(baseRoot) + " >/dev/null 2>&1"
-	dispatch := shellQuote(hook) + " " + shellQuote(harness) + " " + shellQuote(executable)
-	return check + " && " + dispatch + " || " + emptyHarnessCommand(harness)
+	dispatch := shellQuote(hook) + " " + shellQuote(harness) + " " + shellQuote(executable) + " " + shellQuote(workspace)
+	return marker + "; " + check + " && " + dispatch + " || " + emptyHarnessCommand(harness)
 }
 
 func emptyHarnessCommand(harness string) string {

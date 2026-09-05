@@ -107,6 +107,10 @@ func validateSourceFile(name string, file fileSource, fail sourceBuildFail) erro
 }
 
 func applySourceOptions(source *Source, file fileSource, fail sourceBuildFail) error {
+	if file.MaxAgeHours != nil {
+		age := *file.MaxAgeHours
+		source.MaxAgeHours = &age
+	}
 	if bodies := strings.TrimSpace(file.Bodies); bodies != "" {
 		source.Bodies = BodyPolicy(bodies)
 	}
@@ -124,24 +128,13 @@ func applySourceOptions(source *Source, file fileSource, fail sourceBuildFail) e
 		source.Test = append([]string(nil), (*file.Test)...)
 	}
 	if layer := strings.TrimSpace(file.Layer); layer != "" {
-		if Layer(layer) != LayerEvents && Layer(layer) != LayerIndex && Layer(layer) != LayerTasks {
-			return sourceBuildError(fail, "layer is %q; expected %s, %s, or %s", layer, LayerEvents, LayerIndex, LayerTasks)
+		if Layer(layer) == LayerTasks {
+			return sourceBuildError(fail, "layer is %q; task pages are authored evidence, not a source target; declare transcript collectors as layer: events with fields", layer)
+		}
+		if Layer(layer) != LayerEvents && Layer(layer) != LayerIndex {
+			return sourceBuildError(fail, "layer is %q; expected %s or %s", layer, LayerEvents, LayerIndex)
 		}
 		source.Layer = Layer(layer)
-	}
-	if source.Layer == LayerTasks {
-		switch {
-		case strings.TrimSpace(file.Records) != "":
-			return sourceBuildError(fail, "records is not valid for a tasks source; its command emits task-trace objects")
-		case len(file.Fields) > 0:
-			return sourceBuildError(fail, "fields is not valid for a tasks source; task traces have a closed write contract")
-		case len(file.Body) > 0:
-			return sourceBuildError(fail, "body is not valid for a tasks source")
-		case strings.TrimSpace(file.Bodies) != "":
-			return sourceBuildError(fail, "bodies is not valid for a tasks source")
-		case file.Recency != nil:
-			return sourceBuildError(fail, "recency is not valid for a tasks source")
-		}
 	}
 	if format := strings.TrimSpace(file.Format); format != "" {
 		if OutputFormat(format) != FormatJSON && OutputFormat(format) != FormatNDJSON {

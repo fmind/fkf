@@ -31,6 +31,9 @@ func newHarnessCommand() *cli.Command {
 			{
 				Name: "print", Aliases: []string{"p"}, Usage: "Print the exact managed fragments for a dotfile template.",
 				ArgsUsage: "<name>",
+				Flags: []cli.Flag{
+					&cli.StringFlag{Name: "workspace", Usage: "Add automatic context hooks scoped to this absolute workspace."},
+				},
 				Action: func(_ context.Context, cmd *cli.Command) error {
 					if err := requireOneArg(cmd, "fkf harness print <name>"); err != nil {
 						return err
@@ -47,7 +50,7 @@ func newHarnessCommand() *cli.Command {
 					if err != nil {
 						return fmt.Errorf("locate current FKF executable: %w", err)
 					}
-					plan, err := services.HarnessPlanFor(base.Root(), cmd.Args().First(), executable)
+					plan, err := services.HarnessPlanFor(base.Root(), cmd.Args().First(), executable, cmd.String("workspace"))
 					if err != nil {
 						return err
 					}
@@ -61,6 +64,7 @@ func newHarnessCommand() *cli.Command {
 					&cli.BoolFlag{Name: "all", Usage: "Select every supported harness."},
 					&cli.BoolFlag{Name: "dry-run", Usage: "Print exact changes without writing."},
 					&cli.BoolFlag{Name: "check", Usage: "Exit 1 when a selected integration is missing or drifted; write nothing."},
+					&cli.StringFlag{Name: "workspace", Usage: "Add automatic context hooks scoped to this absolute workspace."},
 				},
 				Action: installHarnesses,
 			},
@@ -96,7 +100,7 @@ func installHarnesses(ctx context.Context, cmd *cli.Command) error {
 	run := func() error {
 		report, err := services.InstallHarnesses(ctx, base.Root(), services.HarnessInstallRequest{
 			Names: names, All: cmd.Bool("all"), DryRun: cmd.Bool("dry-run"), Check: cmd.Bool("check"),
-			Home: os.Getenv("HOME"), Executable: executable,
+			Home: os.Getenv("HOME"), Executable: executable, Workspace: cmd.String("workspace"),
 		})
 		if err := emitHarnessInstall(cmd, report, err); err != nil {
 			return err
@@ -137,8 +141,16 @@ func emitHarnessPlan(cmd *cli.Command, plan *services.HarnessPlan) error {
 	if cmd.Root().String("format") != formatText {
 		return emit(cmd, plan, nil)
 	}
+	if _, err := fmt.Fprintf(cmd.Root().Writer, "# Base: %s (%s)\n", plan.BaseName, plan.Base); err != nil {
+		return err
+	}
+	if plan.Workspace != "" {
+		if _, err := fmt.Fprintf(cmd.Root().Writer, "# Workspace: %s\n", plan.Workspace); err != nil {
+			return err
+		}
+	}
 	for index, fragment := range plan.Fragments {
-		if index > 0 {
+		if index >= 0 {
 			if _, err := fmt.Fprintln(cmd.Root().Writer); err != nil {
 				return err
 			}
@@ -171,7 +183,7 @@ func emitHarnessInstall(cmd *cli.Command, report *services.HarnessInstallReport,
 		return emit(cmd, report, nil)
 	}
 	if len(report.Changes) == 0 {
-		_, err := fmt.Fprintf(cmd.Root().Writer, "harness %s: current\n", report.Mode)
+		_, err := fmt.Fprintf(cmd.Root().Writer, "harness %s for %s (%s): current\n", report.Mode, report.BaseName, report.Base)
 		return err
 	}
 	for _, change := range report.Changes {

@@ -68,8 +68,11 @@ esac
 	output := runAgentSessionTrace(t, home, bin, "2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
 	var traces []struct {
 		ID            string   `json:"id"`
+		Time          string   `json:"time"`
+		Title         string   `json:"title"`
 		Harness       string   `json:"harness"`
 		Repo          string   `json:"repo"`
+		RepositoryURI string   `json:"repository_uri"`
 		Requests      []string `json:"requests"`
 		Files         []string `json:"files"`
 		Verification  []string `json:"verification"`
@@ -79,7 +82,8 @@ esac
 		t.Fatalf("decode session traces: %v\n%s", err, output)
 	}
 	if len(traces) != 1 || traces[0].ID != "codex:session-1" || traces[0].Harness != "codex" ||
-		traces[0].Repo != "fmind/fkf" {
+		traces[0].Repo != "fmind/fkf" || traces[0].RepositoryURI != "repo:github.com/fmind/fkf" ||
+		traces[0].Time != "2026-05-04T09:30:00Z" || traces[0].Title != "Implement session traces." {
 		t.Fatalf("session traces = %+v, want one latest complete normalized session", traces)
 	}
 	if len(traces[0].Requests) != 1 || traces[0].Requests[0] != "Implement session traces." ||
@@ -98,6 +102,12 @@ esac
 	excluded := runAgentSessionTrace(t, home, bin, "2026-05-05T00:00:00Z", "2026-05-06T00:00:00Z")
 	if strings.TrimSpace(string(excluded)) != "[]" {
 		t.Fatalf("outside-window trace output = %s, want []", excluded)
+	}
+	straddled := runAgentSessionTrace(t, home, bin,
+		"2026-05-03T00:00:00Z", "2026-05-05T00:00:00Z", "2026-05-04T02:00:00+02:00")
+	var clamped []map[string]any
+	if err := json.Unmarshal(straddled, &clamped); err != nil || len(clamped) != 1 {
+		t.Fatalf("straddling not-before output = %s, error %v", straddled, err)
 	}
 }
 
@@ -122,6 +132,31 @@ exit 0
 	output := runAgentSessionTrace(t, home, bin, "2026-05-04T00:00:00Z", "2026-05-05T00:00:00Z")
 	if strings.TrimSpace(string(output)) != "[]" {
 		t.Fatalf("empty trace output = %s, want []", output)
+	}
+}
+
+func TestAgentSessionTraceNotBeforeClampsByInstantBeforeReadingTheStore(t *testing.T) {
+	home := t.TempDir()
+	store := filepath.Join(home, ".agents", "sessions", "v1")
+	if err := os.MkdirAll(filepath.Dir(store), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), store); err != nil {
+		t.Fatal(err)
+	}
+	output := runAgentSessionTrace(t, home, t.TempDir(),
+		"2026-05-01T00:00:00Z", "2026-05-02T00:00:00Z", "2026-05-02T02:00:00+02:00")
+	if strings.TrimSpace(string(output)) != "[]" {
+		t.Fatalf("wholly pre-boundary output = %s, want []", output)
+	}
+
+	command := exec.CommandContext(t.Context(), "/bin/sh",
+		filepath.Join(repositoryRoot(t), "presets", "bin", "agent-session-trace.sh"),
+		"2026-05-01T00:00:00Z", "2026-05-02T00:00:00Z", "2026-05-01")
+	command.Env = append(os.Environ(), "HOME="+home)
+	invalid, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(invalid), "must be RFC3339 instants") {
+		t.Fatalf("invalid not-before = error %v, output %q", err, invalid)
 	}
 }
 
@@ -496,10 +531,11 @@ func TestAgentSessionTraceDisablesRepositoryConfiguredFSMonitor(t *testing.T) {
 	}
 }
 
-func runAgentSessionTrace(t *testing.T, home, bin, start, end string) []byte {
+func runAgentSessionTrace(t *testing.T, home, bin, start, end string, notBefore ...string) []byte {
 	t.Helper()
-	command := exec.CommandContext(t.Context(), "/bin/sh",
-		filepath.Join(repositoryRoot(t), "presets", "bin", "agent-session-trace.sh"), start, end)
+	args := []string{filepath.Join(repositoryRoot(t), "presets", "bin", "agent-session-trace.sh"), start, end}
+	args = append(args, notBefore...)
+	command := exec.CommandContext(t.Context(), "/bin/sh", args...)
 	command.Env = append(os.Environ(),
 		"HOME="+home,
 		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),

@@ -602,6 +602,10 @@ func TestStatusPermissionRemedyWorksThroughASymlinkedBaseRoot(t *testing.T) {
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// File creation respects the caller's umask; this audit needs an explicitly unsafe fixture.
+	if err := os.Chmod(hook, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Chmod(realRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -666,11 +670,17 @@ func TestStatusVersionedPermissionRemedyPreservesExecutableHelpers(t *testing.T)
 	if err := os.WriteFile(helper, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(helper, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	testNested := filepath.Join(root, core.BaseTestsDir, "fixtures")
 	if err := os.MkdirAll(testNested, core.BaseDirMode); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(testNested, "source-check"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(testNested, "source-check"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	status, err := services.Report(t.Context(), base, services.StatusRequest{})

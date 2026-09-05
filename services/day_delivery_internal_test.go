@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/fmind/fkf/sources"
 )
 
 func TestTimelineTextBudgetKeepsTenCommitsAndCalendarEntries(t *testing.T) {
@@ -81,100 +79,27 @@ func TestTimelineTextBudgetKeepsTenCommitsAndCalendarEntries(t *testing.T) {
 	assertTimelineDeliverySize(t, jsonReport, marshalTimelineJSON(jsonReport))
 }
 
-func TestTimelineBudgetPrefersCreatedWorkAndNamedCalendarEvidence(t *testing.T) {
-	records := make([]FindRecord, 0, 260)
-	for index := 1; index <= 10; index++ {
+func TestTimelineUsesProviderNeutralVolumeAndProjectionRules(t *testing.T) {
+	records := make([]FindRecord, 0, 10)
+	for index := range 8 {
 		records = append(records, FindRecord{
-			URI:    fmt.Sprintf("events/2026-08-28/git-commits.json#fmind/fgraph@%040d", index),
-			Source: "git-commits", Date: "2026-08-28",
-			Time:  fmt.Sprintf("2026-08-28T%02d:00:00Z", index+7),
-			Title: fmt.Sprintf("A deliberately verbose fgraph commit subject %02d", index),
-			Fields: map[string][]string{
-				"repository": {"repo:github.com/fmind/fgraph"},
-			},
-			relations: map[string]struct{}{"repository": {}},
+			URI: fmt.Sprintf("events/2026-08-28/activity.json#%d", index), Source: "activity",
+			Date: "2026-08-28", Time: fmt.Sprintf("2026-08-28T%02d:00:00Z", index+8),
+			Title: fmt.Sprintf("Activity %d", index),
 		})
 	}
-	for index := 1; index <= 10; index++ {
-		records = append(records, FindRecord{
-			URI:    fmt.Sprintf("events/2026-08-28/github-commits.json#https://github.com/fmind/fgraph/commit/%040d", index),
-			Source: "github-commits", Date: "2026-08-28",
-			Time:  fmt.Sprintf("2026-08-28T%02d:00:00Z", index+7),
-			Title: fmt.Sprintf("A deliberately verbose fgraph commit subject %02d", index),
-			Fields: map[string][]string{
-				"repository":  {"repo:github.com/fmind/fgraph"},
-				"participant": {"person:email/contributor@example.test"},
-			},
-			relations: map[string]struct{}{"repository": {}, "participant": {}},
-		})
-	}
-	records = append(records, FindRecord{
-		URI:    "events/2026-08-28/github-commits.json#https://github.com/fmind/publications/commit/1111111111111111111111111111111111111111",
-		Source: "github-commits", Date: "2026-08-28", Time: "2026-08-28T08:00:00Z",
-		Title: "A publication update outside the primary repository",
-		Fields: map[string][]string{
-			"repository":  {"repo:github.com/fmind/publications"},
-			"participant": {"person:email/contributor@example.test"},
-		},
-		relations: map[string]struct{}{"repository": {}, "participant": {}},
-	})
 	records = append(records,
 		FindRecord{
-			URI: "events/2026-08-28/google-calendar-events.json#owner@example.test%7E3hj2l26ojds1k6qg06nr0gqm17", Source: "google-calendar-events",
-			Date: "2026-08-28", Time: "2026-08-28T10:30:00Z", Title: "Lunch: AAIF Lux Organizers",
-			Fields: map[string][]string{
-				"participant": {
-					"person:email/hajar@example.test", "person:email/hazal@example.test",
-					"person:email/mustafa@example.test", "person:email/lea@example.test",
-					"person:email/marc@example.test", "person:email/sara@example.test",
-				},
-			},
-			relations: map[string]struct{}{"participant": {}},
+			URI: "events/2026-08-28/decisions.json#one", Source: "decisions", Date: "2026-08-28",
+			Time: "2026-08-28T16:00:00Z", Title: "Approve bounded delivery",
+			Fields:    map[string][]string{"owner": {"person:email/owner@example.test"}},
+			relations: map[string]struct{}{"owner": {}},
 		},
 		FindRecord{
-			URI: "events/2026-08-28/google-calendar-events.json#owner.partner@decathlon.com%7E27ljbho70lq6qqlmnpkoo0h82s_20260828T090000Z", Source: "google-calendar-events",
-			Date: "2026-08-28", Time: "2026-08-28T09:00:00Z",
-			Record: sources.Record{
-				"visibility": "private",
-				"calendar":   map[string]any{"summary": "owner.partner@decathlon.com"},
-			},
-		},
-		FindRecord{
-			URI: "events/2026-08-28/google-calendar-events.json#owner.partner@decathlon.com%7E087avo4tivtaivoj51ob4v1qjd_20260828T140000Z", Source: "google-calendar-events",
-			Date: "2026-08-28", Time: "2026-08-28T15:00:00Z",
-			Record: sources.Record{
-				"visibility": "private",
-				"calendar":   map[string]any{"summary": "owner.partner@decathlon.com"},
-			},
+			URI: "events/2026-08-28/decisions.json#two", Source: "decisions", Date: "2026-08-28",
+			Time: "2026-08-28T17:00:00Z",
 		},
 	)
-	for _, noisy := range []struct {
-		source string
-		count  int
-	}{
-		{source: "google-drive-changes", count: 122},
-		{source: "agent-prompts", count: 25},
-		{source: "shell-commands", count: 15},
-		{source: "github-runs", count: 21},
-	} {
-		for item := range noisy.count {
-			record := FindRecord{
-				URI:    fmt.Sprintf("events/2026-08-28/%s.json#item-%03d", noisy.source, item),
-				Source: noisy.source, Date: "2026-08-28", Time: "2026-08-28T08:00:00Z",
-				Title: "Noisy evidence represented by one truthful source count",
-			}
-			// GitHub runs are summarized in the digest, but their repository relations still
-			// contribute to the receipt pressure that exposed the live-base packing boundary.
-			if noisy.source == "github-runs" && item < 5 {
-				record.Fields = map[string][]string{
-					"repository": {fmt.Sprintf("repo:github.com/fmind/project-%d", item)},
-				}
-				record.relations = map[string]struct{}{"repository": {}}
-			}
-			records = append(records, record)
-		}
-	}
-
 	window := Window{Since: "2026-08-28", Until: "2026-08-28"}
 	report, err := buildTimelineReport(records, TimelineRequest{
 		Window: window, Budget: 600, DeliveryFormat: DigestDeliveryText,
@@ -182,33 +107,18 @@ func TestTimelineBudgetPrefersCreatedWorkAndNamedCalendarEvidence(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := RenderTimelineText(report)
-	for _, want := range []string{
-		"Lunch: AAIF Lux Organizers", "Busy — Decathlon x2",
-		"fmind/fgraph commits x10", "person:email/hajar@example.test",
-		"person:email/hazal@example.test", "person:email/mustafa@example.test",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("digest omitted %q under realistic competing volume:\n%s", want, text)
-		}
+	if len(report.Groups) != 2 || !report.Groups[0].Summarized || report.Groups[0].Count != 8 {
+		t.Fatalf("groups = %+v, want every high-volume source summarized by the same rule", report.Groups)
 	}
-	assertTimelineDeliverySize(t, report, []byte(text))
-
-	jsonReport, err := buildTimelineReport(records, TimelineRequest{
-		Window: window, Budget: 600, DeliveryFormat: DigestDeliveryJSON,
-	}, window, time.Date(2026, 8, 29, 9, 0, 0, 0, time.UTC), &IdentityResolver{})
-	if err != nil {
-		t.Fatal(err)
+	if report.Groups[1].Summarized || len(report.Groups[1].Items) != 2 ||
+		report.Groups[1].Items[0].Title != "Approve bounded delivery" ||
+		report.Groups[1].Items[1].Title != records[9].URI {
+		t.Fatalf("decisions = %+v, want projected title then URI fallback", report.Groups[1])
 	}
-	for _, group := range jsonReport.Groups {
-		for _, item := range group.Items {
-			if item.Title == "Busy — Decathlon" && item.Count == 2 {
-				assertTimelineDeliverySize(t, jsonReport, marshalTimelineJSON(jsonReport))
-				return
-			}
-		}
+	if !reflect.DeepEqual(report.People, []string{"person:email/owner@example.test"}) {
+		t.Fatalf("people = %v, want explicit relation values retained", report.People)
 	}
-	t.Fatalf("JSON digest omitted collapsed Decathlon busy blocks: %+v", jsonReport.Groups)
+	assertTimelineDeliverySize(t, report, []byte(RenderTimelineText(report)))
 }
 
 func TestTimelineAccountsForEachExactDeliveryEncoder(t *testing.T) {
@@ -284,63 +194,43 @@ func TestTimelineReceiptFloorIsDeliverySpecificAndExact(t *testing.T) {
 	}
 }
 
-func TestTimelineInputDigestBindsRenderedGroupingSemantics(t *testing.T) {
-	calendarRecord := func() FindRecord {
-		return FindRecord{
-			URI:    "events/2026-08-28/google-calendar-events.json#busy",
-			Source: "google-calendar-events", Date: "2026-08-28", Time: "2026-08-28T09:00:00Z",
-			Record: sources.Record{
-				"visibility": "private",
-				"calendar":   map[string]any{"summary": "owner.partner@decathlon.com"},
-			},
-		}
+func TestTimelineInputDigestBindsProjectedGroupingSemantics(t *testing.T) {
+	base := FindRecord{
+		URI: "events/2026-08-28/source.json#one", Source: "source", Date: "2026-08-28",
+		Time: "2026-08-28T09:00:00Z", Title: "Projected title",
 	}
-	tests := []struct {
+	for _, test := range []struct {
 		name   string
 		mutate func(*FindRecord)
 	}{
-		{name: "source", mutate: func(record *FindRecord) {
-			record.Source = "google-calendar-agenda"
+		{name: "source", mutate: func(record *FindRecord) { record.Source = "renamed-source" }},
+		{name: "title", mutate: func(record *FindRecord) { record.Title = "Changed projected title" }},
+		{name: "relation", mutate: func(record *FindRecord) {
+			record.Fields = map[string][]string{"owner": {"person:email/owner@example.test"}}
+			record.relations = map[string]struct{}{"owner": {}}
 		}},
-		{name: "calendar summary", mutate: func(record *FindRecord) {
-			record.Record["calendar"] = map[string]any{"summary": "owner.partner@acme.com"}
-		}},
-		{name: "visibility", mutate: func(record *FindRecord) {
-			record.Record["visibility"] = "public"
-		}},
-	}
-	for _, test := range tests {
+	} {
 		t.Run(test.name, func(t *testing.T) {
-			beforeRecord := calendarRecord()
-			afterRecord := calendarRecord()
+			beforeRecord, afterRecord := base, base
 			test.mutate(&afterRecord)
-			before := timelineDigestReport(t, beforeRecord)
-			after := timelineDigestReport(t, afterRecord)
-			if reflect.DeepEqual(before.Groups, after.Groups) {
-				t.Fatalf("groups did not change after %s mutation: %+v", test.name, before.Groups)
-			}
+			before, after := timelineDigestReport(t, beforeRecord), timelineDigestReport(t, afterRecord)
 			if before.Receipt.InputDigest == after.Receipt.InputDigest {
-				t.Fatalf("input digest %q did not bind %s-derived grouping", before.Receipt.InputDigest, test.name)
+				t.Fatalf("input digest %q did not bind %s projection", before.Receipt.InputDigest, test.name)
 			}
 		})
 	}
 }
 
-func TestTimelineInputDigestBindsRawPrioritySemantics(t *testing.T) {
+func TestTimelineIgnoresUnprojectedProviderPayload(t *testing.T) {
 	beforeRecord := FindRecord{
-		URI:    "events/2026-08-28/google-calendar-events.json#office",
-		Source: "google-calendar-events", Date: "2026-08-28", Time: "2026-08-28T09:00:00Z",
-		Title: "Office", Record: sources.Record{"eventType": "default"},
+		URI: "events/2026-08-28/source.json#one", Source: "source", Date: "2026-08-28",
+		Time: "2026-08-28T09:00:00Z", Title: "Projected title", Record: map[string]any{"private": "one"},
 	}
 	afterRecord := beforeRecord
-	afterRecord.Record = sources.Record{"eventType": "workingLocation"}
-	if digestRecordPriority(beforeRecord) == digestRecordPriority(afterRecord) {
-		t.Fatal("eventType mutation did not change the packing priority")
-	}
-	before := timelineDigestReport(t, beforeRecord)
-	after := timelineDigestReport(t, afterRecord)
-	if before.Receipt.InputDigest == after.Receipt.InputDigest {
-		t.Fatalf("input digest %q did not bind the eventType-derived packing priority", before.Receipt.InputDigest)
+	afterRecord.Record = map[string]any{"private": "two", "provider_specific": true}
+	before, after := timelineDigestReport(t, beforeRecord), timelineDigestReport(t, afterRecord)
+	if !reflect.DeepEqual(before.Groups, after.Groups) || before.Receipt.InputDigest != after.Receipt.InputDigest {
+		t.Fatalf("unprojected provider payload changed generic digest: before=%+v after=%+v", before, after)
 	}
 }
 

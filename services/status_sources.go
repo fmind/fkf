@@ -52,13 +52,6 @@ func populateDeclaredSourceStatuses(
 		source := base.Config.Sources[name]
 		delete(undeclared, name)
 		entry := sourceStatusOf(base, source, history[name], documents)
-		if source.Enabled && source.Layer == core.LayerTasks {
-			boundary, err := taskTraceFreshnessBoundary(base, source.Name, request.evaluationTime)
-			if err != nil {
-				return fmt.Errorf("inspect tasks freshness for %s: %w", source.Name, err)
-			}
-			entry.lastCollected = boundary
-		}
 		if err := checkContext(ctx); err != nil {
 			return err
 		}
@@ -76,23 +69,14 @@ func populateDeclaredSourceStatuses(
 		if entry.Quiet {
 			status.Quiet++
 		}
-		observeSourceFreshness(status, &entry, request.evaluationTime, request.MaxAgeHours)
+		maxAgeHours := request.MaxAgeHours
+		if maxAgeHours == 0 && source.Layer == core.LayerIndex {
+			maxAgeHours = source.EffectiveMaxAgeHours(base.Config.Sync.IndexMaxAgeHours)
+		}
+		observeSourceFreshness(status, &entry, request.evaluationTime, maxAgeHours)
 		status.Sources = append(status.Sources, entry)
 	}
 	return nil
-}
-
-func taskTraceFreshnessBoundary(base *Base, source string, now time.Time) (time.Time, error) {
-	completed, err := previousCompletedDays(now, 1)
-	if err != nil {
-		return time.Time{}, err
-	}
-	date := completed[0].Format(time.DateOnly)
-	due, err := taskTraceRangeDueAt(base, source, []string{date}, now.Location())
-	if err != nil || due {
-		return time.Time{}, err
-	}
-	return time.Parse(time.RFC3339, sources.DayWindow(completed[0]).End)
 }
 
 func populateUndeclaredSourceStatuses(
@@ -146,7 +130,7 @@ func observeSourceFreshness(
 	}
 	age := now.Sub(entry.lastCollected)
 	entry.Stale = entry.Enabled && maxAgeHours > 0 &&
-		(entry.lastCollected.IsZero() || age < 0 || age > time.Duration(maxAgeHours)*time.Hour)
+		(entry.lastCollected.IsZero() || age < 0 || age >= time.Duration(maxAgeHours)*time.Hour)
 	status.Stale = status.Stale || entry.Stale
 }
 

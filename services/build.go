@@ -82,17 +82,6 @@ func Build(ctx context.Context, base *Base, target string, check bool) (*BuildRe
 	return BuildWithOptions(ctx, base, BuildOptions{Target: target, Check: check})
 }
 
-// BuildWithOptions runs derived file generation or checking with explicit options.
-func BuildWithOptions(ctx context.Context, base *Base, options BuildOptions) (*BuildReport, error) {
-	return buildWithObserverAndOptions(ctx, base, options, nil)
-}
-
-func buildWithObserver(
-	ctx context.Context, base *Base, target string, check bool, observe func() error,
-) (*BuildReport, error) {
-	return buildWithObserverAndOptions(ctx, base, BuildOptions{Target: target, Check: check}, observe)
-}
-
 func checkGraphTarget(ctx context.Context, base *Base) (*GraphBuild, error) {
 	summary, err := SummarizeGraph(ctx, base)
 	stale := false
@@ -167,8 +156,9 @@ func buildCheck(ctx context.Context, base *Base, target string) (*BuildReport, e
 	return report, nil
 }
 
-func buildWithObserverAndOptions(
-	ctx context.Context, base *Base, options BuildOptions, observe func() error,
+// BuildWithOptions runs derived file generation or checking with explicit options.
+func BuildWithOptions(
+	ctx context.Context, base *Base, options BuildOptions,
 ) (*BuildReport, error) {
 	target := options.Target
 	if options.Check {
@@ -179,19 +169,19 @@ func buildWithObserverAndOptions(
 	switch target {
 	case "bodies":
 		bodies, err := PruneBodiesWithOptions(ctx, base, options.PruneOptions)
-		if err := observeBuildStep(err, observe); err != nil {
+		if err != nil {
 			return nil, err
 		}
 		report.Bodies = bodies
 	case "graph":
 		graph, err := BuildGraph(ctx, base)
-		if err := observeBuildStep(err, observe); err != nil {
+		if err != nil {
 			return nil, err
 		}
 		report.Graph = graph
 	case "index":
 		index, err := BuildLexicalIndex(ctx, base)
-		if err := observeBuildStep(err, observe); err != nil {
+		if err != nil {
 			return nil, err
 		}
 		report.Index = index
@@ -200,14 +190,14 @@ func buildWithObserverAndOptions(
 			return nil, fmt.Errorf("wiki layer is disabled in %s", core.ConfigFileName)
 		}
 		wiki, err := BuildWikiIndex(ctx, base, true)
-		if err := observeBuildStep(err, observe); err != nil {
+		if err != nil {
 			return nil, err
 		}
 		report.Wiki = wiki
 	case "", "all":
 		if base.Store.Enabled(core.LayerWiki) {
 			wiki, err := BuildWikiIndex(ctx, base, true)
-			if err := observeBuildStep(err, observe); err != nil {
+			if err != nil {
 				return nil, err
 			}
 			report.Wiki = wiki
@@ -215,12 +205,12 @@ func buildWithObserverAndOptions(
 		// The graph digest covers exact authored Markdown, including wiki/index.md. Generate
 		// that page first so a successful all-build cannot invalidate its own graph cache.
 		graph, err := BuildGraph(ctx, base)
-		if err := observeBuildStep(err, observe); err != nil {
+		if err != nil {
 			return nil, err
 		}
 		report.Graph = graph
 		index, err := BuildLexicalIndex(ctx, base)
-		if err := observeBuildStep(err, observe); err != nil {
+		if err != nil {
 			return nil, err
 		}
 		report.Index = index
@@ -228,11 +218,4 @@ func buildWithObserverAndOptions(
 		return nil, fmt.Errorf("unknown build target %q; expected bodies, graph, index, wiki, or all", target)
 	}
 	return report, nil
-}
-
-func observeBuildStep(buildErr error, observe func() error) error {
-	if observe == nil {
-		return buildErr
-	}
-	return errors.Join(buildErr, observe())
 }

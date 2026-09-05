@@ -193,7 +193,7 @@ func validateSource(config *Config, source *Source) error {
 	if err := validateBody(config, source, fail); err != nil {
 		return err
 	}
-	if source.Layer != LayerTasks && source.Fields.Path(FieldTitle).IsZero() {
+	if source.Fields.Path(FieldTitle).IsZero() {
 		return fail("fields.title is required: every collected record needs a meaningful subject line")
 	}
 	return nil
@@ -304,9 +304,6 @@ func validateRequirements(source *Source, fail func(string, ...any) error) error
 }
 
 func validateSourceFields(config *Config, source *Source, fail func(string, ...any) error) error {
-	if source.Layer == LayerTasks {
-		return nil
-	}
 	if err := ValidateFieldMap(source.Fields, source.Layer == LayerEvents); err != nil {
 		return fail("%v", err)
 	}
@@ -325,6 +322,14 @@ func validateSourceFields(config *Config, source *Source, fail func(string, ...a
 }
 
 func validateSourcePolicy(config *Config, source *Source, fail func(string, ...any) error) error {
+	if source.MaxAgeHours != nil {
+		if source.Layer != LayerIndex {
+			return fail("max_age_hours is valid only for an index source")
+		}
+		if *source.MaxAgeHours < 1 || *source.MaxAgeHours > MaxFreshnessAgeHours {
+			return fail("max_age_hours is %d; expected 1..%d", *source.MaxAgeHours, MaxFreshnessAgeHours)
+		}
+	}
 	if source.Bodies == "" {
 		source.Bodies = BodiesNone
 	}
@@ -338,15 +343,8 @@ func validateSourcePolicy(config *Config, source *Source, fail func(string, ...a
 		return fail("recency.half_life_days is %d; expected 1..%d when declared",
 			source.Recency.HalfLifeDays, MaxRecencyHalfLifeDays)
 	}
-	if source.Layer == LayerTasks && !source.Window {
-		return fail("window must be true for a tasks source so one command selects completed sessions across the requested range")
-	}
-	if source.Window && source.Layer != LayerEvents && source.Layer != LayerTasks {
-		return fail("window is true but layer is %s; a whole-range collection buckets by day only for events, "+
-			"while tasks imports one completed-session range", source.Layer)
-	}
-	if source.Layer == LayerTasks && source.Format != FormatJSON {
-		return fail("format is %s; a tasks source must emit one json array", source.Format)
+	if source.Window && source.Layer != LayerEvents {
+		return fail("window is true but layer is %s; only events support it because a whole-range collection buckets by day", source.Layer)
 	}
 	if source.Timeout < 0 || source.Timeout > time.Hour {
 		return fail("timeout is %s; expected 0 (inherit sync.timeout) up to 1h", source.Timeout)

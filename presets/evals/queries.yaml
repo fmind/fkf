@@ -1,8 +1,10 @@
 fkf: 1
-k: 10
+k: 3
+budget: 1500
+delivery: json # Use text with budget 850 for startup or 600 for compaction acceptance.
 recall_threshold: 1
 
-# This runnable baseline proves that the base's curated entry point is retrievable. Replace or
+# This runnable baseline proves at a real delivery budget that the base's curated entry point is retrievable. Replace or
 # extend it with exact evidence URIs for the owner's real journeys:
 # - Take my last meeting notes.
 # - What was my meeting with an organisation about?

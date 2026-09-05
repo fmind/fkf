@@ -3,6 +3,7 @@ package checks_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -291,17 +292,20 @@ esac
 		remote string
 		want   string
 	}{
-		{name: "credential-url", remote: "https://secret-user:secret-password@github.com/example/project.git", want: "example/project main"},
-		{name: "github-scp", remote: "git@github.com:example/project.git", want: "example/project main"},
-		{name: "gitlab-url", remote: "https://gitlab.com/example/project.git", want: "main"},
-		{name: "gitlab-scp", remote: "git@gitlab.com:example/project.git", want: "main"},
-		{name: "single-segment", remote: "single", want: "main"},
-		{name: "malformed", remote: "https://leaky-user:leaky-password@github.com", want: "main"},
+		{name: "credential-url", remote: "https://secret-user:secret-password@github.com/example/project.git", want: "repo:github.com/example/project"},
+		{name: "github-scp", remote: "git@github.com:example/project.git", want: "repo:github.com/example/project"},
+		{name: "gitlab-url", remote: "https://gitlab.com/example/project.git", want: ""},
+		{name: "gitlab-scp", remote: "git@gitlab.com:example/project.git", want: ""},
+		{name: "no-remote", remote: "", want: ""},
+		{name: "single-segment", remote: "single", want: ""},
+		{name: "malformed", remote: "https://leaky-user:leaky-password@github.com", want: ""},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			script := filepath.Join(repositoryRoot(t), "presets", "bin", "fkf-hook.sh")
-			command := exec.CommandContext(t.Context(), script, "codex")
+			workspace := t.TempDir()
+			command := exec.CommandContext(t.Context(), script, "codex", filepath.Join(bin, "fkf"), workspace)
+			command.Stdin = strings.NewReader(fmt.Sprintf(`{"cwd":%q}`, workspace))
 			command.Env = []string{
 				"HOME=" + home,
 				"PATH=" + bin,
@@ -317,7 +321,14 @@ esac
 					t.Fatalf("fkf-hook.sh leaked remote userinfo %q: %s", forbidden, output)
 				}
 			}
-			parts := strings.SplitN(strings.TrimSpace(codexHookContext(t, string(output))), " -- ", 2)
+			context := strings.TrimSpace(codexHookContext(t, string(output)))
+			if testCase.want == "" {
+				if strings.Contains(context, "context --base") {
+					t.Fatalf("fkf-hook.sh queried repository context without a repository identity: %s", context)
+				}
+				return
+			}
+			parts := strings.SplitN(context, " -- ", 2)
 			if len(parts) != 2 || parts[1] != testCase.want {
 				t.Fatalf("fkf-hook.sh query = %q, want %q", output, testCase.want)
 			}
@@ -330,7 +341,8 @@ type hookRunner func(t *testing.T, harness, input, pack, temporary string) (stri
 func publishedHarnessRunner(home, bin, script string) hookRunner {
 	return func(t *testing.T, harness, input, pack, temporary string) (string, string, error) {
 		t.Helper()
-		command := exec.CommandContext(t.Context(), script, harness)
+		workspace := t.TempDir()
+		command := exec.CommandContext(t.Context(), script, harness, filepath.Join(bin, "fkf"), workspace)
 		command.Dir = t.TempDir()
 		command.Env = []string{
 			"HOME=" + home,
@@ -339,10 +351,19 @@ func publishedHarnessRunner(home, bin, script string) hookRunner {
 			"TMPDIR=" + temporary,
 			"FAKE_PACK=" + pack,
 		}
-		command.Stdin = strings.NewReader(input)
+		var fields map[string]any
+		if json.Unmarshal([]byte(input), &fields) != nil {
+			fields = map[string]any{}
+		}
+		fields["cwd"] = workspace
+		encoded, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		command.Stdin = bytes.NewReader(encoded)
 		var stdout, stderr bytes.Buffer
 		command.Stdout, command.Stderr = &stdout, &stderr
-		err := command.Run()
+		err = command.Run()
 		return stdout.String(), stderr.String(), err
 	}
 }
@@ -383,19 +404,9 @@ func assertPublishedHookEnvelopes(t *testing.T, run hookRunner, pack string) {
 		{harness: "codex", want: map[string]any{
 			"hookSpecificOutput": map[string]any{"hookEventName": "SessionStart", "additionalContext": combined},
 		}},
-		{harness: "opencode", plain: true},
-		{harness: "grok", plain: true},
 		{harness: "kiro", plain: true},
-		{harness: "copilot", want: map[string]any{}},
 		{harness: "gemini", input: `{"hook_event_name":"BeforeAgent"}`, want: map[string]any{
 			"hookSpecificOutput": map[string]any{"hookEventName": "BeforeAgent", "additionalContext": combined},
-		}},
-		{harness: "cursor", want: map[string]any{"additional_context": combined}},
-		{harness: "antigravity", input: `{"invocationNum":0}`, want: map[string]any{
-			"injectSteps": []any{map[string]any{"ephemeralMessage": combined}},
-		}},
-		{harness: "cline", input: `{"taskId":"matrix-first"}`, want: map[string]any{
-			"cancel": false, "contextModification": combined,
 		}},
 	} {
 		t.Run(testCase.harness, func(t *testing.T) {
@@ -418,22 +429,17 @@ func assertPublishedHookEnvelopes(t *testing.T, run hookRunner, pack string) {
 
 func assertEmptyHookEnvelopes(t *testing.T, run hookRunner) {
 	t.Helper()
-	for _, harness := range []string{"claude", "codex", "gemini", "copilot", "antigravity", "opencode", "grok", "cursor", "kiro", "cline"} {
+	for _, harness := range []string{"claude", "codex", "gemini", "kiro"} {
 		t.Run(harness+"-empty", func(t *testing.T) {
 			input := "{}"
-			if harness == "cline" {
-				input = `{"taskId":"matrix-empty"}`
-			}
 			output, stderr, err := run(t, harness, input, "", t.TempDir())
 			if err != nil {
 				t.Fatalf("empty hook failed: %v; stderr=%q", err, stderr)
 			}
 			var want string
 			switch harness {
-			case "claude", "opencode", "grok", "kiro":
+			case "claude", "kiro":
 				want = ""
-			case "cline":
-				want = "{\"cancel\":false}\n"
 			default:
 				want = "{}\n"
 			}
@@ -441,26 +447,6 @@ func assertEmptyHookEnvelopes(t *testing.T, run hookRunner) {
 				t.Fatalf("empty output = %q, want %q", output, want)
 			}
 		})
-	}
-}
-
-func assertHookEventGates(t *testing.T, run hookRunner, pack string) {
-	t.Helper()
-	combined := "Yesterday:\n" + pack + "\n\nRepository:\n" + pack
-	if output, stderr, err := run(t, "antigravity", `{"invocationNum":1}`, pack, t.TempDir()); err != nil || output != "{}\n" {
-		t.Fatalf("later Antigravity call = %q, %v; stderr=%q", output, err, stderr)
-	}
-	clineTemporary := t.TempDir()
-	output, stderr, err := run(t, "cline", `{"taskId":"matrix-repeat"}`, pack, clineTemporary)
-	if err != nil || !reflect.DeepEqual(decodeHookEnvelope(t, output), map[string]any{"cancel": false, "contextModification": combined}) {
-		t.Fatalf("Cline TaskStart call = %q, %v; stderr=%q", output, err, stderr)
-	}
-	entries, err := os.ReadDir(clineTemporary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("Cline TaskStart left temporary state: %v", entries)
 	}
 }
 
@@ -486,10 +472,6 @@ esac
 	const pack = "trusted pack"
 	assertPublishedHookEnvelopes(t, run, pack)
 	assertEmptyHookEnvelopes(t, run)
-	t.Run("event gates", func(t *testing.T) {
-		assertHookEventGates(t, run, pack)
-	})
-
 	if output, stderr, err := run(t, "unknown", "{}", pack, t.TempDir()); err == nil || output != "" || !strings.Contains(stderr, "unknown harness unknown") {
 		t.Fatalf("unknown harness = stdout %q, stderr %q, error %v", output, stderr, err)
 	}
@@ -538,6 +520,41 @@ esac
 	}
 }
 
+func TestFKFHookStartupMeasuresTheActualCombinedEnvelope(t *testing.T) {
+	home := t.TempDir()
+	bin := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"cat", "jq", "sed"} {
+		linkPresetTool(t, bin, name)
+	}
+	writePresetFake(t, bin, "git", `case "$*" in
+  *"remote get-url origin") printf '%s\n' https://github.com/example/project.git ;;
+  *"branch --show-current") printf '%s\n' main ;;
+  *) exit 2 ;;
+esac
+`)
+	writePresetFake(t, bin, "fkf", `case "$1" in
+  day) printf '%02400d' 0 ;;
+  context) printf '%03400d' 0 ;;
+  *) exit 2 ;;
+esac
+`)
+	run := publishedHarnessRunner(home, bin, filepath.Join(repositoryRoot(t), "presets", "bin", "fkf-hook.sh"))
+	output, stderr, err := run(t, "codex", `{}`, "", t.TempDir())
+	if err != nil {
+		t.Fatalf("hook failed: %v; stderr=%q", err, stderr)
+	}
+	context := codexHookContext(t, output)
+	if got := len(context); got <= 5800 || got > 1500*4 {
+		t.Fatalf("combined hook context = %d bytes, want both child deliveries plus labels within 1500 tokens", got)
+	}
+	if len(output) <= len(context) || len(output) > 1550*4 {
+		t.Fatalf("encoded hook envelope = %d bytes for %d context bytes", len(output), len(context))
+	}
+}
+
 func TestFKFHookStartupKeepsYesterdayWithoutARepository(t *testing.T) {
 	home := t.TempDir()
 	bin := filepath.Join(home, ".local", "bin")
@@ -579,8 +596,9 @@ func TestFKFHookUsesThePinnedExecutableInsteadOfPATH(t *testing.T) {
 `)
 	pinned := filepath.Join(pinnedDirectory, "candidate")
 	command := exec.CommandContext(t.Context(),
-		filepath.Join(repositoryRoot(t), "presets", "bin", "fkf-hook.sh"), "codex", pinned)
-	command.Dir = t.TempDir()
+		filepath.Join(repositoryRoot(t), "presets", "bin", "fkf-hook.sh"), "codex", pinned, pinnedDirectory)
+	command.Dir = pinnedDirectory
+	command.Stdin = strings.NewReader(fmt.Sprintf(`{"cwd":%q}`, pinnedDirectory))
 	command.Env = []string{"HOME=" + home, "PATH=" + bin, "PWD=" + command.Dir, "SHADOW_LOG=" + shadowLog}
 	output, err := command.CombinedOutput()
 	if err != nil {
@@ -593,6 +611,63 @@ func TestFKFHookUsesThePinnedExecutableInsteadOfPATH(t *testing.T) {
 		t.Fatalf("hook resolved fkf through PATH: %s", shadowed)
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("read shadow log: %v", err)
+	}
+}
+
+func TestFKFHookRejectsMissingMalformedAndOutOfScopeSessionPaths(t *testing.T) {
+	home := t.TempDir()
+	bin := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"jq", "sed"} {
+		linkPresetTool(t, bin, name)
+	}
+	logPath := filepath.Join(t.TempDir(), "fkf.log")
+	writePresetFake(t, bin, "git", "exit 0\n")
+	writePresetFake(t, bin, "fkf", `printf '%s\n' "$*" >> "$FKF_LOG"
+printf '%s' pack
+`)
+	workspace := t.TempDir()
+	inside := filepath.Join(workspace, "inside")
+	if err := os.Mkdir(inside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	sibling := workspace + "-other"
+	if err := os.Mkdir(sibling, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	escape := filepath.Join(workspace, "escape")
+	if err := os.Symlink(outside, escape); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(repositoryRoot(t), "presets", "bin", "fkf-hook.sh")
+	run := func(input string) (string, error) {
+		command := exec.CommandContext(t.Context(), script, "codex", filepath.Join(bin, "fkf"), workspace)
+		command.Env = []string{"HOME=" + home, "PATH=" + bin, "FKF_LOG=" + logPath}
+		command.Stdin = strings.NewReader(input)
+		output, err := command.CombinedOutput()
+		return string(output), err
+	}
+	for _, input := range []string{
+		`{}`, `{`, fmt.Sprintf(`{"cwd":%q}`, outside), fmt.Sprintf(`{"cwd":%q}`, sibling),
+		fmt.Sprintf(`{"cwd":%q}`, escape),
+	} {
+		output, err := run(input)
+		if err != nil || output != "{}\n" {
+			t.Fatalf("rejected input %q = output %q, error %v", input, output, err)
+		}
+	}
+	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected paths invoked FKF: %v", err)
+	}
+	output, err := run(fmt.Sprintf(`{"cwd":%q}`, inside))
+	if err != nil || !strings.Contains(codexHookContext(t, output), "pack") {
+		t.Fatalf("in-scope path = output %q, error %v", output, err)
+	}
+	if _, err := os.Stat(logPath); err != nil {
+		t.Fatalf("in-scope path did not invoke FKF: %v", err)
 	}
 }
 
@@ -664,8 +739,9 @@ printf '%s\n' 'shadow pack'
 `)
 
 			script := filepath.Join(repositoryRoot(t), "presets", "bin", "fkf-hook.sh")
-			command := exec.CommandContext(t.Context(), script, "codex")
+			command := exec.CommandContext(t.Context(), script, "codex", filepath.Join(trustedBin, "fkf"), work)
 			command.Dir = work
+			command.Stdin = strings.NewReader(fmt.Sprintf(`{"cwd":%q}`, work))
 			command.Env = []string{
 				"HOME=" + home,
 				"PATH=" + pathPrefix + ":" + trustedBin,

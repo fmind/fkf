@@ -3,7 +3,6 @@ package services
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +10,6 @@ import (
 	"math/bits"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -328,65 +326,4 @@ func mapsKeys(values map[string]struct{}) []string {
 		keys = append(keys, value)
 	}
 	return keys
-}
-
-func encodeLexicalTermScore(id int, score lexicalTermScore) (string, error) {
-	segment := contextTermSegment{}
-	if len(score.Analysis.segments) > 0 {
-		segment = score.Analysis.segments[0]
-	}
-	if id < 0 || score.Analysis.identifierPriority < 0 || score.Analysis.identifierPriority > directIdentifierPriority ||
-		score.Analysis.maxWeight < 0 || segment.weight < 0 || segment.normalizer < 0 || score.ExcerptBytes < 0 {
-		return "", errors.New("lexical term score has invalid values")
-	}
-	field := base64.RawURLEncoding.EncodeToString([]byte(segment.Field))
-	matched := "0"
-	if score.Analysis.matched {
-		matched = "1"
-	}
-	return strings.Join([]string{
-		strconv.Itoa(id), matched, strconv.Itoa(score.Analysis.identifierPriority),
-		strconv.Itoa(score.Analysis.maxWeight), strconv.Itoa(segment.weight),
-		strconv.Itoa(segment.normalizer), field, strconv.Itoa(score.ExcerptBytes),
-	}, ","), nil
-}
-
-func decodeLexicalTermScore(field []byte, entryCount int) (int, lexicalTermScore, error) {
-	parts := bytes.Split(field, []byte{','})
-	if len(parts) != 8 || string(parts[1]) != "0" && string(parts[1]) != "1" {
-		return 0, lexicalTermScore{}, errors.New("lexical term score has invalid fields")
-	}
-	values := make([]int, 6)
-	for index, part := range [][]byte{parts[0], parts[2], parts[3], parts[4], parts[5], parts[7]} {
-		value, ok := parseCanonicalLexicalInt(part)
-		if !ok {
-			return 0, lexicalTermScore{}, errors.New("lexical term score has invalid integers")
-		}
-		values[index] = value
-	}
-	if values[0] >= entryCount || values[1] > directIdentifierPriority {
-		return 0, lexicalTermScore{}, errors.New("lexical term score is outside its bounds")
-	}
-	decoded := make([]byte, base64.RawURLEncoding.DecodedLen(len(parts[6])))
-	written, err := base64.RawURLEncoding.Decode(decoded, parts[6])
-	if err != nil || base64.RawURLEncoding.EncodeToString(decoded[:written]) != string(parts[6]) ||
-		!utf8.Valid(decoded[:written]) {
-		return 0, lexicalTermScore{}, errors.New("lexical term score has an invalid field")
-	}
-	analysis := contextTermAnalysis{
-		matched: string(parts[1]) == "1", identifierPriority: values[1], maxWeight: values[2],
-	}
-	if values[3] > 0 || values[4] > 0 || written > 0 {
-		if values[3] < 1 || values[4] < 1 || written == 0 {
-			return 0, lexicalTermScore{}, errors.New("lexical term score has incomplete segment metadata")
-		}
-		analysis.segments = []contextTermSegment{{
-			Field: string(decoded[:written]), weight: values[3], normalizer: values[4],
-		}}
-	}
-	if !analysis.matched && (analysis.identifierPriority != 0 || analysis.maxWeight != 0 ||
-		len(analysis.segments) != 0 || values[5] != 0) {
-		return 0, lexicalTermScore{}, errors.New("unmatched lexical term score has scoring metadata")
-	}
-	return values[0], lexicalTermScore{Analysis: analysis, ExcerptBytes: values[5]}, nil
 }

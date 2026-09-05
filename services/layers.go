@@ -248,7 +248,6 @@ func ListIndex(ctx context.Context, base *Base, limit int) (*IndexListing, error
 	}
 	listing := &IndexListing{Entries: []IndexEntry{}, Total: len(names)}
 	now := base.Now()
-	maxAge := time.Duration(base.Config.Sync.IndexMaxAgeHours) * time.Hour
 	for index, name := range names {
 		if err := checkContext(ctx); err != nil {
 			return nil, err
@@ -262,7 +261,11 @@ func ListIndex(ctx context.Context, base *Base, limit int) (*IndexListing, error
 		if err != nil {
 			return nil, err
 		}
-		if err := describeIndexDocument(base, uri, document, collectedAt, &entry, now, maxAge); err != nil {
+		maxAgeHours := base.Config.Sync.IndexMaxAgeHours
+		if source := base.Config.Sources[name]; source != nil && source.Layer == core.LayerIndex {
+			maxAgeHours = source.EffectiveMaxAgeHours(maxAgeHours)
+		}
+		if err := describeIndexDocument(base, uri, document, collectedAt, &entry, now, time.Duration(maxAgeHours)*time.Hour); err != nil {
 			return nil, err
 		}
 		listing.Entries = append(listing.Entries, entry)

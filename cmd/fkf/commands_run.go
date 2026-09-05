@@ -217,7 +217,7 @@ func newStatusCommand() *cli.Command {
 		Description: "Unifies the whole-base overview, source collector status, and health audits: " +
 			"git tracked files, permissions, skill drift, and JSON document schema verification.",
 		Flags: []cli.Flag{
-			&cli.IntFlag{Name: "max-age-hours", Usage: fmt.Sprintf("Exit 1 when any enabled source is missing or older than this, 1 to %d.", core.MaxFreshnessAgeHours)},
+			&cli.IntFlag{Name: "max-age-hours", Usage: fmt.Sprintf("Override configured freshness and exit 1 when any enabled source is missing or older than this, 1 to %d.", core.MaxFreshnessAgeHours)},
 			&cli.BoolFlag{Name: "live", Usage: "Probe trusted source login readiness and inspect user-scope harness registrations." + markRun},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -240,8 +240,11 @@ func newStatusCommand() *cli.Command {
 					return err
 				}
 				if status.Stale {
-					return partialFailure(errUsage("one or more enabled sources are missing or older than --max-age-hours %d",
-						cmd.Int("max-age-hours")))
+					if maxAgeHours := cmd.Int("max-age-hours"); maxAgeHours > 0 {
+						return partialFailure(errUsage("one or more enabled sources are missing or older than --max-age-hours %d",
+							maxAgeHours))
+					}
+					return partialFailure(errUsage("one or more enabled index sources are missing or older than their configured max_age_hours"))
 				}
 				if !status.OK {
 					return partialFailure(errUsage("status found %d error(s) in %s", status.Errors, base.Root()))

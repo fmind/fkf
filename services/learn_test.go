@@ -195,6 +195,24 @@ func TestLearnApplyRejectsTargetsOutsideFlatKnowledgePages(t *testing.T) {
 	}
 }
 
+func TestLearnApplyRejectsASymlinkedTarget(t *testing.T) {
+	base := learnBase(t)
+	target := filepath.Join(base.Root(), "wiki", "linked.md")
+	if err := os.Symlink(filepath.Join(t.TempDir(), "outside.md"), target); err != nil {
+		t.Fatal(err)
+	}
+	id := writeLearnProposal(t, base, ""+
+		"--- a/wiki/linked.md\n"+
+		"+++ b/wiki/linked.md\n"+
+		"@@ -1 +1 @@\n"+
+		"-old\n"+
+		"+new\n")
+	if _, err := services.ApplyLearn(t.Context(), base, id); err == nil ||
+		!strings.Contains(err.Error(), "is a symlink") {
+		t.Fatalf("ApplyLearn() error = %v, want symlink refusal", err)
+	}
+}
+
 func TestLearnApplyRollsBackAProposalThatFailsStrictValidation(t *testing.T) {
 	base := learnBase(t)
 	id := writeLearnProposal(t, base, ""+
@@ -220,7 +238,7 @@ func TestLearnApplyRollsBackAProposalThatFailsStrictValidation(t *testing.T) {
 	}
 }
 
-func TestLearnApplyRestoresWikiCacheWhenGraphBuildFails(t *testing.T) {
+func TestLearnApplyRejectsInvalidGraphRelationsBeforePublication(t *testing.T) {
 	base := learnBase(t)
 	if _, err := services.Build(t.Context(), base, "", false); err != nil {
 		t.Fatal(err)
@@ -257,6 +275,46 @@ func TestLearnApplyRestoresWikiCacheWhenGraphBuildFails(t *testing.T) {
 	}
 	if string(after) != string(before) {
 		t.Fatal("late graph failure did not restore the prior wiki index bytes")
+	}
+}
+
+func TestLearnApplyKeepsApprovedEditWhenCacheBuildFails(t *testing.T) {
+	base := learnBase(t)
+	if _, err := services.Build(t.Context(), base, "", false); err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := services.ProposeLearn(t.Context(), base, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph := filepath.Join(base.Root(), core.GraphFile)
+	if err := os.Remove(graph); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(graph, core.BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := services.ApplyLearn(t.Context(), base, proposal.Proposal.ID)
+	if err == nil || applied == nil || applied.Status != "applied" || !strings.Contains(err.Error(), "fkf build") {
+		t.Fatalf("ApplyLearn() = %+v, %v; want approved edit retained with explicit rebuild failure", applied, err)
+	}
+	approved, err := os.ReadFile(filepath.Join(base.Root(), "wiki", "log.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(approved), proposal.Candidates[0].Text) {
+		t.Fatal("cache failure reverted the approved lesson")
+	}
+	if err := os.Remove(graph); err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := services.ApplyLearn(t.Context(), base, proposal.Proposal.ID)
+	if err != nil || repeated.Status != "already-applied" || repeated.Build == nil {
+		t.Fatalf("repair retry = %+v, %v; want caches rebuilt without applying the lesson again", repeated, err)
+	}
+	after, err := os.ReadFile(filepath.Join(base.Root(), "wiki", "log.md"))
+	if err != nil || string(after) != string(approved) {
+		t.Fatalf("retry changed the approved page: %v", err)
 	}
 }
 

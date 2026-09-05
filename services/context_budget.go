@@ -159,8 +159,8 @@ func newContextCandidateOrder(item *ContextItem) contextCandidateOrder {
 }
 
 // contextCandidatePrecedes keeps intent signals ahead of corpus-dependent point totals. An
-// item's own id/title/page identity wins first, then broader meaningful-term coverage; a
-// related entity identity wins over prose at equal coverage. A last query first asks for evidence
+// item's own id/title/page identity wins first, then related exact identities. Pure lexical
+// matches use field weight before coverage; identity matches use coverage. A last query asks for evidence
 // addressed by the requested window, then exact identity, the strongest matching field, and
 // direct-field coverage. A provider timestamp does not make a current-state index inventory
 // window-addressed. Equivalent direct matches then use chronology, so an older item's extra body
@@ -170,49 +170,62 @@ func contextCandidatePrecedes(
 	newest bool,
 	leftOrder, rightOrder contextCandidateOrder,
 ) bool {
-	if newest {
-		if leftOrder.windowAddressed != rightOrder.windowAddressed {
-			return leftOrder.windowAddressed
-		}
-		leftAt, rightAt := leftOrder.at, rightOrder.at
-		if (leftAt != "") != (rightAt != "") {
-			return leftAt != ""
-		}
-		if left.explicitIdentity != right.explicitIdentity {
-			return left.explicitIdentity
-		}
-		if left.directIdentity != right.directIdentity {
-			return left.directIdentity
-		}
-		if left.matchedIdentity != right.matchedIdentity {
-			return left.matchedIdentity
-		}
-		if left.matchWeight != right.matchWeight {
-			return left.matchWeight > right.matchWeight
-		}
-		leftDirect, rightDirect := leftOrder.directMatchedTerms, rightOrder.directMatchedTerms
-		if leftDirect != rightDirect {
-			return leftDirect > rightDirect
-		}
-		if leftDirect > 0 && leftAt != rightAt {
-			return leftAt > rightAt
-		}
-		if left.matchedTerms != right.matchedTerms {
-			return left.matchedTerms > right.matchedTerms
-		}
-		if leftAt != rightAt {
-			return leftAt > rightAt
-		}
+	if !newest {
+		return contextLexicalCandidatePrecedes(left, right)
 	}
-	if !newest && left.directIdentity != right.directIdentity {
+	if leftOrder.windowAddressed != rightOrder.windowAddressed {
+		return leftOrder.windowAddressed
+	}
+	leftAt, rightAt := leftOrder.at, rightOrder.at
+	if (leftAt != "") != (rightAt != "") {
+		return leftAt != ""
+	}
+	if left.explicitIdentity != right.explicitIdentity {
+		return left.explicitIdentity
+	}
+	if left.directIdentity != right.directIdentity {
 		return left.directIdentity
 	}
-	if !newest && left.matchedTerms != right.matchedTerms {
-		return left.matchedTerms > right.matchedTerms
-	}
-	if !newest && left.matchedIdentity != right.matchedIdentity {
+	if left.matchedIdentity != right.matchedIdentity {
 		return left.matchedIdentity
 	}
+	if left.matchWeight != right.matchWeight {
+		return left.matchWeight > right.matchWeight
+	}
+	leftDirect, rightDirect := leftOrder.directMatchedTerms, rightOrder.directMatchedTerms
+	if leftDirect != rightDirect {
+		return leftDirect > rightDirect
+	}
+	if leftDirect > 0 && leftAt != rightAt {
+		return leftAt > rightAt
+	}
+	if left.matchedTerms != right.matchedTerms {
+		return left.matchedTerms > right.matchedTerms
+	}
+	if leftAt != rightAt {
+		return leftAt > rightAt
+	}
+	return contextScorePrecedes(left, right)
+}
+
+func contextLexicalCandidatePrecedes(left, right *ContextItem) bool {
+	if left.directIdentity != right.directIdentity {
+		return left.directIdentity
+	}
+	if left.matchedIdentity != right.matchedIdentity {
+		return left.matchedIdentity
+	}
+	// Without an exact identity, field weights keep named topics above broad body mentions.
+	if !left.matchedIdentity && left.matchWeight != right.matchWeight {
+		return left.matchWeight > right.matchWeight
+	}
+	if left.matchedTerms != right.matchedTerms {
+		return left.matchedTerms > right.matchedTerms
+	}
+	return contextScorePrecedes(left, right)
+}
+
+func contextScorePrecedes(left, right *ContextItem) bool {
 	if left.Score != right.Score {
 		return left.Score > right.Score
 	}
@@ -299,6 +312,10 @@ func estimateTokens(item *ContextItem, withReasons bool) int {
 // token rule the per-item estimate uses. Whitespace, HTML escaping, and the trailing newline
 // are part of the delivery contract rather than transport-dependent guesses.
 func encodedTokens(pack *ContextPack) int {
+	return (encodedBytes(pack) + 3) / 4
+}
+
+func encodedBytes(pack *ContextPack) int {
 	var encoded bytes.Buffer
 	encoder := json.NewEncoder(&encoded)
 	if pack.Receipt.Format == ContextDeliveryJSON {
@@ -308,7 +325,7 @@ func encodedTokens(pack *ContextPack) int {
 	if err := encoder.Encode(pack); err != nil {
 		return 0
 	}
-	return (encoded.Len() + 3) / 4
+	return encoded.Len()
 }
 
 // fitContextBudget turns the selection estimate into an exact delivery bound. Evidence is the
@@ -319,6 +336,12 @@ func encodedTokens(pack *ContextPack) int {
 func fitContextBudget(pack *ContextPack, budget int) error {
 	boundConsultedBodies(&pack.Receipt, budget)
 	details := append([]DroppedItem(nil), pack.Receipt.Dropped...)
+	for _, detail := range details {
+		if detail.Reason == "budget" {
+			pack.matchedButOmitted = true
+			break
+		}
+	}
 	fullDropped := len(details)
 	if pack.Receipt.DroppedTotal > fullDropped {
 		fullDropped = pack.Receipt.DroppedTotal
@@ -329,6 +352,7 @@ func fitContextBudget(pack *ContextPack, budget int) error {
 	for stabilizeEncodedTokens(pack) > budget && len(pack.Items) > 0 {
 		last := len(pack.Items) - 1
 		item := pack.Items[last]
+		pack.matchedButOmitted = true
 		pack.Items = pack.Items[:last]
 		pack.Receipt.UsedTokens -= item.Tokens
 		pack.Receipt.Selected = len(pack.Items)
@@ -450,6 +474,7 @@ func stabilizeEncodedTokens(pack *ContextPack) int {
 // value to the generation digest of every searchable byte before publishing it, so a same-stat
 // edit still changes the final receipt without serializing large candidate bodies a second time.
 func inputDigest(
+	baseName string,
 	request ContextRequest,
 	candidates []*ContextItem,
 	asOf string,
@@ -464,6 +489,7 @@ func inputDigest(
 		Count, Score, MatchedTerms, MatchWeight                     int
 	}
 	type digestInput struct {
+		Base            string
 		RankingVersion  int
 		AsOf, Query     string
 		Window          Window
@@ -478,7 +504,7 @@ func inputDigest(
 		Truncated       []string
 	}
 	input := digestInput{
-		RankingVersion: RankingVersion, AsOf: asOf, Query: request.Query,
+		Base: baseName, RankingVersion: RankingVersion, AsOf: asOf, Query: request.Query,
 		Window: request.Window, Budget: request.Budget, Pins: request.Pins,
 		Expand: request.Expand, Explain: request.Explain, Newest: request.Newest,
 		DeliveryFormat:  request.DeliveryFormat,

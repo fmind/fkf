@@ -25,16 +25,40 @@ sources:
       title: .name
 `
 
+const mixedIndexFreshnessConfig = `name: brain
+layers: {events: true, index: true, tasks: true, projects: true, wiki: true}
+sync: {index_max_age_hours: 24}
+sources:
+  fast:
+    enabled: true
+    layer: index
+    max_age_hours: 2
+    run: [cli, fast]
+    fields: {id: .id, title: .name}
+  slow:
+    enabled: true
+    layer: index
+    max_age_hours: 48
+    run: [cli, slow]
+    fields: {id: .id, title: .name}
+`
+
 func writeIndexFreshnessSnapshot(
 	t *testing.T, base *services.Base, collectedAt, modifiedAt time.Time,
 ) {
+	writeNamedIndexFreshnessSnapshot(t, base, "snapshot", collectedAt, modifiedAt, []sources.Record{{"id": "fmind/fkf", "name": "fkf"}})
+}
+
+func writeNamedIndexFreshnessSnapshot(
+	t *testing.T, base *services.Base, name string, collectedAt, modifiedAt time.Time, records []sources.Record,
+) {
 	t.Helper()
 	document := completeTestDocument(base, &sources.Document{
-		FKF: sources.SchemaVersion, Source: "snapshot", Layer: core.LayerIndex,
+		FKF: sources.SchemaVersion, Source: name, Layer: core.LayerIndex,
 		CollectedAt: collectedAt.UTC().Format(time.RFC3339),
 		Fields:      sources.Fields{core.FieldID: {mustFieldPath(t, ".id")}, core.FieldTitle: {mustFieldPath(t, ".name")}},
-		Count:       1,
-		Records:     []sources.Record{{"id": "fmind/fkf", "name": "fkf"}},
+		Count:       len(records),
+		Records:     records,
 	})
 	if err := base.WriteDocument(document); err != nil {
 		t.Fatal(err)
@@ -46,6 +70,140 @@ func writeIndexFreshnessSnapshot(
 	if err := os.Chtimes(absolute, modifiedAt, modifiedAt); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestConfiguredIndexFreshnessAgreesAcrossStatusSyncAndListing(t *testing.T) {
+	runner := &fakeRunner{responses: map[string]string{
+		"fast": `[{"id":"fast/new","name":"new fast"}]`,
+		"slow": `[{"id":"slow/new","name":"new slow"}]`,
+	}}
+	base := newBase(t, mixedIndexFreshnessConfig, runner)
+	collectedAt := testClock.Add(-12 * time.Hour)
+	writeNamedIndexFreshnessSnapshot(t, base, "fast", collectedAt, collectedAt, []sources.Record{{"id": "fast/old", "name": "old fast"}})
+	writeNamedIndexFreshnessSnapshot(t, base, "slow", collectedAt, collectedAt, []sources.Record{{"id": "slow/old", "name": "old slow"}})
+
+	status, err := services.Report(t.Context(), base, services.StatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]services.SourceStatus{}
+	for _, source := range status.Sources {
+		byName[source.Name] = source
+	}
+	if !byName["fast"].Stale || byName["slow"].Stale {
+		t.Fatalf("configured status freshness = %+v, want fast stale and slow fresh", byName)
+	}
+	listing, err := services.ListIndex(t.Context(), base, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[string]bool{}
+	for _, entry := range listing.Entries {
+		listed[entry.Name] = entry.Stale
+	}
+	if !listed["fast"] || listed["slow"] {
+		t.Fatalf("configured listing freshness = %+v, want fast stale and slow fresh", listed)
+	}
+
+	trust(t, base)
+	report, err := services.Sync(t.Context(), base, services.SyncRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcomes := map[string]services.SyncOutcome{}
+	for _, unit := range report.Units {
+		outcomes[unit.Source] = unit.Outcome
+	}
+	if outcomes["fast"] != services.OutcomeWritten || outcomes["slow"] != services.OutcomeFresh {
+		t.Fatalf("sync outcomes = %+v, want fast written and slow fresh", outcomes)
+	}
+}
+
+func TestExplicitStatusFreshnessOverridesConfiguredSourceAges(t *testing.T) {
+	base := newBase(t, mixedIndexFreshnessConfig, nil)
+	collectedAt := testClock.Add(-12 * time.Hour)
+	writeNamedIndexFreshnessSnapshot(t, base, "fast", collectedAt, collectedAt, nil)
+	writeNamedIndexFreshnessSnapshot(t, base, "slow", collectedAt, collectedAt, nil)
+
+	status, err := services.Report(t.Context(), base, services.StatusRequest{MaxAgeHours: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Stale {
+		t.Fatalf("explicit 24h override marked 12h empty snapshots stale: %+v", status.Sources)
+	}
+}
+
+func TestIndexFreshnessIsStaleAtTheExactThreshold(t *testing.T) {
+	runner := &fakeRunner{responses: map[string]string{"fast": `[]`, "slow": `[]`}}
+	base := newBase(t, mixedIndexFreshnessConfig, runner)
+	writeNamedIndexFreshnessSnapshot(t, base, "fast", testClock.Add(-2*time.Hour), testClock, nil)
+	writeNamedIndexFreshnessSnapshot(t, base, "slow", testClock, testClock, nil)
+
+	status, err := services.Report(t.Context(), base, services.StatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range status.Sources {
+		if source.Name == "fast" && !source.Stale {
+			t.Fatalf("source at its exact 2h threshold is fresh: %+v", source)
+		}
+	}
+	trust(t, base)
+	report, err := services.Sync(t.Context(), base, services.SyncRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unit := range report.Units {
+		if unit.Source == "fast" && unit.Outcome != services.OutcomeWritten {
+			t.Fatalf("source at its exact 2h threshold has outcome %q, want written", unit.Outcome)
+		}
+	}
+}
+
+func TestConfiguredIndexFreshnessHandlesMissingInvalidAndDisabledSources(t *testing.T) {
+	t.Run("missing and invalid snapshots are stale", func(t *testing.T) {
+		base := newBase(t, mixedIndexFreshnessConfig, nil)
+		writeNamedIndexFreshnessSnapshot(t, base, "fast", testClock, testClock, nil)
+		path, err := base.Store.Resolve(sources.IndexDocumentURI("fast"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = []byte(strings.Replace(string(data), testClock.Format(time.RFC3339), "not-a-timestamp", 1))
+		if err := os.WriteFile(path, data, core.BaseFileMode); err != nil {
+			t.Fatal(err)
+		}
+
+		status, err := services.Report(t.Context(), base, services.StatusRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		byName := map[string]services.SourceStatus{}
+		for _, source := range status.Sources {
+			byName[source.Name] = source
+		}
+		if !byName["fast"].Stale || !byName["slow"].Stale {
+			t.Fatalf("invalid and missing source freshness = %+v, want both stale", byName)
+		}
+	})
+
+	t.Run("disabled source is not stale", func(t *testing.T) {
+		config := strings.Replace(mixedIndexFreshnessConfig, "  fast:\n    enabled: true", "  fast:\n    enabled: false", 1)
+		base := newBase(t, config, nil)
+		writeNamedIndexFreshnessSnapshot(t, base, "slow", testClock, testClock, nil)
+
+		status, err := services.Report(t.Context(), base, services.StatusRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Stale {
+			t.Fatalf("disabled missing source made status stale: %+v", status.Sources)
+		}
+	})
 }
 
 func TestSyncIndexFreshnessComesFromCollectedAt(t *testing.T) {

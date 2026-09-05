@@ -3,10 +3,16 @@ sources:
   # source implicitly. Enable it only when the shared boundary is meant to retain those traces.
   agent-session-traces:
     enabled: false
-    layer: tasks
+    layer: events
     requires: [agent-session-trace.sh, agent-prompt-filter.jq, find, git, jq, mkfifo, xargs]
     window: true
     run: [agent-session-trace.sh, "{{start}}", "{{end}}"]
+    fields:
+      id: .id
+      time: .time
+      title: .title
+      repo: .repo
+      repository: .repository_uri
     install: mise use -g jq@latest
 
   # A team base declares only an explicitly organization-scoped snapshot. It starts disabled:
@@ -16,6 +22,7 @@ sources:
   github-repositories:
     enabled: false
     layer: index
+    max_age_hours: 24 # team repository inventory is intentionally refreshed once per day
     requires: [github-list-json.sh, gh, jq]
     auth: [gh, auth, status]
     # Replace the sentinel with this base's one organization before enabling. Using /user/repos
@@ -29,3 +36,86 @@ sources:
       repo: .nameWithOwner
       repository: .repository_uri
     install: mise use -g gh@latest jq@latest
+
+  # Replace the owner/name sentinel with the one repository this shared base covers. Both
+  # searches reject results outside that repository before emitting any evidence.
+  github-pull-requests:
+    enabled: false
+    layer: events
+    requires: [github-search-json.sh, gh, jq]
+    auth: [gh, auth, status]
+    test: [github-search-json.sh, --version]
+    window: true
+    run: [github-search-json.sh, prs, repository, REPLACE_WITH_ORG/REPLACE_WITH_REPOSITORY, "{{start}}", "{{end}}"]
+    fields:
+      id: .url
+      time: .updatedAt
+      title: .title
+      url: .url
+      repo: .repository.nameWithOwner
+      repository: .repository_uri
+      owner: [".assignee_uris[]"]
+      participant: [".participant_uris[]"]
+    body: [gh, pr, view, "{{id}}", --repo, "{{repo}}", --json, "body,comments"]
+    install: mise use -g gh@latest jq@latest
+
+  github-issues:
+    enabled: false
+    layer: events
+    requires: [github-search-json.sh, gh, jq]
+    auth: [gh, auth, status]
+    test: [github-search-json.sh, --version]
+    window: true
+    run: [github-search-json.sh, issues, repository, REPLACE_WITH_ORG/REPLACE_WITH_REPOSITORY, "{{start}}", "{{end}}"]
+    fields:
+      id: .url
+      time: .updatedAt
+      title: .title
+      url: .url
+      repo: .repository.nameWithOwner
+      repository: .repository_uri
+      owner: [".assignee_uris[]"]
+      participant: [".participant_uris[]"]
+    body: [gh, issue, view, "{{id}}", --repo, "{{repo}}", --json, "body,comments"]
+    install: mise use -g gh@latest jq@latest
+
+  # ACLI owns authentication and account selection. Keep any site/account selector in the
+  # collector's launcher environment; the committed base stores only this reviewed scope.
+  jira-issues:
+    enabled: false
+    layer: index
+    max_age_hours: 4
+    requires: [jira-issues-json.sh, acli, jq]
+    auth: [acli, jira, auth, status]
+    test: [jira-issues-json.sh, --version]
+    run: [jira-issues-json.sh, REPLACE_WITH_SITE.atlassian.net, REPLACE_WITH_PROJECT, "statusCategory != Done"]
+    fields:
+      id: .id
+      title: .title
+      url: .url
+      status: .status
+      assignee: .assignee
+      project: .project_uri
+      ticket: [.ticket_uri]
+    body: [acli, jira, workitem, view, "{{id}}", --fields, "summary,status,assignee,description", --json]
+    install: mise use -g acli@latest jq@latest
+
+  repository-facts:
+    # Shared evidence exposes root-1 style references, never the collector's absolute paths.
+    enabled: false
+    layer: index
+    max_age_hours: 24
+    requires: [repository-facts.py, python3]
+    run: [repository-facts.py, "{{home}}/REPLACE_WITH_REPOSITORIES"]
+    test: [repository-facts.py, --version]
+    fields:
+      id: .id
+      title: .title
+      repository: .repository_uri
+      configured_root: .root_ref
+      remote: [".remotes[]"]
+      language: [".languages[]"]
+      declared_task: [".declared_tasks[].command"]
+      instruction: [".instructions[]"]
+      proof: .proof
+    install: mise use -g python@latest

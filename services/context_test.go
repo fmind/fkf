@@ -50,6 +50,13 @@ func TestContextReturnsAPackAndAReceipt(t *testing.T) {
 		}
 	}
 	receipt := pack.Receipt
+	if receipt.Base != base.Config.Name {
+		t.Fatalf("receipt base = %q, want %q", receipt.Base, base.Config.Name)
+	}
+	if strings.HasPrefix(pack.Items[0].URI, "fkf://") ||
+		!strings.Contains(services.RenderContextText(pack), "fkf://"+base.Config.Name+"/"+pack.Items[0].URI) {
+		t.Fatalf("stored URI %q and text citation are not separated by base identity", pack.Items[0].URI)
+	}
 	if receipt.RankingVersion != services.RankingVersion || receipt.ToolVersion == "" || receipt.InputDigest == "" {
 		t.Fatalf("receipt = %+v, want the version and digest fields that make a change visible", receipt)
 	}
@@ -321,14 +328,10 @@ func TestContextPinIsAdmittedFirstButCapped(t *testing.T) {
 		t.Fatalf("rejected_pins = %v, want the requested page named independently of dropped detail",
 			tiny.Receipt.RejectedPins)
 	}
-	foundBudgetDrop := false
 	for _, dropped := range tiny.Receipt.Dropped {
-		if dropped.URI == "projects/fkf-rebuild.md" && dropped.Reason == "budget" {
-			foundBudgetDrop = true
+		if dropped.URI == "projects/fkf-rebuild.md" && dropped.Reason != "budget" {
+			t.Fatalf("rejected pin drop = %+v, want a budget reason when optional detail fits", dropped)
 		}
-	}
-	if !foundBudgetDrop {
-		t.Fatalf("dropped = %+v, want the capped pin reported as a budget drop", tiny.Receipt.Dropped)
 	}
 }
 
@@ -692,6 +695,7 @@ func TestContextNeedsAQuery(t *testing.T) {
 
 func TestContextExplainOmitsReasonsWhenNotAsked(t *testing.T) {
 	base := contextBase(t)
+	base.Config.Sources["synthetic"].Recency.HalfLifeDays = 7
 	pack, err := services.BuildContext(t.Context(), base, services.ContextRequest{Query: "retrieval", Budget: 4096})
 	if err != nil {
 		t.Fatal(err)
@@ -703,6 +707,25 @@ func TestContextExplainOmitsReasonsWhenNotAsked(t *testing.T) {
 		if item.Score == 0 {
 			t.Fatal("the score itself always travels; only the breakdown is optional")
 		}
+	}
+	if len(pack.Receipt.Terms) != 0 || len(pack.Receipt.RecencyModel) != 0 {
+		t.Fatalf("default receipt terms=%v recency=%v, want optional scoring detail omitted",
+			pack.Receipt.Terms, pack.Receipt.RecencyModel)
+	}
+	for _, dropped := range pack.Receipt.Dropped {
+		if dropped.Score != 0 || dropped.Tokens != 0 {
+			t.Fatalf("default dropped item = %+v, want arithmetic only under --explain", dropped)
+		}
+	}
+	explained, err := services.BuildContext(t.Context(), base, services.ContextRequest{
+		Query: "retrieval", Budget: 4096, Explain: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(explained.Receipt.Terms) == 0 || explained.Receipt.RecencyModel["synthetic"] != 7 {
+		t.Fatalf("explained receipt terms=%v recency=%v, want scoring diagnostics",
+			explained.Receipt.Terms, explained.Receipt.RecencyModel)
 	}
 }
 
@@ -1196,7 +1219,7 @@ func TestContextAlwaysCarriesTheNotice(t *testing.T) {
 func TestContextWarnsWhenTheBudgetIsTooSmallForAnyMatch(t *testing.T) {
 	base := newBase(t, baseConfig, &fakeRunner{})
 	collect(t, base, "2026-05-04", `[{"id":"a1","t":"2026-05-04T09:00:00Z","subject":"boundary FK-412"}]`)
-	pack, err := services.BuildContext(t.Context(), base, services.ContextRequest{Query: "FK-412", Budget: 256})
+	pack, err := services.BuildContext(t.Context(), base, services.ContextRequest{Query: "FK-412", Budget: 300})
 	if err != nil {
 		t.Fatalf("BuildContext() error = %v", err)
 	}

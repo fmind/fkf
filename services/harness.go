@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/fmind/fkf/core"
@@ -19,8 +21,6 @@ import (
 const (
 	HarnessFragmentJSON = "json"
 	HarnessFragmentTOML = "toml"
-	HarnessFragmentFile = "file"
-	HarnessFragmentLink = "link"
 )
 
 const (
@@ -52,6 +52,9 @@ type HarnessFragment struct {
 	value       any
 	array       bool
 	managedKind string
+	managedBase string
+	managedKey  string
+	workspace   string
 	mode        os.FileMode
 }
 
@@ -59,6 +62,8 @@ type HarnessFragment struct {
 type HarnessPlan struct {
 	Name      string            `json:"name"`
 	Base      string            `json:"base"`
+	BaseName  string            `json:"base_name"`
+	Workspace string            `json:"workspace,omitempty"`
 	Fragments []HarnessFragment `json:"fragments"`
 	Notes     []string          `json:"notes,omitempty"`
 }
@@ -72,6 +77,7 @@ type HarnessInstallRequest struct {
 	Check      bool
 	Home       string
 	Executable string
+	Workspace  string
 }
 
 // HarnessChange names one exact filesystem mutation needed for the selected base.
@@ -86,6 +92,8 @@ type HarnessChange struct {
 // selected integrations match the requested base; it is false for a dry-run or drift check.
 type HarnessInstallReport struct {
 	Base      string          `json:"base"`
+	BaseName  string          `json:"base_name"`
+	Workspace string          `json:"workspace,omitempty"`
 	Mode      string          `json:"mode"`
 	Harnesses []string        `json:"harnesses"`
 	Complete  bool            `json:"complete"`
@@ -96,7 +104,7 @@ type HarnessInstallReport struct {
 func HarnessNames() []string { return append([]string(nil), harnessOrder...) }
 
 // HarnessPlanFor renders one harness's managed fragments for an absolute base and executable.
-func HarnessPlanFor(baseRoot, name, executable string) (*HarnessPlan, error) {
+func HarnessPlanFor(baseRoot, name, executable, workspace string) (*HarnessPlan, error) {
 	baseRoot, err := validateHarnessBase(baseRoot)
 	if err != nil {
 		return nil, err
@@ -108,7 +116,15 @@ func HarnessPlanFor(baseRoot, name, executable string) (*HarnessPlan, error) {
 	if !knownHarness(name) {
 		return nil, fmt.Errorf("%w %q; expected %s", ErrHarnessName, name, strings.Join(harnessOrder, ", "))
 	}
-	return buildHarnessPlan(baseRoot, name, executable), nil
+	baseName, err := harnessBaseName(baseRoot)
+	if err != nil {
+		return nil, err
+	}
+	selectedWorkspace, err := validateHarnessWorkspace(workspace)
+	if err != nil {
+		return nil, err
+	}
+	return buildHarnessPlan(baseRoot, baseName, name, executable, selectedWorkspace), nil
 }
 
 // InstallHarnesses preflights every selected file before the first write. Dry-run and check never
@@ -135,21 +151,29 @@ func InstallHarnesses(
 	if err != nil {
 		return nil, err
 	}
-	if err := validateHarnessAssets(baseRoot); err != nil {
-		return nil, err
-	}
-
-	report := newHarnessInstallReport(baseRoot, names, request)
-
-	plans := make([]*HarnessPlan, 0, len(names))
-	for _, name := range names {
-		plans = append(plans, buildHarnessPlan(baseRoot, name, executable))
-	}
-	files, links, err := preflightHarnessPlans(ctx, home, plans)
+	workspace, err := validateHarnessWorkspace(request.Workspace)
 	if err != nil {
 		return nil, err
 	}
-	report.Changes = harnessChanges(files, links)
+	baseName, err := harnessBaseName(baseRoot)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateHarnessAssets(baseRoot, workspace != ""); err != nil {
+		return nil, err
+	}
+
+	report := newHarnessInstallReport(baseRoot, baseName, workspace, names, request)
+
+	plans := make([]*HarnessPlan, 0, len(names))
+	for _, name := range names {
+		plans = append(plans, buildHarnessPlan(baseRoot, baseName, name, executable, workspace))
+	}
+	files, err := preflightHarnessPlans(ctx, home, plans)
+	if err != nil {
+		return nil, err
+	}
+	report.Changes = harnessChanges(files)
 	if len(report.Changes) == 0 {
 		return report, nil
 	}
@@ -161,13 +185,10 @@ func InstallHarnesses(
 	// The home-owned targets are outside FKF's base lock. Revalidate the complete plan
 	// immediately before the first mutation so a concurrent editor is never overwritten
 	// from stale preflight bytes or link targets.
-	if err := revalidateHarnessMutations(files, links); err != nil {
+	if err := revalidateHarnessFiles(files); err != nil {
 		return nil, err
 	}
 	if err := applyHarnessFiles(ctx, files); err != nil {
-		return nil, err
-	}
-	if err := applyHarnessLinks(ctx, links); err != nil {
 		return nil, err
 	}
 	report.Complete = true
@@ -181,7 +202,9 @@ func validateHarnessExecutable(executable string) (string, error) {
 	return filepath.Clean(executable), nil
 }
 
-func newHarnessInstallReport(baseRoot string, names []string, request HarnessInstallRequest) *HarnessInstallReport {
+func newHarnessInstallReport(
+	baseRoot, baseName, workspace string, names []string, request HarnessInstallRequest,
+) *HarnessInstallReport {
 	mode := "install"
 	if request.DryRun {
 		mode = "dry-run"
@@ -189,19 +212,17 @@ func newHarnessInstallReport(baseRoot string, names []string, request HarnessIns
 	if request.Check {
 		mode = "check"
 	}
-	return &HarnessInstallReport{Base: baseRoot, Mode: mode, Harnesses: names, Complete: true}
+	return &HarnessInstallReport{
+		Base: baseRoot, BaseName: baseName, Workspace: workspace,
+		Mode: mode, Harnesses: names, Complete: true,
+	}
 }
 
-func harnessChanges(files []harnessFileMutation, links []harnessLinkMutation) []HarnessChange {
-	changes := make([]HarnessChange, 0, len(files)+len(links))
+func harnessChanges(files []harnessFileMutation) []HarnessChange {
+	changes := make([]HarnessChange, 0, len(files))
 	for _, file := range files {
 		if file.changed {
 			changes = append(changes, harnessChange(file.harness, file.action, file.path, file.exists))
-		}
-	}
-	for _, link := range links {
-		if link.changed {
-			changes = append(changes, harnessChange(link.harness, link.action, link.path, link.exists))
 		}
 	}
 	return changes
@@ -241,37 +262,44 @@ func applyHarnessFiles(ctx context.Context, files []harnessFileMutation) error {
 	return nil
 }
 
-func applyHarnessLinks(ctx context.Context, links []harnessLinkMutation) error {
-	if err := revalidateHarnessLinks(links); err != nil {
-		return err
-	}
-	for _, link := range links {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if !link.changed {
-			continue
-		}
-		if err := revalidateHarnessLink(link); err != nil {
-			return err
-		}
-		if link.exists {
-			if err := replaceSymlink(link.path+harnessBackupSuffix, link.before); err != nil {
-				return fmt.Errorf("back up skills link %s: %w", link.path, err)
-			}
-		}
-		if err := replaceSymlink(link.path, link.after); err != nil {
-			return fmt.Errorf("write skills link %s: %w", link.path, err)
-		}
-	}
-	return nil
-}
-
 func validateHarnessBase(root string) (string, error) {
 	if root == "" || !filepath.IsAbs(root) {
 		return "", fmt.Errorf("harness base path must be absolute")
 	}
-	return filepath.Clean(root), nil
+	physical, err := core.ResolvePhysicalPath(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve harness base: %w", err)
+	}
+	return physical, nil
+}
+
+func harnessBaseName(root string) (string, error) {
+	config, err := core.LoadConfig(root)
+	if err != nil {
+		return "", fmt.Errorf("load harness base identity: %w", err)
+	}
+	return config.Name, nil
+}
+
+func validateHarnessWorkspace(workspace string) (string, error) {
+	if workspace == "" {
+		return "", nil
+	}
+	if !filepath.IsAbs(workspace) {
+		return "", fmt.Errorf("harness workspace must be an absolute directory")
+	}
+	physical, err := core.ResolvePhysicalPath(workspace)
+	if err != nil {
+		return "", fmt.Errorf("resolve harness workspace: %w", err)
+	}
+	info, err := os.Stat(physical)
+	if err != nil {
+		return "", fmt.Errorf("inspect harness workspace: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("harness workspace must be a directory")
+	}
+	return physical, nil
 }
 
 func knownHarness(name string) bool {
@@ -326,7 +354,10 @@ func harnessHome(explicit string) (string, error) {
 	return filepath.Clean(home), nil
 }
 
-func validateHarnessAssets(baseRoot string) error {
+func validateHarnessAssets(baseRoot string, needsHook bool) error {
+	if !needsHook {
+		return nil
+	}
 	hook := filepath.Join(baseRoot, core.BaseBinDir, "fkf-hook.sh")
 	info, err := os.Lstat(hook)
 	if err != nil {
@@ -334,19 +365,6 @@ func validateHarnessAssets(baseRoot string) error {
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return fmt.Errorf("harness hook %s is not an executable non-symlink regular file", hook)
-	}
-	for _, skill := range BundledSkills {
-		path := filepath.Join(baseRoot, core.BaseSkillsDir, skill)
-		info, err := os.Lstat(path)
-		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			if err == nil {
-				err = fmt.Errorf("%w: not a real directory", core.ErrUnsafePath)
-			}
-			return fmt.Errorf("inspect harness skill %s: %w", path, err)
-		}
-		if err := validateSkillTree(path); err != nil {
-			return fmt.Errorf("inspect harness skill %s: %w", path, err)
-		}
 	}
 	return nil
 }
@@ -362,16 +380,6 @@ type harnessFileMutation struct {
 	action        string
 }
 
-type harnessLinkMutation struct {
-	harness string
-	path    string
-	before  string
-	after   string
-	exists  bool
-	changed bool
-	action  string
-}
-
 type harnessFileGroup struct {
 	harness   string
 	path      string
@@ -380,54 +388,75 @@ type harnessFileGroup struct {
 
 func preflightHarnessPlans(
 	ctx context.Context, home string, plans []*HarnessPlan,
-) ([]harnessFileMutation, []harnessLinkMutation, error) {
-	groups, links, err := groupHarnessPlans(home, plans)
+) ([]harnessFileMutation, error) {
+	for _, plan := range plans {
+		if plan.Name == "kiro" && plan.Workspace != "" {
+			if err := checkKiroHookWorkspaces(ctx, home, plan); err != nil {
+				return nil, err
+			}
+		}
+	}
+	groups, err := groupHarnessPlans(home, plans)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	files := make([]harnessFileMutation, 0, len(groups))
 	for _, group := range groups {
 		if err := ctx.Err(); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		mutation, err := preflightHarnessFile(group.harness, group.path, group.fragments)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		files = append(files, mutation)
 	}
-	for index := range links {
-		if err := ctx.Err(); err != nil {
-			return nil, nil, err
-		}
-		if err := preflightHarnessLink(&links[index]); err != nil {
-			return nil, nil, err
-		}
-	}
-	return files, links, nil
+	return files, nil
 }
 
-func groupHarnessPlans(home string, plans []*HarnessPlan) ([]harnessFileGroup, []harnessLinkMutation, error) {
+// Kiro stores each base's hook in a separate file; a single-file merge cannot detect a
+// conflicting workspace in a peer file. Inspect only its hook directory, without execution.
+func checkKiroHookWorkspaces(ctx context.Context, home string, plan *HarnessPlan) error {
+	directory := filepath.Join(home, ".kiro", "hooks")
+	entries, err := os.ReadDir(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect Kiro hook workspaces: %w", err)
+	}
+	fragment := HarnessFragment{managedBase: plan.Base, workspace: plan.Workspace}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(directory, entry.Name())
+		data, err := core.ReadFileLimitContext(ctx, path, core.MaxControlFileBytes)
+		if err != nil {
+			return fmt.Errorf("inspect Kiro hook %s: %w", path, err)
+		}
+		var value any
+		if err := json.Unmarshal(data, &value); err != nil {
+			return fmt.Errorf("decode Kiro hook %s: %w", path, err)
+		}
+		if err := checkHarnessWorkspaceConflict(path, value, fragment); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func groupHarnessPlans(home string, plans []*HarnessPlan) ([]harnessFileGroup, error) {
 	groups := make([]harnessFileGroup, 0)
 	groupIndex := map[string]int{}
-	links := make([]harnessLinkMutation, 0)
-	linkIndex := map[string]int{}
 	for _, plan := range plans {
 		for _, fragment := range plan.Fragments {
 			path, err := expandHarnessPath(home, fragment.Path)
 			if err != nil {
-				return nil, nil, err
-			}
-			if fragment.Kind == HarnessFragmentLink {
-				if index, exists := linkIndex[path]; exists {
-					if links[index].after != fragment.Content {
-						return nil, nil, fmt.Errorf("%w: harnesses select different targets for %s", ErrHarnessConflict, path)
-					}
-					continue
-				}
-				linkIndex[path] = len(links)
-				links = append(links, harnessLinkMutation{harness: plan.Name, path: path, after: fragment.Content})
-				continue
+				return nil, err
 			}
 			if index, exists := groupIndex[path]; exists {
 				groups[index].fragments = append(groups[index].fragments, fragment)
@@ -437,7 +466,7 @@ func groupHarnessPlans(home string, plans []*HarnessPlan) ([]harnessFileGroup, [
 			groups = append(groups, harnessFileGroup{harness: plan.Name, path: path, fragments: []HarnessFragment{fragment}})
 		}
 	}
-	return groups, links, nil
+	return groups, nil
 }
 
 func expandHarnessPath(home, path string) (string, error) {
@@ -481,7 +510,6 @@ func preflightHarnessFile(
 		}
 	case os.IsNotExist(err):
 		mutation.before = nil
-		err = nil
 	default:
 		return mutation, fmt.Errorf("inspect harness config %s: %w", path, err)
 	}
@@ -496,12 +524,7 @@ func preflightHarnessFile(
 	case HarnessFragmentJSON:
 		mutation.after, err = mergeHarnessJSON(path, mutation.before, fragments)
 	case HarnessFragmentTOML:
-		mutation.after, err = mergeHarnessTOML(path, harness, mutation.before, fragments[0].Content)
-	case HarnessFragmentFile:
-		mutation.after = []byte(fragments[0].Content)
-		if mutation.exists && !bytes.Equal(mutation.before, mutation.after) && !isManagedHarnessFile(mutation.before, harness) {
-			err = fmt.Errorf("%w: %s already exists and FKF does not own it", ErrHarnessConflict, path)
-		}
+		mutation.after, err = mergeHarnessTOML(path, harness, mutation.before, fragments[0])
 	default:
 		err = fmt.Errorf("internal harness plan has unknown format %q", kind)
 	}
@@ -576,27 +599,61 @@ func applyHarnessJSONFragment(path string, root map[string]any, fragment Harness
 	key := parts[len(parts)-1]
 	existing, exists := parent[key]
 	if fragment.array {
-		var entries []any
-		if exists {
-			var ok bool
-			entries, ok = existing.([]any)
-			if !ok {
-				return fmt.Errorf("%w: %s defines %s as a non-array", ErrHarnessConflict, path, fragment.Selector)
-			}
-		}
-		for index, entry := range entries {
-			if reflect.DeepEqual(entry, fragment.value) {
-				return nil
-			}
-			if jsonValueManaged(entry, fragment.managedKind, "") {
-				entries[index] = fragment.value
-				parent[key] = entries
-				return nil
-			}
-		}
-		parent[key] = append(entries, fragment.value)
-		return nil
+		return applyHarnessJSONArrayFragment(path, parent, key, existing, exists, fragment)
 	}
+	return applyHarnessJSONObjectFragment(path, parent, key, existing, exists, fragment)
+}
+
+func applyHarnessJSONArrayFragment(
+	path string, parent map[string]any, key string, existing any, exists bool, fragment HarnessFragment,
+) error {
+	var entries []any
+	if exists {
+		var ok bool
+		entries, ok = existing.([]any)
+		if !ok {
+			return fmt.Errorf("%w: %s defines %s as a non-array", ErrHarnessConflict, path, fragment.Selector)
+		}
+	}
+	// Check every peer before replacing our entry: an earlier owned entry must not hide a
+	// later conflicting base when its workspace moves.
+	if fragment.managedKind == "hook" {
+		if err := checkHarnessWorkspaceConflict(path, entries, fragment); err != nil {
+			return err
+		}
+	}
+	for index, entry := range entries {
+		switch {
+		case reflect.DeepEqual(entry, fragment.value):
+			return nil
+		case jsonValueOwnedByFragment(entry, fragment):
+			entries[index] = fragment.value
+			parent[key] = entries
+			return nil
+		}
+	}
+	parent[key] = append(entries, fragment.value)
+	return nil
+}
+
+func checkHarnessWorkspaceConflict(path string, value any, fragment HarnessFragment) error {
+	var conflict error
+	visitHarnessStrings(value, func(command string) {
+		if conflict != nil || !strings.Contains(command, "fkf-hook.sh") ||
+			harnessMarkerValue(command, "fkf-base") == fragment.managedBase {
+			return
+		}
+		workspace := harnessMarkerValue(command, "fkf-workspace")
+		if workspaceScopesOverlap(workspace, fragment.workspace) {
+			conflict = fmt.Errorf("%w: %s already has an overlapping FKF hook workspace %s", ErrHarnessConflict, path, workspace)
+		}
+	})
+	return conflict
+}
+
+func applyHarnessJSONObjectFragment(
+	path string, parent map[string]any, key string, existing any, exists bool, fragment HarnessFragment,
+) error {
 	if !exists {
 		parent[key] = fragment.value
 		return nil
@@ -604,13 +661,96 @@ func applyHarnessJSONFragment(path string, root map[string]any, fragment Harness
 	if reflect.DeepEqual(existing, fragment.value) {
 		return nil
 	}
-	if !jsonValueManaged(existing, fragment.managedKind, "") {
+	if !jsonValueOwnedByFragment(existing, fragment) {
 		return fmt.Errorf("%w: %s already defines %s and FKF does not own it", ErrHarnessConflict, path, fragment.Selector)
 	}
 	// The selector names the complete FKF-managed value. Preserve its surrounding object,
 	// but replace the managed value exactly so extra behavior cannot hide as an allowed subset.
 	parent[key] = fragment.value
 	return nil
+}
+
+func jsonValueOwnedByFragment(value any, fragment HarnessFragment) bool {
+	if !jsonValueManaged(value, fragment.managedKind, "") {
+		return false
+	}
+	switch fragment.managedKind {
+	case "mcp":
+		return mcpEntryBase(value) == fragment.managedBase
+	case "hook":
+		return harnessMarkerValue(value, "fkf-base") == fragment.managedBase
+	default:
+		return false
+	}
+}
+
+func mcpEntryBase(value any) string {
+	entry, ok := value.(map[string]any)
+	if !ok {
+		return ""
+	}
+	argv, _ := entry["args"].([]any)
+	if command, ok := entry["command"].([]any); ok {
+		argv = command
+		if len(argv) > 0 && isFKFExecutable(fmt.Sprint(argv[0])) {
+			argv = argv[1:]
+		}
+	}
+	for index := 0; index+1 < len(argv); index++ {
+		if argv[index] == "--base" {
+			base, _ := argv[index+1].(string)
+			return base
+		}
+	}
+	return ""
+}
+
+func harnessMarkerValue(value any, name string) string {
+	prefix := name + "="
+	var found string
+	visitHarnessStrings(value, func(text string) {
+		if found != "" {
+			return
+		}
+		index := strings.Index(text, prefix)
+		if index < 0 {
+			return
+		}
+		encoded := text[index+len(prefix):]
+		if end := strings.IndexAny(encoded, " ;\t\r\n"); end >= 0 {
+			encoded = encoded[:end]
+		}
+		if decoded, err := url.PathUnescape(encoded); err == nil {
+			found = decoded
+		}
+	})
+	return found
+}
+
+func visitHarnessStrings(value any, visit func(string)) {
+	switch value := value.(type) {
+	case string:
+		visit(value)
+	case []any:
+		for _, child := range value {
+			visitHarnessStrings(child, visit)
+		}
+	case map[string]any:
+		for _, child := range value {
+			visitHarnessStrings(child, visit)
+		}
+	}
+}
+
+func workspaceScopesOverlap(left, right string) bool {
+	if left == "" || right == "" {
+		return false
+	}
+	within := func(parent, child string) bool {
+		relative, err := filepath.Rel(parent, child)
+		return err == nil && (relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))))
+	}
+	return within(left, right) || within(right, left)
 }
 
 func jsonValueManaged(value any, kind, harness string) bool {
@@ -682,27 +822,48 @@ func findHarnessHookString(value any, harness string) bool {
 	return false
 }
 
-func mergeHarnessTOML(path, harness string, before []byte, desired string) ([]byte, error) {
+func mergeHarnessTOML(path, harness string, before []byte, fragment HarnessFragment) ([]byte, error) {
 	text := string(before)
-	startMarker := harnessManagedStart + harness
-	endMarker := harnessManagedEnd + harness
-	start := strings.Index(text, startMarker)
-	end := strings.Index(text, endMarker)
+	desired := fragment.Content
+	marker := harness + " " + fragment.managedKey
+	startMarker := harnessManagedStart + marker
+	endMarker := harnessManagedEnd + marker
+	// Match complete marker lines: the base alpha must not claim alpha-team's block.
+	start := harnessMarkerLine(text, startMarker)
+	end := harnessMarkerLine(text, endMarker)
 	if (start >= 0) != (end >= 0) || (start >= 0 && end < start) {
 		return nil, fmt.Errorf("%w: %s has an incomplete FKF managed block", ErrHarnessConflict, path)
 	}
+	if fragment.workspace != "" {
+		for line := range strings.SplitSeq(text, "\n") {
+			if err := checkHarnessWorkspaceConflict(path, line, fragment); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if start >= 0 {
 		end += len(endMarker)
+		block := text[start:end]
+		if !strings.Contains(block, "# base: "+strconv.Quote(fragment.managedBase)) {
+			return nil, fmt.Errorf("%w: %s already owns %s for a different base", ErrHarnessConflict, path, fragment.managedKey)
+		}
 		if end < len(text) && text[end] == '\r' {
 			end++
 		}
 		if end < len(text) && text[end] == '\n' {
 			end++
 		}
+		if fragment.workspace == "" {
+			// MCP-only refreshes and status must leave explicitly installed hooks intact,
+			// just as the JSON adapters do when no hook fragment was requested.
+			if hook := strings.Index(block, "\n[[hooks.SessionStart]]"); hook >= 0 {
+				desired = strings.TrimSuffix(desired, endMarker+"\n") + block[hook:] + "\n"
+			}
+		}
 		return []byte(text[:start] + desired + text[end:]), nil
 	}
-	section := regexp.MustCompile(`(?m)^\s*\[mcp_servers\.fkf\]\s*(?:#.*)?$`)
-	if section.MatchString(text) || (strings.Contains(text, "fkf-hook.sh") && strings.Contains(text, harness)) {
+	section := regexp.MustCompile(`(?m)^\s*\[mcp_servers\.` + regexp.QuoteMeta(fragment.managedKey) + `\]\s*(?:#.*)?$`)
+	if section.MatchString(text) || strings.Contains(text, "fkf-key="+url.PathEscape(fragment.managedKey)) {
 		return nil, fmt.Errorf("%w: %s already defines an FKF MCP server or hook outside a managed block", ErrHarnessConflict, path)
 	}
 	if len(text) > 0 && !strings.HasSuffix(text, "\n") {
@@ -714,44 +875,12 @@ func mergeHarnessTOML(path, harness string, before []byte, desired string) ([]by
 	return []byte(text + desired), nil
 }
 
-func isManagedHarnessFile(content []byte, harness string) bool {
-	marker := "Managed by fkf harness install: " + harness
-	return bytes.Contains(content, []byte(marker))
-}
-
-func preflightHarnessLink(link *harnessLinkMutation) error {
-	info, err := os.Lstat(link.path)
-	switch {
-	case os.IsNotExist(err):
-		link.changed = true
-		link.action = "link"
-		return nil
-	case err != nil:
-		return fmt.Errorf("inspect skills bridge %s: %w", link.path, err)
-	case info.Mode()&os.ModeSymlink == 0:
-		return fmt.Errorf("%w: skills bridge %s already exists and is not a symlink", ErrHarnessConflict, link.path)
+func harnessMarkerLine(text, marker string) int {
+	match := regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(marker) + `\r?$`).FindStringIndex(text)
+	if match == nil {
+		return -1
 	}
-	link.exists = true
-	link.before, err = os.Readlink(link.path)
-	if err != nil {
-		return fmt.Errorf("read skills bridge %s: %w", link.path, err)
-	}
-	if link.before == link.after {
-		return nil
-	}
-	if !isManagedSkillTarget(link.before) {
-		return fmt.Errorf("%w: skills bridge %s points to an unmanaged target", ErrHarnessConflict, link.path)
-	}
-	link.changed = true
-	link.action = "relink"
-	return nil
-}
-
-func revalidateHarnessMutations(files []harnessFileMutation, links []harnessLinkMutation) error {
-	if err := revalidateHarnessFiles(files); err != nil {
-		return err
-	}
-	return revalidateHarnessLinks(links)
+	return match[0]
 }
 
 func revalidateHarnessFiles(files []harnessFileMutation) error {
@@ -796,82 +925,4 @@ func revalidateHarnessFile(file harnessFileMutation) error {
 		return fmt.Errorf("%w: harness config %s changed after preflight", ErrHarnessConflict, file.path)
 	}
 	return nil
-}
-
-func revalidateHarnessLinks(links []harnessLinkMutation) error {
-	for _, link := range links {
-		if link.changed {
-			if err := revalidateHarnessLink(link); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func revalidateHarnessLink(link harnessLinkMutation) error {
-	info, err := os.Lstat(link.path)
-	if !link.exists {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("inspect skills bridge %s before writing: %w", link.path, err)
-		}
-		return fmt.Errorf("%w: skills bridge %s appeared after preflight", ErrHarnessConflict, link.path)
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("%w: skills bridge %s disappeared after preflight", ErrHarnessConflict, link.path)
-	}
-	if err != nil {
-		return fmt.Errorf("inspect skills bridge %s before writing: %w", link.path, err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		return fmt.Errorf("%w: skills bridge %s changed type after preflight", ErrHarnessConflict, link.path)
-	}
-	current, err := os.Readlink(link.path)
-	if err != nil {
-		return fmt.Errorf("read skills bridge %s before writing: %w", link.path, err)
-	}
-	if current != link.before {
-		return fmt.Errorf("%w: skills bridge %s changed after preflight", ErrHarnessConflict, link.path)
-	}
-	return nil
-}
-
-func isManagedSkillTarget(target string) bool {
-	target = filepath.ToSlash(filepath.Clean(target))
-	for _, skill := range BundledSkills {
-		if strings.HasSuffix(target, "/.agents/skills/"+skill) {
-			return true
-		}
-	}
-	return false
-}
-
-func replaceSymlink(path, target string) error {
-	directory := filepath.Dir(path)
-	if err := os.MkdirAll(directory, core.BaseDirMode); err != nil {
-		return err
-	}
-	temporary, err := os.CreateTemp(directory, "."+filepath.Base(path)+".*.link")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	if err := temporary.Close(); err != nil {
-		_ = os.Remove(temporaryPath)
-		return err
-	}
-	if err := os.Remove(temporaryPath); err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if err := os.Symlink(target, temporaryPath); err != nil {
-		return err
-	}
-	if err := os.Rename(temporaryPath, path); err != nil {
-		return err
-	}
-	return core.SyncDirectory(directory)
 }

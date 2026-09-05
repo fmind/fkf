@@ -70,68 +70,6 @@ func TestPruneContextSnapshotsRetainsTheKeepFileAndNewestGeneration(t *testing.T
 	}
 }
 
-func TestHarnessOwnershipDetectionIsRecursiveAndRelinksOnlyManagedSkills(t *testing.T) {
-	hook := map[string]any{
-		"outer": []any{map[string]any{"command": "'/base/bin/fkf-hook.sh' claude"}},
-	}
-	if !findHarnessHookString(hook, "claude") || findHarnessHookString(hook, "codex") ||
-		findHarnessHookString(map[string]any{"command": "other"}, "") || findHarnessHookString(42, "") {
-		t.Fatalf("recursive hook ownership detection accepted the wrong value")
-	}
-	if !isManagedHarnessFile([]byte("# Managed by fkf harness install: cline\n"), "cline") ||
-		isManagedHarnessFile([]byte("#!/bin/sh\n"), "cline") {
-		t.Fatal("managed file marker detection is not exact")
-	}
-	if !isManagedSkillTarget("/old/base/.agents/skills/fkf-use") ||
-		!isManagedSkillTarget("/old/base/.agents/skills/daily-brief") ||
-		isManagedSkillTarget("/old/base/skills/fkf-use") {
-		t.Fatal("managed skill target detection is not bounded to bundled base skills")
-	}
-
-	firstBase := makeHarnessBase(t)
-	secondBase := makeHarnessBase(t)
-	home := t.TempDir()
-	if _, err := InstallHarnesses(t.Context(), firstBase, HarnessInstallRequest{
-		Names: []string{"claude"}, Home: home, Executable: testHarnessExecutable,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	relinked, err := InstallHarnesses(t.Context(), secondBase, HarnessInstallRequest{
-		Names: []string{"claude"}, Home: home, Executable: testHarnessExecutable,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !relinked.Complete {
-		t.Fatalf("relink report = %#v", relinked)
-	}
-	link := filepath.Join(home, ".claude", "skills", "fkf-use")
-	if got, err := os.Readlink(link); err != nil || got != filepath.Join(secondBase, ".agents", "skills", "fkf-use") {
-		t.Fatalf("relinked skill = %q, error %v", got, err)
-	}
-	if got, err := os.Readlink(link + harnessBackupSuffix); err != nil || got != filepath.Join(firstBase, ".agents", "skills", "fkf-use") {
-		t.Fatalf("skill backup = %q, error %v", got, err)
-	}
-
-	conflictHome := t.TempDir()
-	conflict := filepath.Join(conflictHome, ".claude", "skills", "fkf-use")
-	if err := os.MkdirAll(filepath.Dir(conflict), core.BaseDirMode); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("/unmanaged/skills/fkf-use", conflict); err != nil {
-		t.Fatal(err)
-	}
-	_, err = InstallHarnesses(t.Context(), firstBase, HarnessInstallRequest{
-		Names: []string{"claude"}, Home: conflictHome, Executable: testHarnessExecutable,
-	})
-	if !errors.Is(err, ErrHarnessConflict) {
-		t.Fatalf("unmanaged skill link error = %v, want ErrHarnessConflict", err)
-	}
-	if _, err := os.Stat(filepath.Join(conflictHome, ".claude.json")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("preflight conflict wrote another harness file: %v", err)
-	}
-}
-
 func TestLearnDiffParserRejectsAmbiguousOrUnsafePatches(t *testing.T) {
 	valid := "--- a/wiki/a.md\n+++ b/wiki/a.md\n@@ -1 +1 @@\n-old\n+new\n"
 	cases := []struct {
@@ -150,6 +88,7 @@ func TestLearnDiffParserRejectsAmbiguousOrUnsafePatches(t *testing.T) {
 		{"new header", []byte("--- a/wiki/a.md\n@@ -1 +1 @@\n-old\n+new\n"), "expected a new-file header"},
 		{"empty new path", []byte("--- a/wiki/a.md\n+++ \n@@ -1 +1 @@\n-old\n+new\n"), "file header has no path"},
 		{"deletion", []byte("--- a/wiki/a.md\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-old\n"), "deletion is not supported"},
+		{"binary patch", []byte("diff --git a/wiki/a.md b/wiki/a.md\n--- a/wiki/a.md\n+++ b/wiki/a.md\nGIT binary patch\nliteral 1\nAcmZQz\n"), "expected an old-file header"},
 		{"new prefix", []byte("--- a/wiki/a.md\n+++ wiki/a.md\n@@ -1 +1 @@\n-old\n+new\n"), "must begin b/"},
 		{"old prefix", []byte("--- wiki/a.md\n+++ b/wiki/a.md\n@@ -1 +1 @@\n-old\n+new\n"), "must begin a/"},
 		{"rename", []byte("--- a/wiki/a.md\n+++ b/wiki/b.md\n@@ -1 +1 @@\n-old\n+new\n"), "renames are not supported"},

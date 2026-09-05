@@ -207,16 +207,28 @@ func TestLexicalCorpusKeepsPagePostingsOnlyForContext(t *testing.T) {
 	}
 	pageContextPosting := false
 	postingBytes := encoded.Rows[encoded.PostingsOffset:encoded.LookupOffset]
+	scoreFields, err := decodeLexicalScoreFields(bytes.SplitN(encoded.Rows, []byte{'\n'}, 2)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := lexicalPostingKey{}
 	for _, line := range strings.Split(strings.TrimSpace(string(postingBytes)), "\n") {
-		fields := strings.Split(line, "\t")
-		for _, id := range fields[2:] {
-			if id == "0" {
-				if fields[0] == lexicalFindTrigram || fields[0] == lexicalBodyTrigram {
-					t.Fatalf("authored page leaked into find posting row kind %s", fields[0])
-				}
-				pageContextPosting = true
-			}
+		row := []byte(line)
+		key, err := lexicalPostingKeyFromRow(row)
+		if err != nil {
+			t.Fatal(err)
 		}
+		key, ids, _, _, err := decodeLexicalPosting(row, key, len(corpus.entries), previous, true, scoreFields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, found := ids[0]; found {
+			if key.Kind == lexicalFindTrigram || key.Kind == lexicalBodyTrigram {
+				t.Fatalf("authored page leaked into find posting row kind %s", key.Kind)
+			}
+			pageContextPosting = true
+		}
+		previous = key
 	}
 	if !pageContextPosting {
 		t.Fatal("authored page produced no context posting")
@@ -252,11 +264,15 @@ func TestLexicalLookupShardAuthenticatesInclusionAndAbsence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	descriptor, found := lookup[key]
+	descriptor, found := lookup[encodeLexicalLookupKey(key)]
 	if !found {
 		t.Fatalf("lookup keys = %+v, want %+v", lookup, key)
 	}
-	ids, _, err := readLexicalPosting(t.Context(), file, descriptor, key, 1)
+	scoreFields, err := decodeLexicalScoreFields(bytes.SplitN(encoded.Rows, []byte{'\n'}, 2)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, _, err := readLexicalPosting(t.Context(), file, descriptor, key, 1, scoreFields)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +284,7 @@ func TestLexicalLookupShardAuthenticatesInclusionAndAbsence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, found := lookup[missing]; found {
+	if _, found := lookup[encodeLexicalLookupKey(missing)]; found {
 		t.Fatalf("lookup unexpectedly contains missing key %+v", missing)
 	}
 }

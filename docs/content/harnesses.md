@@ -1,79 +1,66 @@
 ---
 title: Agent harnesses
 weight: 10
-description: "Install one FKF base into supported coding agents with read-only MCP, a small context hook, and the embedded skills."
+description: "Install named FKF bases into supported coding agents with scoped read-only MCP and optional workspace context hooks."
 ---
 
-`fkf harness` keeps the integration for one base explicit and reproducible. It configures three surfaces:
+`fkf harness` registers one named base without claiming the global `fkf` key. Every adapter uses `fkf-<base-name>`, so independent bases coexist in one user profile and each launch carries an explicit absolute `--base`.
 
-- **Read-only MCP** exposes bounded `context`, `find`, `day`, `timeline`, `list`, `read`, and `graph` tools over stdio.
-- **Session context** asks FKF for one small repository-and-branch-aware pack.
-- **Skills** bridge the base's `fkf-use`, `fkf-learn`, and `daily-brief` skills into the harness's user skill directory.
-
-Installation runs no source command. MCP and the hook read already collected evidence offline. Every managed MCP and hook entry pins both the current FKF executable and the base by absolute path, so an older binary earlier on `PATH` cannot serve an incompatible base. Before a managed hook dispatches base-owned code, that pinned binary verifies the base's current execution trust; drift produces only the harness's empty envelope.
+All ten adapters support read-only MCP. Automatic context hooks are available only for Claude, Codex, Gemini, and Kiro, and only when the caller supplies an explicit workspace. The other adapters remain MCP-only because their current passive hooks either do not consume output or cannot be scoped reliably per base.
 
 ## Install
 
-List the closed supported vocabulary, inspect one harness's exact fragments, then install either selected names or all of them:
+Inspect one adapter, then install selected names or all adapters:
 
 ```bash
-fkf harness list
 fkf --base /absolute/path/to/brain harness print codex
-fkf --base /absolute/path/to/brain harness install claude codex opencode
+fkf --base /absolute/path/to/brain harness install claude codex
 fkf --base /absolute/path/to/brain harness install --all
 ```
 
-`print` is intended for dotfile templates. It emits the same managed fragments and link targets that `install` applies, including the current executable path; regenerate the fragment if the binary moves. It never reads or writes the user configuration.
+These commands install MCP only. Add automatic context for one canonical workspace explicitly:
 
-Preview or verify without writing:
+```bash
+fkf --base /absolute/path/to/brain harness print codex --workspace /absolute/path/to/work
+fkf --base /absolute/path/to/brain harness install claude codex gemini kiro --workspace /absolute/path/to/work
+```
+
+Preview and check use the same selection:
 
 ```bash
 fkf --base /absolute/path/to/brain harness install --all --dry-run
 fkf --base /absolute/path/to/brain harness install --all --check
+fkf --base /absolute/path/to/brain status --live
 ```
 
-`--check` exits 1 when any selected entry or skills link is missing or points at another base. A current configuration exits 0.
+The installer preserves unrelated entries, preflights every target before writing, writes atomically, and saves the immediately previous file as `<path>.fkf.bak`. Reinstalling the same base and workspace is byte-idempotent. It refuses a scoped key owned by another physical base, an unmanaged command, and overlapping automatic-hook workspaces. A same-named second base must be renamed explicitly in `fkf.yaml`; FKF does not invent suffixes.
 
-The installer:
+An MCP-only reinstall preserves existing workspace hooks. Changing a hook's workspace checks every other base, including Kiro's separate hook files; base names that share a prefix remain independent.
 
-- preserves fields, hook entries, and TOML outside the FKF entry;
-- pins the binary that performed the install instead of resolving `fkf` through a client-specific `PATH`;
-- preflights every selected harness before the first write;
-- refuses an existing `fkf` MCP entry or hook that FKF cannot identify as managed;
-- writes atomically and saves the immediately previous file as `<path>.fkf.bak`;
-- is idempotent: a second current install reports no changes;
-- refuses regular files or unmanaged symlinks at a skills-bridge target.
-
-It does not invoke a harness CLI, start an MCP server, or touch a live session. Restart the harness after installation and use its MCP or hooks view to confirm that it loaded the user configuration.
+`status --live` reports old singleton `fkf` registrations as manual cleanup candidates. Installation does not delete them.
 
 ## Supported harnesses
 
-| Name          | Managed user configuration                                              | Context event or seam                  | Hook output                        |
-| ------------- | ----------------------------------------------------------------------- | -------------------------------------- | ---------------------------------- |
-| `claude`      | `~/.claude.json`, `~/.claude/settings.json`, `~/.claude/skills/`        | `SessionStart`, `startup\|compact`     | plain context                      |
-| `codex`       | `~/.codex/config.toml`, `~/.agents/skills/`                             | `SessionStart`, `startup\|compact`     | `hookSpecificOutput` JSON          |
-| `gemini`      | `~/.gemini/settings.json`, `~/.gemini/skills/`                          | `SessionStart`, `startup\|compact`     | `hookSpecificOutput` JSON          |
-| `copilot`     | `~/.copilot/mcp-config.json`, `~/.copilot/hooks/`, `~/.copilot/skills/` | `sessionStart`                         | ignored; see limitation below      |
-| `antigravity` | `~/.gemini/config/{mcp_config,hooks}.json`, Antigravity CLI skills      | `PreInvocation`, invocation zero       | `injectSteps` JSON                 |
-| `opencode`    | `~/.config/opencode/{opencode.json,plugins/}`, `~/.agents/skills/`      | first system transform in each session | plain context consumed by plugin   |
-| `grok`        | `~/.grok/{config.toml,hooks/,skills/}`                                  | `SessionStart`, `startup\|compact`     | plain output; see limitation below |
-| `cursor`      | `~/.cursor/{mcp.json,hooks.json,skills/}`                               | `sessionStart`                         | `additional_context` JSON          |
-| `kiro`        | `~/.kiro/{settings/mcp.json,hooks/,skills/}`                            | `SessionStart`                         | plain context                      |
-| `cline`       | `~/.cline/{data/settings,skills/,hooks/}`                               | `TaskStart`                            | `contextModification` JSON         |
+| Name          | MCP configuration                                       | Automatic context with `--workspace` |
+| ------------- | ------------------------------------------------------- | ------------------------------------ |
+| `claude`      | `~/.claude.json`                                        | `SessionStart`                       |
+| `codex`       | `~/.codex/config.toml`                                  | `SessionStart`                       |
+| `gemini`      | `~/.gemini/settings.json`                               | `SessionStart`                       |
+| `copilot`     | `~/.copilot/mcp-config.json`                            | MCP-only; lifecycle output ignored   |
+| `antigravity` | `~/.gemini/config/mcp_config.json`                      | MCP-only; passive output ignored     |
+| `opencode`    | `~/.config/opencode/opencode.json`                      | MCP-only; no stable passive seam     |
+| `grok`        | `~/.grok/config.toml`                                   | MCP-only; passive output ignored     |
+| `cursor`      | `~/.cursor/mcp.json`                                    | MCP-only; no per-base user hook      |
+| `kiro`        | `~/.kiro/settings/mcp.json`, `~/.kiro/hooks/<key>.json` | `SessionStart`                       |
+| `cline`       | `~/.cline/data/settings/cline_mcp_settings.json`        | MCP-only; one global hook filename   |
 
-On `startup`, Claude receives yesterday's digest with a 600-token budget plus a repository pack with an 850-token budget. A `compact` start skips yesterday and receives only a 600-token repository reminder because the harness already carries its own conversation summary.
+No adapter creates a user-scope link to one base's embedded skills. The three skills remain under `<base>/.agents/skills/`. If a harness needs shared discovery, install a neutral FKF skill separately and require it to select the base by name; it must not infer a base from the skill's own path.
 
-Antigravity has no session-start hook. Its documented `PreInvocation` integration runs before model calls, so the FKF adapter emits context only when `invocationNum` is zero. OpenCode similarly has no session-start context-output event: the managed local plugin calls the same adapter once per session from its documented system-transform hook.
-
-Copilot CLI runs the personal `sessionStart` hook, but that event ignores command output. FKF therefore installs it as a visible lifecycle integration without claiming context injection; MCP and the three skills are the supported retrieval paths.
-
-### Grok limitation
-
-Grok 1.0.5 discovers and runs the installed `SessionStart` hook, but its installed hooks guide says passive-hook stdout is ignored. The adapter emits a tested plain pack, but that Grok release does not add it to the model context. The installed MCP server remains the supported retrieval path. This is a harness limitation, not evidence that automatic context injection was verified.
+Provider account selection belongs to the process that launches collection. For example, a team collector may export `GH_CONFIG_DIR=~/.config/gh-team` before `fkf sync`; ACLI keeps its selected Jira site in its own machine-local configuration. Neither value belongs in `fkf.yaml`, an MCP registration, or a workspace hook.
 
 ## Read-only MCP boundary
 
-Every harness ultimately launches the same stdio server:
+A base named `brain` registers this shape under `fkf-brain`:
 
 ```json
 {
@@ -82,28 +69,17 @@ Every harness ultimately launches the same stdio server:
 }
 ```
 
-The launch line is the disclosure boundary: it says exactly which base that client may read. The server exposes no `sync`, body fetch, shell, mutation, or Git audit. MCP does not train the model or copy the whole base into its prompt; the agent calls bounded retrieval tools when needed.
+The server title, instructions, result metadata, resources, and delivery receipts name the selected base. Stored item URIs remain relative JSON values, while model-facing text qualifies citations as `fkf://brain/<relative-uri>`. The server exposes no sync, body fetch, shell, mutation, or Git audit.
 
 ## Context-hook boundary
 
-`fkf init` owns `bin/fkf-hook.sh`. The installer writes a fail-open guard that asks the pinned binary to run `trust --check` before pointing the harness at that absolute script and passing the binary as its second argument. A symlinked hook is refused during installation. The script's parent directory determines the base. The hook reads the harness event on stdin, derives a strict GitHub `owner/name` plus branch from the working repository, then combines these bounded offline reads on startup:
+The managed hook command pins the FKF executable, physical base, and physical workspace. It checks execution trust before dispatching `<base>/bin/fkf-hook.sh`. The hook accepts only the host event's cwd or workspace field, resolves it physically, and emits nothing unless it is the configured workspace or a descendant. Missing or malformed input, sibling-prefix paths, and symlink escapes produce the host's empty envelope.
 
-```bash
-/absolute/path/to/fkf day yesterday --base <hook-parent> --budget 600 --format text
-/absolute/path/to/fkf context --base <hook-parent> --budget 850 --format text -- "<owner/name> <branch>"
-```
+On startup it reads yesterday with 600 tokens and repository context with 850 tokens. Claude compact starts skip yesterday and use a 600-token repository reminder. The repository query is the exact `repo:github.com/owner/name` identity projected from the GitHub origin. Branch names do not become retrieval terms; without a valid repository identity, the hook omits repository context. Every FKF call includes `--base`; the hook never collects, fetches a body, or uses ambient cwd as session identity.
 
-Compact starts omit the day read and use a 600-token repository budget.
+Workspace scope prevents accidental context injection into another checkout. It is not an execution sandbox. Overlapping scopes are rejected because the host cannot reliably distinguish which base should inject context.
 
-The hook is deliberately fail-open:
-
-- It dispatches no base-owned executable when execution trust is missing or stale.
-- It ignores the inherited `PATH` and searches only conventional user and OS-managed locations.
-- It prints the harness's empty envelope and exits successfully when no repository, pinned FKF binary, or usable pack is available.
-- It never runs source collection or body commands.
-- Its result is evidence, not instructions.
-
-Repository tests pin every supported output envelope, the empty responses, Claude's compact budget, the Antigravity first-call gate, the repository-name parser, the closed `PATH`, and unknown-harness failure. These tests prove FKF's adapter bytes. They do not prove that a newly released harness still consumes those bytes; use the harness's own MCP and hook diagnostics after an upgrade.
+Repository tests exercise exact envelopes, the explicit workspace boundary, physical path escapes, closed `PATH`, pinned executable, repository-name projection, coexistence, conflict handling, rollback, and idempotence. They do not launch a harness; after an upgrade, inspect the harness's own MCP and hook diagnostics.
 
 ## Collected local metadata
 
@@ -120,6 +96,6 @@ When enabled, the bundled `agent-sessions.sh` and `agent-memory-files.sh` collec
 
 A session record contains its id, first activity time inside the collected day, harness, working directory, branch, canonical repository identifier when available, and harness-authored title. A file timestamp is never substituted for missing activity evidence.
 
-The separate `agent-session-traces` source reads only `~/.agents/sessions/v1`, the normalized append-only store shared across harnesses. For each newest complete session generation in the requested window it imports bounded user requests, changed paths from `git status`, verification-looking lines from the last assistant message, harness, and model into one task skeleton. It makes no model call, reads no changed file content, refuses links in the store, and never overwrites an existing trace. The personal preset enables it; the team preset leaves it disabled because session prose may cross a shared-base privacy boundary.
+The separate `agent-session-traces` source reads only `~/.agents/sessions/v1`, the normalized append-only store shared across harnesses. For each newest complete session generation in the requested window it projects bounded user requests, changed paths from `git status`, verification-looking lines from the last assistant message, harness, and model into ordinary JSON event records. It makes no model call, reads no changed file content, and refuses links in the store. Collection never creates or overwrites `tasks/` pages. The personal preset enables this source; the team preset leaves it disabled because session prose may cross a shared-base privacy boundary.
 
-A nightly learning routine belongs to an owner-scheduled agent, not to FKF. That agent may sync, inspect the day's task traces and cached memory bodies, and stage `.agents/tmp/learn/*.diff`; it must stop at `fkf learn review <id> --diff` until the owner approves or rejects the exact diff.
+A nightly learning routine belongs to an owner-scheduled agent, not to FKF. That agent may sync, inspect authored task traces, JSON session evidence, and cached memory bodies, and stage `.agents/tmp/learn/*.diff`; it must stop at `fkf learn review <id> --diff` until the owner approves or rejects the exact diff.

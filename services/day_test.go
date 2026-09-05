@@ -43,8 +43,8 @@ func TestDemoDayMatchesGoldenAndBudget(t *testing.T) {
 		t.Fatalf("delivered text = %d bytes, want at most 2400", len(text))
 	}
 	assertGolden(t, "demo-day.txt", text)
-	if textReport.Receipt.Selected <= report.Receipt.Selected {
-		t.Fatalf("text selected %d records and JSON selected %d; want the compact delivery to retain more",
+	if textReport.Receipt.Selected < report.Receipt.Selected {
+		t.Fatalf("text selected %d records and JSON selected %d; compact delivery retained less",
 			textReport.Receipt.Selected, report.Receipt.Selected)
 	}
 

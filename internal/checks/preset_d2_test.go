@@ -17,7 +17,9 @@ func TestReviewedPresetHelpersAnswerVersionWithoutProviderExecution(t *testing.T
 	for _, name := range []string{
 		"rss-json.sh", "chrome-bookmarks.sh", "gh-runs.sh", "github-commits-json.sh",
 		"github-events-json.sh", "github-generic-list-json.sh", "github-gists-json.sh",
-		"github-stars-json.sh", "gws-calendars-json.sh", "gws-chat-messages.sh",
+		"github-search-json.sh", "github-stars-json.sh", "gws-calendars-json.sh", "gws-chat-messages.sh",
+		"jira-issues-json.sh",
+		"repository-facts.py",
 		"gws-calendar-body.sh", "gws-chat-message-body.sh", "kaggle-competitions-json.sh", "kaggle-datasets-json.sh",
 		"kaggle-json.sh", "kaggle-kernels-json.sh", "kaggle-models-json.sh",
 		"huggingface-repositories-json.sh", "mise-tools-json.sh", "agent-prompts.sh",

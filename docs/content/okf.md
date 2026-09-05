@@ -183,7 +183,7 @@ Optional `valid_from` and `valid_until` frontmatter values are inclusive absolut
 
 ## Task traces
 
-`tasks/YYYY-MM-DD/<slug>/TASKS.md` is the evidence layer: one trace per session, with a `## <n>. <request>` section per instruction — the request, a concise step trace, changed-file paths, verification commands seen, and the last assistant message — plus a closing `## Learned` list the `learn` skill harvests. The personal preset's `agent-session-traces` source creates these skeletons from the harness-independent session store without a model call. Captured prose is rendered as inert code, the helper never reads changed file contents, and an existing trace is never overwritten. An instruction is addressable by its heading anchor. A trace has no required frontmatter and no validator because it is evidence written under time pressure. Its title comes from the first heading, authored links enter the graph like any other page, and `fkf context` ranks it alongside records.
+`tasks/YYYY-MM-DD/<slug>/TASKS.md` is the authored execution-evidence layer. A trace may record a request, concise work notes, changed paths, exact verification, citations, and a closing `## Learned` list for the learn skill. Existing imported transcript pages remain readable historical evidence and identify their imported origin; future session collection writes ordinary JSON records under `events/` and never creates or updates task Markdown. An instruction is addressable by its heading anchor. A trace has no required frontmatter and no validator because it is written under time pressure. Its title comes from the first heading, explicit links enter the graph like any other page, and `fkf context` ranks it alongside records.
 
 All three bundled skills are written into every base at `.agents/skills/` by `fkf init`, and refreshed by running `init` again. Bases also receive `.claude/skills -> ../.agents/skills` when that path is absent, so Claude reads the same packages rather than a copy. The use skill reads. The learn skill writes only ignored proposal diffs; every durable log, concept, or project change waits for an explicit `fkf learn apply <id>`. The daily-brief skill narrates the bounded report. `fkf learn propose --dry-run` lists trace-citing log candidates without creating the proposal queue.
 
@@ -193,3 +193,7 @@ fkf list wiki && fkf list projects --status active
 fkf learn propose --dry-run
 fkf learn review <id> --diff
 ```
+
+## Skill evolution
+
+Durable knowledge and executable procedure stay separate. Skill changes use ordinary Git review; `fkf learn` never edits a skill. When an external evaluation justifies a change, retain only its compact outcome in an authored page: evidence URIs, fixed baseline and candidate identities, measured result, decision, and reconsideration condition. Trial design and model execution belong to the agent host's evaluation workflow, outside FKF's deterministic retrieval evaluator.

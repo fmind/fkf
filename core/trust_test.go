@@ -580,6 +580,16 @@ sources:
 	}
 }
 
+func TestTrustSourceDigestCoversPerSourceFreshness(t *testing.T) {
+	first, second := 24, 48
+	without := &Source{Name: "source", Layer: LayerIndex, Run: []string{"collect"}}
+	withFirst := &Source{Name: "source", Layer: LayerIndex, Run: []string{"collect"}, MaxAgeHours: &first}
+	withSecond := &Source{Name: "source", Layer: LayerIndex, Run: []string{"collect"}, MaxAgeHours: &second}
+	if sourceDigest(without) == sourceDigest(withFirst) || sourceDigest(withFirst) == sourceDigest(withSecond) {
+		t.Fatal("source freshness policy is absent from the execution trust digest")
+	}
+}
+
 func TestTrustSourceDigestCoversSourceTestHook(t *testing.T) {
 	without := &Source{Name: "source", Run: []string{"collect.sh"}}
 	with := &Source{Name: "source", Run: []string{"collect.sh"}, Test: []string{"collect.sh", "--test"}}

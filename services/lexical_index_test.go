@@ -250,8 +250,10 @@ func TestContextRejectsSameFingerprintLookupCorruption(t *testing.T) {
 	// this from looking like an authenticated absence and silently omitting candidates.
 	const original = "retrieval"
 	replacement := sameLexicalLookupShard(t, original)
-	originalKey := base64.RawURLEncoding.EncodeToString([]byte("T\x00" + original))
-	replacementKey := base64.RawURLEncoding.EncodeToString([]byte("T\x00" + replacement))
+	originalDigest := sha256.Sum256([]byte("T\x00" + original))
+	replacementDigest := sha256.Sum256([]byte("T\x00" + replacement))
+	originalKey := base64.RawURLEncoding.EncodeToString(originalDigest[:16])
+	replacementKey := base64.RawURLEncoding.EncodeToString(replacementDigest[:16])
 	lookup := data[report.Meta.LookupOffset:report.Meta.CandidatesOffset]
 	position := bytes.Index(lookup, []byte("L\t"+originalKey+"\t"))
 	if position < 0 {

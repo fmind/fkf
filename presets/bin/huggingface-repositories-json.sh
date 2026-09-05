@@ -8,70 +8,54 @@ case "${1:-}" in
   *) echo "usage: huggingface-repositories-json.sh" >&2; exit 2 ;;
 esac
 
-hf_bin=$(command -v hf) || {
-  echo "huggingface-repositories-json.sh: hf is required" >&2
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/fkf-huggingface-repositories.XXXXXX")
+trap 'rm -rf -- "${work_dir}"' EXIT
+trap 'exit 1' HUP INT TERM
+raw=${work_dir}/raw.json
+projected=${work_dir}/projected.json
+
+# Capture the native CLI completely before validating or printing anything. A provider failure
+# after partial stdout must never become durable prefix evidence.
+if ! hf repos ls --limit 10001 --format json >"${raw}"; then
+  echo "huggingface-repositories-json.sh: cannot prove a complete repository inventory" >&2
   exit 1
-}
-python=$(sed -n '1s/^#!//p' "${hf_bin}")
-case "${python}" in
-  /*) ;;
-  *) echo "huggingface-repositories-json.sh: cannot resolve hf's Python interpreter" >&2; exit 1 ;;
-esac
-[ -x "${python}" ] || {
-  echo "huggingface-repositories-json.sh: hf's Python interpreter is not executable" >&2
+fi
+
+if ! jq -ce '
+  def prefix:
+    if . == "model" then ""
+    elif . == "dataset" then "datasets/"
+    elif . == "space" then "spaces/"
+    elif . == "bucket" then "buckets/"
+    else error("unknown repository type")
+    end;
+  if type != "array" or length > 10000 then
+    error("repository ceiling reached")
+  else
+    map(
+      if (.id | type != "string" or length == 0)
+        or (.type | type != "string")
+        or ((.updated? // "") | type != "string")
+        or ((.visibility? // "") | type != "string")
+      then error("invalid repository metadata")
+      else {
+        uid: (.type + ":" + .id),
+        id,
+        type,
+        updated: (.updated // ""),
+        visibility: (.visibility // ""),
+        url: ("https://huggingface.co/" + (.type | prefix) + .id)
+      }
+      end
+    )
+    | if ([.[].uid] | length) != ([.[].uid] | unique | length)
+      then error("duplicate repository identity")
+      else sort_by(.id, .type)
+      end
+  end
+' "${raw}" >"${projected}"; then
+  echo "huggingface-repositories-json.sh: cannot prove a complete repository inventory" >&2
   exit 1
-}
+fi
 
-"${python}" - <<'PY'
-import itertools
-import json
-import sys
-
-from huggingface_hub import HfApi
-
-MAX_REPOSITORIES = 10_000
-PREFIX = {
-    "model": "",
-    "dataset": "datasets/",
-    "space": "spaces/",
-    "bucket": "buckets/",
-}
-
-try:
-    repositories = list(
-        itertools.islice(HfApi().list_user_repos(), MAX_REPOSITORIES + 1)
-    )
-    if len(repositories) > MAX_REPOSITORIES:
-        raise RuntimeError("repository ceiling reached; refusing a prefix")
-
-    records = []
-    for repository in repositories:
-        if repository.type not in PREFIX:
-            raise RuntimeError("provider returned an unknown repository type")
-        if not isinstance(repository.id, str) or not repository.id:
-            raise RuntimeError("provider returned a repository without an id")
-        records.append(
-            {
-                "uid": repository.type + ":" + repository.id,
-                "id": repository.id,
-                "type": repository.type,
-                "updated": repository.updated_at.date().isoformat(),
-                "visibility": repository.visibility,
-                "storageBytes": repository.storage,
-                "url": "https://huggingface.co/" + PREFIX[repository.type] + repository.id,
-            }
-        )
-
-    ids = [record["uid"] for record in records]
-    if len(ids) != len(set(ids)):
-        raise RuntimeError("provider returned duplicate repository ids")
-    records.sort(key=lambda record: record["id"])
-    json.dump(records, sys.stdout, separators=(",", ":"))
-    sys.stdout.write("\n")
-except Exception as error:
-    print(
-        f"huggingface-repositories-json.sh: collection failed ({type(error).__name__})",
-        file=sys.stderr,
-    )
-    raise SystemExit(1) from None
-PY
+cat "${projected}"

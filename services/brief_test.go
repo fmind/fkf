@@ -18,87 +18,58 @@ schema:
   id: {description: Stable record identity., cardinality: one}
   time: {description: Event time., cardinality: one}
   title: {description: Human title., cardinality: optional}
-  url: {description: Provider URL., cardinality: optional}
   owner: {description: Assigned owner., cardinality: many, relation: true}
   repository: {description: Repository., cardinality: optional, relation: true}
 identities:
   owner:
     canonical: person:email/owner@example.test
-    aliases: [actor:github.com/owner]
+    aliases: [actor:code.example/owner]
     owner: true
 layers: {events: true, index: true, tasks: true, projects: true, wiki: true}
 sources:
-  google-calendar-agenda:
-    enabled: true
-    layer: index
-    run: [provider, agenda, "{{start}}", "{{end}}", "{{date}}", "{{next_date}}"]
-    fields: {id: .id, time: .time, title: .title}
-  google-calendar-events:
+  schedule-events:
     enabled: true
     layer: events
-    run: [provider, calendar]
+    run: [provider, schedule]
     auth: [provider, login]
     fields: {id: .id, time: .time, title: .title}
-  github-pull-requests:
+  work-items:
     enabled: true
     layer: events
-    run: [provider, prs]
-    fields: {id: .url, time: .time, title: .title, url: .url, owner: [".assignee_uris[]"]}
-  github-issues:
-    enabled: true
-    layer: events
-    run: [provider, issues]
-    fields: {id: .url, time: .time, title: .title, url: .url, owner: [".assignee_uris[]"]}
-  github-runs:
-    enabled: true
-    layer: events
-    run: [provider, runs]
-    fields: {id: .url, time: .time, title: .title, url: .url, repository: .repository_uri}
-  google-tasks-items:
-    enabled: true
-    layer: events
-    run: [provider, tasks]
-    fields: {id: .uid, time: .updated, title: .title, url: .webViewLink}
+    run: [provider, work]
+    fields: {id: .id, time: .updated, title: .summary, owner: [".owners[]"]}
   stale-feed:
     enabled: true
-    layer: events
+    layer: index
     run: [provider, stale]
+    max_age_hours: 12
     fields: {id: .id, time: .time, title: .title}
 `
 
-func TestSyncPopulatesTodaysCalendarFromTheCurrentAgendaSnapshot(t *testing.T) {
-	runner := &fakeRunner{responses: map[string]string{
-		"provider agenda": `[{"id":"today","time":"2026-05-10T14:00:00Z","title":"Current agenda"}]`,
-	}}
-	base := newBase(t, briefConfig, runner)
+func TestBriefIsOfflineEvenForATrustedBaseWithAuthCommands(t *testing.T) {
+	base := newBase(t, briefConfig, &fakeRunner{})
+	collectBriefSource(t, base, "schedule-events", "2026-05-10",
+		`[{"id":"today","time":"2026-05-10T14:00:00Z","title":"Current planning"}]`)
 	trust(t, base)
-	report, err := services.Sync(t.Context(), base, services.SyncRequest{
-		Targets: []string{"google-calendar-agenda"}, Days: 1, NoGraph: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Written != 1 || len(runner.calls) != 1 {
-		t.Fatalf("agenda sync = %+v, calls=%d; want one current snapshot", report, len(runner.calls))
-	}
-	wantWindow := "2026-05-10T00:00:00Z 2026-05-11T00:00:00Z 2026-05-10 2026-05-11"
-	if !strings.Contains(runner.calls[0].Display(), wantWindow) {
-		t.Fatalf("agenda command = %q, want current local-day placeholders %q", runner.calls[0].Display(), wantWindow)
-	}
+	runner := &fakeRunner{err: authExitFailure{}}
+	base.Runner = runner
 
-	brief, err := services.Brief(t.Context(), base, services.BriefRequest{Budget: 4096})
+	report, err := services.Brief(t.Context(), base, services.BriefRequest{Budget: 4096})
 	if err != nil {
 		t.Fatal(err)
 	}
-	section := briefSection(t, brief, "today_calendar")
-	if section.Total != 1 || section.Items[0].Title != "Current agenda" {
-		t.Fatalf("today calendar = %+v, want the synced agenda snapshot", section)
+	if len(runner.calls) != 0 {
+		t.Fatalf("brief executed %d provider command(s); readiness belongs to status --live", len(runner.calls))
+	}
+	section := briefSection(t, report, "today")
+	if section.Total != 1 || section.Items[0].Title != "Current planning" {
+		t.Fatalf("today = %+v, want stored evidence without a provider call", section)
 	}
 }
 
-func TestBriefReturnsAnEmptyCalendarWhenNoCalendarSourceIsDeclared(t *testing.T) {
+func TestBriefReturnsEmptyRecentSectionsWithoutEventEvidence(t *testing.T) {
 	const config = `fkf: 1
-name: no-calendar
+name: empty-brief
 schema:
   id: {description: Stable record identity., cardinality: one}
   time: {description: Event time., cardinality: one}
@@ -110,9 +81,11 @@ sources: {}
 	if err != nil {
 		t.Fatal(err)
 	}
-	section := briefSection(t, report, "today_calendar")
-	if section.Total != 0 || len(section.Items) != 0 {
-		t.Fatalf("calendar section = %+v, want a valid empty section", section)
+	for _, name := range []string{"today", "yesterday"} {
+		section := briefSection(t, report, name)
+		if section.Total != 0 || len(section.Items) != 0 {
+			t.Fatalf("%s section = %+v, want a valid empty section", name, section)
+		}
 	}
 }
 
@@ -128,20 +101,16 @@ func TestBriefBindsEverySectionToOneEvaluationInstant(t *testing.T) {
 		t.Fatal(err)
 	}
 	if clockReads != 1 || report.Receipt.AsOf != "2026-05-10" {
-		t.Fatalf("clock reads = %d, receipt = %+v; want one shared evaluation instant", clockReads, report.Receipt)
+		t.Fatalf("clock reads = %d receipt=%+v; want one shared evaluation instant", clockReads, report.Receipt)
 	}
 }
 
-func TestBriefComposesTheDailyControlSurfaceAndReceipt(t *testing.T) {
+func TestBriefComposesGenericEvidenceAuthoredWorkAndReceipt(t *testing.T) {
 	base := newBase(t, briefConfig, &fakeRunner{})
-	collectBriefSource(t, base, "google-calendar-events", "2026-05-10",
+	collectBriefSource(t, base, "schedule-events", "2026-05-10",
 		`[{"id":"meeting","time":"2026-05-10T09:00:00Z","title":"Daily planning"}]`)
-	collectBriefSource(t, base, "github-pull-requests", "2026-05-09",
-		`[{"url":"https://github.com/fmind/fkf/pull/7","time":"2026-05-09T10:00:00Z","title":"Finish delta packs","state":"OPEN","assignee_uris":["actor:github.com/owner"]}]`)
-	collectBriefSource(t, base, "github-issues", "2026-05-09",
-		`[{"url":"https://github.com/fmind/fkf/issues/8","time":"2026-05-09T11:00:00Z","title":"Already done","state":"CLOSED","assignee_uris":["actor:github.com/owner"]}]`)
-	collectBriefSource(t, base, "github-runs", "2026-05-09",
-		`[{"url":"https://github.com/fmind/fkf/actions/runs/9","time":"2026-05-09T12:00:00Z","title":"test","workflowName":"test","conclusion":"failure","repository_uri":"repo:github.com/fmind/fkf"}]`)
+	collectBriefSource(t, base, "work-items", "2026-05-09",
+		`[{"id":"work-7","updated":"2026-05-09T10:00:00Z","summary":"Finish bounded delivery","owners":["actor:code.example/owner"]}]`)
 	write(t, base, "tasks/2026-05-10/delta/TASKS.md", `---
 title: Finish the daily brief
 status: active
@@ -168,25 +137,24 @@ tags: [fkf]
 		t.Fatal(err)
 	}
 	trust(t, base)
-	base.Runner = &fakeRunner{err: authExitFailure{}}
+	runner := &fakeRunner{err: authExitFailure{}}
+	base.Runner = runner
 
 	report, err := services.Brief(t.Context(), base, services.BriefRequest{Budget: 4096})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for name, minimum := range map[string]int{
-		"attention": 3, "today_calendar": 1, "tasks_due": 1, "failing_ci": 1,
-		"open_items": 1, "yesterday": 1, "active_projects": 1,
+		"attention": 1, "today": 1, "tasks_due": 1, "yesterday": 1, "active_projects": 1,
 	} {
 		section := briefSection(t, report, name)
 		if section.Total < minimum || len(section.Items) < minimum {
 			t.Fatalf("section %s = %+v, want at least %d complete item(s)", name, section, minimum)
 		}
 	}
-	if report.Receipt.Owner != "person:email/owner@example.test" || !report.Receipt.AuthChecked ||
-		!strings.Contains(strings.Join(report.Receipt.AuthRequired, " "), "google-calendar-events") ||
-		report.Receipt.Unharvested != 1 || report.Receipt.InputDigest == "" {
-		t.Fatalf("receipt = %+v", report.Receipt)
+	if len(runner.calls) != 0 || report.Receipt.Owner != "person:email/owner@example.test" ||
+		report.Receipt.Unharvested != 1 || report.Receipt.InputDigest == "" || report.Receipt.BriefVersion != 2 {
+		t.Fatalf("runner calls=%d receipt=%+v", len(runner.calls), report.Receipt)
 	}
 	encoded, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
@@ -195,6 +163,28 @@ tags: [fkf]
 	if len(encoded)+1 > report.Receipt.Budget*4 || len(services.RenderBriefText(report)) > report.Receipt.Budget*4 {
 		t.Fatalf("brief exceeds budget: json=%d text=%d limit=%d", len(encoded)+1,
 			len(services.RenderBriefText(report)), report.Receipt.Budget*4)
+	}
+}
+
+func TestBriefRecentEvidenceIsProviderNeutral(t *testing.T) {
+	config := func(name string) string {
+		return strings.ReplaceAll(briefConfig, "schedule-events", name)
+	}
+	for _, name := range []string{"alpha-stream", "beta-stream"} {
+		t.Run(name, func(t *testing.T) {
+			base := newBase(t, config(name), &fakeRunner{})
+			collectBriefSource(t, base, name, "2026-05-10",
+				`[{"id":"one","time":"2026-05-10T09:30:00Z","title":"Equivalent planning fact"}]`)
+			report, err := services.Brief(t.Context(), base, services.BriefRequest{Budget: 4096})
+			if err != nil {
+				t.Fatal(err)
+			}
+			section := briefSection(t, report, "today")
+			if section.Total != 1 || section.Items[0].Title != "Equivalent planning fact" ||
+				section.Items[0].Time != "2026-05-10T09:30:00Z" || section.Items[0].Detail != name {
+				t.Fatalf("today = %+v, want projected evidence grouped by its declared source", section)
+			}
+		})
 	}
 }
 
@@ -224,7 +214,6 @@ func TestBriefIncludesANewProjectTouchedThisWeek(t *testing.T) {
 
 func TestBriefReportsARetryableMinimumBudget(t *testing.T) {
 	base := newBase(t, briefConfig, &fakeRunner{})
-	trust(t, base)
 	_, err := services.Brief(t.Context(), base, services.BriefRequest{Budget: 1})
 	var budgetErr *services.BriefBudgetError
 	if !errors.As(err, &budgetErr) || budgetErr.Minimum <= 1 {
@@ -236,29 +225,6 @@ func TestBriefReportsARetryableMinimumBudget(t *testing.T) {
 	}
 	if report.Receipt.UsedTokens > budgetErr.Minimum {
 		t.Fatalf("retry used %d tokens of %d", report.Receipt.UsedTokens, budgetErr.Minimum)
-	}
-}
-
-func TestBriefTasksDueIncludesLatestCollectedGoogleTaskState(t *testing.T) {
-	base := newBase(t, briefConfig, &fakeRunner{})
-	collectBriefSource(t, base, "google-tasks-items", "2026-05-09", `[
-		{"uid":"list~closed","updated":"2026-05-09T08:00:00Z","title":"Old open state","due":"2026-05-10T00:00:00Z","status":"needsAction","webViewLink":"https://tasks.example/closed"},
-		{"uid":"list~active","updated":"2026-05-09T09:00:00Z","title":"Ship FKF","due":"2026-05-10T00:00:00Z","status":"needsAction","webViewLink":"https://tasks.example/active"},
-		{"uid":"list~future","updated":"2026-05-09T10:00:00Z","title":"Future task","due":"2026-05-11T00:00:00Z","status":"needsAction","webViewLink":"https://tasks.example/future"}
-	]`)
-	collectBriefSource(t, base, "google-tasks-items", "2026-05-10", `[
-		{"uid":"list~closed","updated":"2026-05-10T07:00:00Z","title":"Old open state","due":"2026-05-10T00:00:00Z","status":"completed","webViewLink":"https://tasks.example/closed"}
-	]`)
-	trust(t, base)
-
-	report, err := services.Brief(t.Context(), base, services.BriefRequest{Budget: 4096})
-	if err != nil {
-		t.Fatal(err)
-	}
-	section := briefSection(t, report, "tasks_due")
-	if section.Total != 1 || section.Items[0].Title != "Ship FKF" ||
-		!strings.Contains(section.Items[0].Detail, "google-tasks-items") {
-		t.Fatalf("tasks due = %+v, want only the active collected task due today", section)
 	}
 }
 

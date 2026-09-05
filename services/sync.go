@@ -279,9 +279,6 @@ func previewSync(ctx context.Context, base *Base, request SyncRequest) (*SyncRep
 		return nil, err
 	}
 	source := targets[0]
-	if source.Layer == core.LayerTasks {
-		return nil, fmt.Errorf("%w: --preview is unavailable for a tasks source; use --dry-run to inspect its command", core.ErrConfig)
-	}
 	started := base.Now()
 	window := Window{}
 	date := ""
@@ -446,8 +443,7 @@ func previousCompletedDays(now time.Time, count int) ([]time.Time, error) {
 
 // syncWork is one item under the concurrency guard. A `window: true` source's whole requested
 // range is ONE item — one process, one slot — that produces MANY report units when it runs.
-// Task imports are deliberately one item per day: their aggregate byte boundary must not
-// grow with a catch-up window. Every other source keeps the one-item-per-(source,day) shape.
+// Every non-window source keeps the one-item-per-(source,day) shape.
 type syncWork struct {
 	source *core.Source
 	unit   SyncUnit // the single unit to collect; zero when dates is set
@@ -462,10 +458,6 @@ func planUnits(targets []*core.Source, days []time.Time) []syncWork {
 	work := make([]syncWork, 0, len(targets)*max(1, len(days)))
 	for _, source := range targets {
 		switch {
-		case source.Layer == core.LayerTasks:
-			for _, date := range dates {
-				work = append(work, syncWork{source: source, dates: []string{date}})
-			}
 		case source.Layer == core.LayerIndex:
 			work = append(work, syncWork{source: source, unit: SyncUnit{
 				Source: source.Name, Kind: source.Layer, URI: sources.IndexDocumentURI(source.Name),
@@ -487,12 +479,6 @@ func planUnits(targets []*core.Source, days []time.Time) []syncWork {
 func syncWorkDue(
 	ctx context.Context, base *Base, item syncWork, request SyncRequest,
 ) (bool, error) {
-	if item.source.Layer == core.LayerTasks {
-		if request.Force {
-			return len(item.dates) > 0, nil
-		}
-		return taskTraceRangeDue(base, item.source.Name, item.dates)
-	}
 	if item.dates == nil {
 		skip, _, err := shouldSkip(ctx, base, item.source, item.unit, request)
 		if err != nil || !skip {
@@ -595,9 +581,7 @@ func runUnitPhase(
 				return
 			}
 			var results []SyncUnit
-			if item.source.Layer == core.LayerTasks {
-				results = []SyncUnit{collectTaskTraceRange(ctx, base, item.source, item.dates, request, pacer, auth)}
-			} else if item.dates != nil {
+			if item.dates != nil {
 				results = collectRangeGroup(ctx, base, item.source, item.dates, request, pacer, auth)
 			} else {
 				results = []SyncUnit{collectUnit(ctx, base, item.source, item.unit, request, pacer, auth)}
@@ -616,91 +600,6 @@ func runUnitPhase(
 	}
 	waiting.Wait()
 	return ctx.Err()
-}
-
-func collectTaskTraceRange(
-	ctx context.Context, base *Base, source *core.Source, dates []string,
-	request SyncRequest, pacer *sources.Pacer, auth *authProbeCache,
-) SyncUnit {
-	started := base.Now()
-	unit := SyncUnit{Source: source.Name, Kind: core.LayerTasks, URI: string(core.LayerTasks) + "/"}
-	if len(dates) == 0 {
-		unit.Outcome = OutcomeSkipped
-		return unit
-	}
-	unit.Date = dates[0]
-	window, err := windowSpanning(dates, started.Location())
-	if err != nil {
-		unit.Outcome, unit.Error = OutcomeFailed, err.Error()
-		return unit
-	}
-	spanSource := sourceWithWindowTimeout(source, base.Config.Sync.Timeout, len(dates))
-	command, err := sources.BuildRunCommand(spanSource, base.Env, window, base.Config.Sync.Timeout)
-	if err != nil {
-		unit.Outcome, unit.Error = OutcomeFailed, err.Error()
-		return unit
-	}
-	unit.Command = command.Display()
-	if request.DryRun {
-		unit.Outcome = OutcomePlanned
-		return unit
-	}
-	if !request.Force {
-		due, err := taskTraceRangeDue(base, source.Name, dates)
-		if err != nil {
-			unit.Outcome, unit.Error = OutcomeFailed, err.Error()
-			return unit
-		}
-		if !due {
-			unit.Outcome = OutcomeSkipped
-			return unit
-		}
-	}
-	ready, err := auth.ready(ctx, source)
-	if err != nil {
-		unit.Outcome, unit.Error = OutcomeFailed, err.Error()
-		return unit
-	}
-	if !ready {
-		unit.Outcome, unit.Command = OutcomeAuthRequired, ""
-		return unit
-	}
-	runner := sources.NewPolicyRunner(sources.NewPacingRunner(base.Runner, pacer, spanSource), spanSource)
-	stdout, err := runner.Run(ctx, command)
-	if attempts := runner.Attempts(); attempts > 1 {
-		unit.Attempts = attempts
-	}
-	if err != nil {
-		unit.Outcome, unit.Error = OutcomeFailed, err.Error()
-		unit.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
-		return unit
-	}
-	result, err := ImportSessionTraces(ctx, base, source, stdout, window)
-	if err != nil {
-		unit.Outcome, unit.Error = OutcomeFailed, err.Error()
-		unit.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
-		return unit
-	}
-	if err := checkContext(ctx); err != nil {
-		rollbackErr := rollbackImportedSessionTraces(base, result)
-		unit.Outcome, unit.Error = OutcomeFailed, errors.Join(err, rollbackErr).Error()
-		unit.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
-		return unit
-	}
-	if err := markTaskTraceRange(ctx, base, source.Name, dates, started.Location()); err != nil {
-		rollbackErr := rollbackImportedSessionTraces(base, result)
-		unit.Outcome, unit.Error = OutcomeFailed, errors.Join(err, rollbackErr).Error()
-		unit.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
-		return unit
-	}
-	unit.Count = result.Written
-	if result.Written == 0 {
-		unit.Outcome = OutcomeSkipped
-	} else {
-		unit.Outcome = OutcomeWritten
-	}
-	unit.Elapsed = base.Now().Sub(started).Round(time.Millisecond).String()
-	return unit
 }
 
 func collectUnit(
@@ -1005,7 +904,7 @@ func shouldSkip(ctx context.Context, base *Base, source *core.Source, unit SyncU
 	if err != nil {
 		return false, "", fmt.Errorf("inspect existing index snapshot %s: %w; use --force to replace it", unit.URI, err)
 	}
-	maxAge := time.Duration(base.Config.Sync.IndexMaxAgeHours) * time.Hour
+	maxAge := time.Duration(source.EffectiveMaxAgeHours(base.Config.Sync.IndexMaxAgeHours)) * time.Hour
 	age := base.Now().Sub(collectedAt)
 	if age >= 0 && age < maxAge {
 		return true, OutcomeFresh, nil

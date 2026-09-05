@@ -39,7 +39,7 @@ func newLearnCommand() *cli.Command {
 				Name: "apply", Aliases: []string{"a"}, Usage: "Validate, apply, and archive one reviewed proposal." + markWrite,
 				ArgsUsage: "<proposal>",
 				Description: "Accepts only unified diffs against flat wiki/*.md and projects/*.md pages. It rolls back on " +
-					"patch mismatch, strict validation failure, rebuild failure, or archive failure.",
+					"patch mismatch, validation failure, or archive failure. A cache failure leaves the approved edit applied; run fkf build or repeat apply to repair it.",
 				Action: runLearnApply,
 			},
 			{
@@ -115,18 +115,22 @@ func runLearnReject(ctx context.Context, cmd *cli.Command) error {
 
 func emitLearn(cmd *cli.Command, result any, err error) error {
 	if err != nil {
-		return err
+		if report, ok := result.(*services.LearnActionReport); !ok || report == nil {
+			return err
+		}
 	}
+	var outputErr error
 	switch cmd.Root().String("format") {
 	case formatJSONL:
-		return writeJSONLines(cmd.Root().Writer, result)
+		outputErr = writeJSONLines(cmd.Root().Writer, result)
 	case formatText:
 		writer := &textWriter{out: cmd.Root().Writer}
 		writeLearnText(writer, result)
-		return writer.err
+		outputErr = writer.err
 	default:
-		return writeJSON(cmd.Root().Writer, result)
+		outputErr = writeJSON(cmd.Root().Writer, result)
 	}
+	return errors.Join(err, outputErr)
 }
 
 func writeLearnText(writer *textWriter, result any) {
@@ -164,6 +168,9 @@ func writeLearnText(writer *textWriter, result any) {
 		}
 	case *services.LearnActionReport:
 		writer.printf("%s %s · %s\n", typed.Status, typed.ID, typed.Path)
+		if typed.RebuildError != "" {
+			writer.printf("cache rebuild failed: %s\nrepair: fkf build\n", typed.RebuildError)
+		}
 		if len(typed.Files) > 0 {
 			writer.printf("files: %s\n", strings.Join(typed.Files, ", "))
 		}

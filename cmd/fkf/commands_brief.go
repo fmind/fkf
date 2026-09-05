@@ -14,11 +14,11 @@ func newBriefCommand() *cli.Command {
 		Name: "brief", Category: groupAsk,
 		Usage: "What needs attention today? Build one budgeted daily control surface." + markRun,
 		UsageText: usageLines(
-			[2]string{"fkf brief", "yesterday, today, open work, failures, due tasks, and source health"},
+			[2]string{"fkf brief", "freshness, recent evidence, authored due work, and active projects"},
 			[2]string{"fkf brief --budget 800", "the same receipt under a smaller complete-output budget"},
 		),
-		Description: "Reads stored evidence and authored pages, then runs only the trusted readiness " +
-			"probes declared by enabled sources. It never collects evidence or fetches a body. The JSON " +
+		Description: "Reads stored evidence, source freshness, and authored pages entirely offline. " +
+			"Use `fkf status --live` separately for provider readiness. The JSON " +
 			"and text forms share one receipt and both fit the requested four-bytes-per-token budget.",
 		Flags: []cli.Flag{
 			&cli.IntFlag{Name: "budget", Value: services.DefaultBriefBudget, Usage: "Hard four-bytes-per-token budget for the complete brief."},

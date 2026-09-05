@@ -17,8 +17,8 @@ func TestBriefAndContextDeltaAreWiredThroughTheCLI(t *testing.T) {
 	if err := json.Unmarshal([]byte(brief.stdout), &report); err != nil {
 		t.Fatalf("decode brief: %v\n%s", err, brief.stdout)
 	}
-	if len(report.Sections) != 7 || report.Receipt.InputDigest == "" {
-		t.Fatalf("brief = %+v, want seven sections and a receipt", report)
+	if len(report.Sections) != 5 || report.Receipt.InputDigest == "" {
+		t.Fatalf("brief = %+v, want five provider-neutral sections and a receipt", report)
 	}
 
 	first := invoke(t, "--format", "json", "--base", root, "context", "retrieval", "--budget", "2048")

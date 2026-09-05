@@ -210,7 +210,10 @@ func DescribePolicy(source *core.Source) string {
 	if source == nil {
 		return ""
 	}
-	parts := make([]string, 0, 5)
+	parts := make([]string, 0, 6)
+	if source.MaxAgeHours != nil {
+		parts = append(parts, fmt.Sprintf("index max age %dh", *source.MaxAgeHours))
+	}
 	if source.Window {
 		parts = append(parts, "window: one command for the whole requested range")
 	}

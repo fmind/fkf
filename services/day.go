@@ -34,14 +34,9 @@ const (
 	DigestDeliveryCompactJSON = "json-compact"
 )
 
-// NoisyDigestSources are high-volume activity streams whose individual rows usually add less
-// signal than one truthful count. --all expands them without changing the stored evidence.
-var NoisyDigestSources = map[string]struct{}{
-	"shell-commands":       {},
-	"agent-prompts":        {},
-	"github-runs":          {},
-	"google-drive-changes": {},
-}
+// digestSummaryThreshold applies one provider-neutral volume rule. A base-specific skill can
+// request --all or a named source when its domain makes individual high-volume rows useful.
+const digestSummaryThreshold = 6
 
 // DigestBudgetError names the exact smallest receipt that can be returned for this request.
 // A caller can retry with Minimum without guessing or receiving an over-budget answer.
@@ -80,6 +75,7 @@ type DigestGroup struct {
 
 // DigestReceipt makes a day or timeline answer reproducible and accounts for every omission.
 type DigestReceipt struct {
+	Base                string   `json:"base"`
 	Window              Window   `json:"window"`
 	Budget              int      `json:"budget"`
 	Format              string   `json:"format"`
@@ -132,6 +128,7 @@ type TimelineRequest struct {
 	Budget         int
 	All            bool
 	DeliveryFormat string
+	baseName       string
 }
 
 // Day renders one local calendar day. An omitted date means today; relative names are resolved
@@ -218,6 +215,7 @@ func timelineAt(
 		}
 		records = append(records, record)
 	}
+	request.baseName = base.Config.Name
 	return buildTimelineReport(records, request, window, now, resolver)
 }
 
@@ -421,7 +419,7 @@ func buildTimelineReport(
 		Groups: groupDigestRecords(records, request.All), People: people, Repositories: repositories,
 		peoplePriority: peoplePriority, repositoryPriority: repositoryPriority,
 		Receipt: DigestReceipt{
-			Window: window, Budget: budget, Format: request.DeliveryFormat,
+			Base: request.baseName, Window: window, Budget: budget, Format: request.DeliveryFormat,
 			Records: len(records), AsOf: now.Format(time.DateOnly),
 			People: len(people), Repositories: len(repositories),
 			Sources: append([]string(nil), request.Sources...), Repository: request.Repository,
@@ -432,7 +430,7 @@ func buildTimelineReport(
 		report.Receipt.AroundWindow = request.Around.String()
 	}
 	report.Receipt.InputDigest = digestReportInput(
-		records, request, window, report.Receipt.AsOf, people, repositories,
+		request.baseName, records, request, window, report.Receipt.AsOf, people, repositories,
 	)
 	minimum := minimumTimelineBudget(report)
 	if budget < minimum {
@@ -456,12 +454,15 @@ func groupDigestRecords(records []FindRecord, all bool) []DigestGroup {
 	}
 	bySource := map[string]*grouped{}
 	order := make([]*grouped, 0)
-	commitCounts := digestCommitCounts(records)
+	counts := make(map[string]int)
+	for _, record := range records {
+		counts[record.Source]++
+	}
 	for _, record := range records {
 		entry := bySource[record.Source]
 		if entry == nil {
 			entry = &grouped{group: DigestGroup{Source: record.Source}, byTitle: map[string]int{}}
-			if _, noisy := NoisyDigestSources[record.Source]; noisy && !all {
+			if !all && counts[record.Source] >= digestSummaryThreshold {
 				entry.group.Summarized = true
 			}
 			bySource[record.Source] = entry
@@ -471,7 +472,7 @@ func groupDigestRecords(records []FindRecord, all bool) []DigestGroup {
 		if entry.group.Summarized {
 			continue
 		}
-		title, key := digestRecordGrouping(record, all, commitCounts)
+		title, key := digestRecordGrouping(record)
 		priority := digestRecordPriority(record)
 		entry.group.priority = max(entry.group.priority, priority)
 		if index, exists := entry.byTitle[key]; exists {
@@ -495,100 +496,29 @@ func groupDigestRecords(records []FindRecord, all bool) []DigestGroup {
 	return groups
 }
 
-func digestRecordGrouping(record FindRecord, all bool, commitCounts map[string]int) (string, string) {
+func digestRecordGrouping(record FindRecord) (string, string) {
 	title := digestRecordTitle(record)
 	if title == "" {
 		title = record.URI
 	}
-	key := title
-	if !all {
-		if repository, found := digestCommitRepository(record); found &&
-			commitCounts[record.Source+"\x00"+repository] >= 3 {
-			title = strings.TrimPrefix(repository, "repo:github.com/") + " commits"
-			key = "repository:" + repository
-		}
-	}
-	return title, key
+	return title, title
 }
 
 func digestRecordTitle(record FindRecord) string {
-	if title := digestOneLine(record.Title); title != "" {
-		return title
-	}
-	if record.Source != "google-calendar-events" && record.Source != "google-calendar-agenda" {
-		return ""
-	}
-	calendar, ok := record.Record["calendar"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	summary, _ := calendar["summary"].(string)
-	summary = digestOneLine(summary)
-	if summary == "" {
-		return ""
-	}
-	if visibility, _ := record.Record["visibility"].(string); visibility == "private" {
-		return "Busy — " + digestCalendarName(summary)
-	}
-	return summary
-}
-
-func digestCalendarName(summary string) string {
-	if strings.ContainsAny(summary, " \t") {
-		return summary
-	}
-	_, domain, email := strings.Cut(summary, "@")
-	if !email {
-		return summary
-	}
-	label, _, _ := strings.Cut(domain, ".")
-	if label == "" {
-		return summary
-	}
-	return strings.ToUpper(label[:1]) + label[1:]
-}
-
-func digestCommitRepository(record FindRecord) (string, bool) {
-	if record.Source != "git-commits" && record.Source != "github-commits" {
-		return "", false
-	}
-	values := record.Fields["repository"]
-	if len(values) != 1 || !strings.HasPrefix(values[0], "repo:") {
-		return "", false
-	}
-	return values[0], true
-}
-
-func digestCommitCounts(records []FindRecord) map[string]int {
-	counts := map[string]int{}
-	for _, record := range records {
-		if repository, found := digestCommitRepository(record); found {
-			counts[record.Source+"\x00"+repository]++
-		}
-	}
-	return counts
+	return digestOneLine(record.Title)
 }
 
 const digestCorePriority = 300
 
 func digestRecordPriority(record FindRecord) int {
-	priority := 100
-	switch record.Source {
-	case "google-calendar-events", "google-calendar-agenda":
-		priority = 400
-	case "meeting-notes":
-		priority = 425
-	case "git-commits":
-		priority = 350
-	case "github-commits":
-		priority = 250
-	}
-	if eventType, _ := record.Record["eventType"].(string); eventType == "workingLocation" {
-		return 50
-	}
-	if len(record.Fields["participant"]) > 0 {
+	priority := digestCorePriority
+	if record.Title != "" {
 		priority += 50
 	}
+	if record.Time != "" {
+		priority += 25
+	}
+	priority += min(25, len(record.relations)*5)
 	return priority
 }
 
@@ -684,8 +614,8 @@ func trimTimelineReport(report *TimelineReport) bool {
 		}
 		item := lowestPriorityDigestItem(group)
 		candidatePriority := group.Items[item].priority
-		// Preserve one line per source, but discard a less useful extra line before
-		// higher-value calendar evidence. Source verbosity and stable order break ties.
+		// Preserve one line per source, but discard a less useful extra line first. Source
+		// verbosity and stable order break ties between otherwise equivalent projected facts.
 		if groupIndex < 0 || candidatePriority < priority ||
 			candidatePriority == priority && (count > most || count == most && candidate > groupIndex) {
 			groupIndex, itemIndex, most, priority = candidate, item, count, candidatePriority
@@ -724,7 +654,7 @@ func trimLowPriorityDigestGroup(report *TimelineReport) bool {
 	for index := range report.Groups {
 		group := &report.Groups[index]
 		if group.Summarized {
-			// A noisy source's one-line count is already its minimum truthful form.
+			// A summarized source's one-line count is already its minimum truthful form.
 			continue
 		}
 		for item := range group.Items {
@@ -734,9 +664,8 @@ func trimLowPriorityDigestGroup(report *TimelineReport) bool {
 			}
 		}
 	}
-	// A floor-priority source representative is less useful than a higher-priority extra
-	// calendar line. Treat the boundary as removable so source diversity cannot hide the
-	// named evidence the digest is meant to preserve.
+	// A floor-priority source representative is less useful than a higher-priority extra line.
+	// Treat the boundary as removable so source diversity cannot hide named projected evidence.
 	if groupIndex < 0 || priority > digestCorePriority {
 		return false
 	}
@@ -835,7 +764,8 @@ func RenderTimelineText(report *TimelineReport) string {
 			if item.Count > 1 {
 				count = fmt.Sprintf(" x%d", item.Count)
 			}
-			fmt.Fprintf(&output, "%s %s%s · %s\n", item.Time, item.Title, count, item.URI)
+			fmt.Fprintf(&output, "%s %s%s · %s\n", item.Time, item.Title, count,
+				qualifiedCitation(report.Receipt.Base, item.URI))
 		}
 	}
 	if len(report.People) > 0 {
@@ -845,8 +775,8 @@ func RenderTimelineText(report *TimelineReport) string {
 		fmt.Fprintf(&output, "repositories: %s\n", strings.Join(report.Repositories, ", "))
 	}
 	receipt := report.Receipt
-	fmt.Fprintf(&output, "receipt: %s..%s · records %d · selected %d · dropped %d\n",
-		receipt.Window.Since, receipt.Window.Until, receipt.Records, receipt.Selected, receipt.Dropped)
+	fmt.Fprintf(&output, "receipt: %s..%s · records %d · selected %d · dropped %d · base %s\n",
+		receipt.Window.Since, receipt.Window.Until, receipt.Records, receipt.Selected, receipt.Dropped, receipt.Base)
 	fmt.Fprintf(&output, "receipt: budget %d · used %d · json %d · text %d\n",
 		receipt.Budget, receipt.UsedTokens, receipt.JSONTokens, receipt.TextTokens)
 	fmt.Fprintf(&output, "receipt: as_of %s · input_sha256 %s\n", receipt.AsOf, receipt.InputDigest)
@@ -911,6 +841,7 @@ func cloneDigestFields(fields map[string][]string) map[string][]string {
 }
 
 func digestReportInput(
+	baseName string,
 	records []FindRecord,
 	request TimelineRequest,
 	window Window,
@@ -927,6 +858,7 @@ func digestReportInput(
 		Relations                []string
 	}
 	input := struct {
+		Base           string
 		Window         Window
 		AsOf           string
 		Sources        []string
@@ -941,16 +873,15 @@ func digestReportInput(
 		Repositories   []string
 		Records        []inputRecord
 	}{
-		Window: window, AsOf: asOf, Sources: append([]string(nil), request.Sources...),
+		Base: baseName, Window: window, AsOf: asOf, Sources: append([]string(nil), request.Sources...),
 		Repository: request.Repository, Person: request.Person, AroundURI: request.AroundURI,
 		Around: request.Around.String(), Budget: request.Budget, All: request.All,
 		DeliveryFormat: request.DeliveryFormat, People: append([]string(nil), people...),
 		Repositories: append([]string(nil), repositories...),
 		Records:      make([]inputRecord, 0, len(records)),
 	}
-	commitCounts := digestCommitCounts(records)
 	for _, record := range records {
-		groupTitle, groupKey := digestRecordGrouping(record, request.All, commitCounts)
+		groupTitle, groupKey := digestRecordGrouping(record)
 		input.Records = append(input.Records, inputRecord{
 			URI: record.URI, Source: record.Source, Time: record.Time, Title: record.Title,
 			GroupTitle: groupTitle, GroupKey: groupKey, Priority: digestRecordPriority(record),

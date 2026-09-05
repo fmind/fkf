@@ -30,6 +30,7 @@ queries:
 	}
 	got := invoke(t, "--format", "text", "--base", root, "eval")
 	if got.code != ExitSuccess || !strings.Contains(got.stdout, "PASS declarative-source") ||
+		!strings.Contains(got.stdout, "budget 4096") || !strings.Contains(got.stdout, "expected ranks:") ||
 		!strings.Contains(got.stdout, "1 passed, 0 failed") {
 		t.Fatalf("eval = code %d stdout %q stderr %q", got.code, got.stdout, got.stderr)
 	}

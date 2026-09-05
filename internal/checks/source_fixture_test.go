@@ -298,7 +298,7 @@ func TestEveryPresetSourceProducesAnAddressableRecord(t *testing.T) {
 				continue
 			}
 			seen[name] = true
-			assertFixtureDecodes(t, root, name, source)
+			assertFixtureDecodes(t, name, source)
 		}
 	}
 }
@@ -349,7 +349,7 @@ func TestEveryShippedPresetArtifactBelongsToADeclaredSource(t *testing.T) {
 	}
 }
 
-func assertFixtureDecodes(t *testing.T, root, name string, source *core.Source) {
+func assertFixtureDecodes(t *testing.T, name string, source *core.Source) {
 	t.Helper()
 	t.Run(name, func(t *testing.T) {
 		fixturePath := filepath.Join(repositoryRoot(t), "services", "testdata", "sources", name+".json")
@@ -363,26 +363,12 @@ func assertFixtureDecodes(t *testing.T, root, name string, source *core.Source) 
 			return string(stdout), nil
 		})
 		window := sources.Window{}
-		if source.Layer == core.LayerEvents || source.Layer == core.LayerTasks {
+		if source.Layer == core.LayerEvents {
 			day, err := sources.ParseDay("2026-05-04")
 			if err != nil {
 				t.Fatal(err)
 			}
 			window = sources.DayWindow(day)
-		}
-		if source.Layer == core.LayerTasks {
-			base, err := services.Open(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			written, err := services.ImportSessionTraces(t.Context(), base, source, string(stdout), window)
-			if err != nil {
-				t.Fatalf("tasks fixture failed its dedicated import path: %v", err)
-			}
-			if written.Written+written.Existing == 0 {
-				t.Fatalf("%s imported no task traces", fixturePath)
-			}
-			return
 		}
 		document, err := sources.Collect(t.Context(), runner, source, sources.Environment{}, window, time.Minute, testClock)
 		if err != nil {

@@ -65,6 +65,9 @@ func writeStatusHarnesses(w *textWriter, status *services.Status) {
 	}
 	w.printf("\nharnesses\n  registered for this base: %s\n", orDash(strings.Join(registered, ", ")))
 	for _, harness := range status.Harnesses {
+		for _, location := range harness.Cleanup {
+			w.printf("  %-12s unscoped registration: %s (review and remove manually)\n", harness.Name, location)
+		}
 		if harness.Error != "" {
 			w.printf("  %-12s conflict: %s\n", harness.Name, harness.Error)
 		}

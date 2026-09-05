@@ -21,13 +21,15 @@ const (
 	evalDirectory     = "evals"
 	evalQueriesFile   = "queries.yaml"
 	maxEvalK          = 100
-	evalBudget        = int(core.MaxNarrativeBytes / 4)
+	maxEvalBudget     = int(core.MaxNarrativeBytes / 4)
 )
 
 // EvalSuite is the strict, versioned retrieval acceptance contract stored in a base.
 type EvalSuite struct {
 	FKF             int         `yaml:"fkf"`
 	K               int         `yaml:"k"`
+	Budget          *int        `yaml:"budget"`
+	Delivery        string      `yaml:"delivery"`
 	RecallThreshold float64     `yaml:"recall_threshold"`
 	Queries         []EvalQuery `yaml:"queries"`
 }
@@ -37,33 +39,54 @@ type EvalQuery struct {
 	Name          string   `yaml:"name"`
 	Question      string   `yaml:"question"`
 	Window        Window   `yaml:"window"`
+	K             *int     `yaml:"k"`
+	Budget        *int     `yaml:"budget"`
+	Delivery      string   `yaml:"delivery"`
+	ExpectEmpty   bool     `yaml:"expect_empty"`
 	ExpectedURIs  []string `yaml:"expected_uris"`
 	ForbiddenURIs []string `yaml:"forbidden_uris"`
 }
 
+// EvalExpectedRank records the final delivered rank for one expected URI. Rank zero means the
+// requested delivery omitted it; a rank greater than k is present but still fails the top-k gate.
+type EvalExpectedRank struct {
+	URI  string `json:"uri"`
+	Rank int    `json:"rank"`
+}
+
 // EvalQueryResult is one reproducible recall-at-k measurement.
 type EvalQueryResult struct {
-	Name            string   `json:"name"`
-	Question        string   `json:"question"`
-	Window          Window   `json:"window"`
-	K               int      `json:"k"`
-	Recall          float64  `json:"recall"`
-	Expected        int      `json:"expected"`
-	FoundExpected   int      `json:"found_expected"`
-	MissingExpected []string `json:"missing_expected,omitempty"`
-	ForbiddenFound  []string `json:"forbidden_found,omitempty"`
-	TopURIs         []string `json:"top_uris"`
-	InputDigest     string   `json:"input_digest"`
-	RankingVersion  int      `json:"ranking_version"`
-	RecallThreshold float64  `json:"recall_threshold"`
-	Passed          bool     `json:"passed"`
+	Name            string             `json:"name"`
+	Question        string             `json:"question"`
+	Window          Window             `json:"window"`
+	Budget          int                `json:"budget"`
+	Delivery        string             `json:"delivery"`
+	K               int                `json:"k"`
+	ExpectEmpty     bool               `json:"expect_empty"`
+	Recall          float64            `json:"recall"`
+	Expected        int                `json:"expected"`
+	FoundExpected   int                `json:"found_expected"`
+	ExpectedRanks   []EvalExpectedRank `json:"expected_ranks"`
+	MissingExpected []string           `json:"missing_expected,omitempty"`
+	ForbiddenFound  []string           `json:"forbidden_found,omitempty"`
+	DeliveredURIs   []string           `json:"delivered_uris"`
+	DeliveredBytes  int                `json:"delivered_bytes"`
+	DeliveredTokens int                `json:"delivered_tokens"`
+	Index           LexicalIndexUse    `json:"index"`
+	InputDigest     string             `json:"input_digest"`
+	RankingVersion  int                `json:"ranking_version"`
+	RecallThreshold float64            `json:"recall_threshold"`
+	Passed          bool               `json:"passed"`
 }
 
 // EvalReport is the complete result for evals/queries.yaml. Evaluation never writes the base.
 type EvalReport struct {
 	Path            string            `json:"path"`
 	K               int               `json:"k"`
+	Budget          int               `json:"budget"`
+	Delivery        string            `json:"delivery"`
 	RecallThreshold float64           `json:"recall_threshold"`
+	EvaluationTime  time.Time         `json:"evaluation_time"`
 	Queries         []EvalQueryResult `json:"queries"`
 	PassedQueries   int               `json:"passed_queries"`
 	Failed          int               `json:"failed_queries"`
@@ -77,11 +100,12 @@ func Evaluate(ctx context.Context, base *Base) (*EvalReport, error) {
 	if err != nil {
 		return nil, err
 	}
-	report := &EvalReport{
-		Path: relative, K: suite.K, RecallThreshold: suite.RecallThreshold,
-		Queries: make([]EvalQueryResult, 0, len(suite.Queries)),
-	}
 	evaluationTime := base.Now()
+	report := &EvalReport{
+		Path: relative, K: suite.K, Budget: *suite.Budget, Delivery: suite.Delivery, RecallThreshold: suite.RecallThreshold,
+		EvaluationTime: evaluationTime,
+		Queries:        make([]EvalQueryResult, 0, len(suite.Queries)),
+	}
 	for _, query := range suite.Queries {
 		if err := checkContext(ctx); err != nil {
 			return nil, err
@@ -108,37 +132,68 @@ func evaluateQuery(
 	query EvalQuery,
 	evaluationTime time.Time,
 ) (EvalQueryResult, error) {
+	budget := *suite.Budget
+	if query.Budget != nil {
+		budget = *query.Budget
+	}
+	k := suite.K
+	if query.K != nil {
+		k = *query.K
+	}
+	delivery := suite.Delivery
+	if query.Delivery != "" {
+		delivery = query.Delivery
+	}
 	pack, err := BuildContext(ctx, base, ContextRequest{
-		Query: query.Question, Window: query.Window, Budget: evalBudget,
+		Query: query.Question, Window: query.Window, Budget: budget, DeliveryFormat: delivery,
 		evaluationTime: evaluationTime,
 	})
 	if err != nil {
 		return EvalQueryResult{}, err
 	}
-	top := make([]string, 0, min(suite.K, len(pack.Items)))
-	for _, item := range pack.Items[:min(suite.K, len(pack.Items))] {
-		top = append(top, item.URI)
+	delivered := make([]string, 0, len(pack.Items))
+	ranks := make(map[string]int, len(pack.Items))
+	for index, item := range pack.Items {
+		delivered = append(delivered, item.URI)
+		ranks[item.URI] = index + 1
+	}
+	deliveredBytes := encodedBytes(pack)
+	if delivery == ContextDeliveryText {
+		deliveredBytes = len(RenderContextText(pack))
 	}
 	result := EvalQueryResult{
 		Name: query.Name, Question: query.Question, Window: pack.Receipt.Window,
-		K: suite.K, Expected: len(query.ExpectedURIs), TopURIs: top,
+		Budget: budget, Delivery: delivery, K: k, ExpectEmpty: query.ExpectEmpty, Expected: len(query.ExpectedURIs),
+		ExpectedRanks: make([]EvalExpectedRank, 0, len(query.ExpectedURIs)), DeliveredURIs: delivered,
+		DeliveredBytes: deliveredBytes, DeliveredTokens: bytesToTokens(deliveredBytes),
+		Index:       pack.Receipt.Index,
 		InputDigest: pack.Receipt.InputDigest, RankingVersion: pack.Receipt.RankingVersion,
 		RecallThreshold: suite.RecallThreshold,
 	}
 	for _, expected := range query.ExpectedURIs {
-		if slices.Contains(top, expected) {
+		rank := ranks[expected]
+		result.ExpectedRanks = append(result.ExpectedRanks, EvalExpectedRank{URI: expected, Rank: rank})
+		if rank > 0 && rank <= k {
 			result.FoundExpected++
 		} else {
 			result.MissingExpected = append(result.MissingExpected, expected)
 		}
 	}
 	for _, forbidden := range query.ForbiddenURIs {
-		if slices.Contains(top, forbidden) {
+		if slices.Contains(delivered, forbidden) {
 			result.ForbiddenFound = append(result.ForbiddenFound, forbidden)
 		}
 	}
-	result.Recall = float64(result.FoundExpected) / float64(result.Expected)
-	result.Passed = result.Recall >= suite.RecallThreshold && len(result.ForbiddenFound) == 0
+	if query.ExpectEmpty {
+		result.Recall = 1
+		if len(delivered) > 0 || pack.matchedButOmitted {
+			result.Recall = 0
+		}
+		result.Passed = len(delivered) == 0 && !pack.matchedButOmitted
+	} else {
+		result.Recall = float64(result.FoundExpected) / float64(result.Expected)
+		result.Passed = result.Recall >= suite.RecallThreshold && len(result.ForbiddenFound) == 0
+	}
 	return result, nil
 }
 
@@ -174,46 +229,92 @@ func loadEvalSuite(ctx context.Context, base *Base) (*EvalSuite, string, error) 
 }
 
 func validateEvalSuite(suite *EvalSuite) error {
+	if err := validateEvalSuiteDefaults(suite); err != nil {
+		return err
+	}
+	names := make(map[string]struct{}, len(suite.Queries))
+	for index := range suite.Queries {
+		if err := validateEvalQuery(&suite.Queries[index], index, names); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateEvalSuiteDefaults(suite *EvalSuite) error {
 	switch {
 	case suite.FKF != evalSchemaVersion:
 		return fmt.Errorf("fkf must be %d; got %d", evalSchemaVersion, suite.FKF)
 	case suite.K < 1 || suite.K > maxEvalK:
 		return fmt.Errorf("k is %d; expected 1..%d", suite.K, maxEvalK)
+	case suite.Budget != nil && (*suite.Budget < 1 || *suite.Budget > maxEvalBudget):
+		return fmt.Errorf("budget is %d; expected 1..%d when set", *suite.Budget, maxEvalBudget)
 	case suite.RecallThreshold <= 0 || suite.RecallThreshold > 1:
 		return fmt.Errorf("recall_threshold is %g; expected greater than 0 and at most 1", suite.RecallThreshold)
 	case len(suite.Queries) == 0:
 		return errors.New("queries must contain at least one evaluation")
 	}
-	names := make(map[string]struct{}, len(suite.Queries))
-	for index := range suite.Queries {
-		query := &suite.Queries[index]
-		query.Name = strings.TrimSpace(query.Name)
-		query.Question = strings.TrimSpace(query.Question)
-		if query.Name == "" || query.Question == "" {
-			return fmt.Errorf("queries[%d] needs non-empty name and question", index)
-		}
-		if _, exists := names[query.Name]; exists {
-			return fmt.Errorf("queries[%d].name %q is duplicated", index, query.Name)
-		}
-		names[query.Name] = struct{}{}
-		if len(query.ExpectedURIs) == 0 {
-			return fmt.Errorf("queries[%d].expected_uris must contain at least one URI", index)
-		}
-		expected, err := canonicalEvalURIs(query.ExpectedURIs)
-		if err != nil {
-			return fmt.Errorf("queries[%d].expected_uris: %w", index, err)
-		}
-		forbidden, err := canonicalEvalURIs(query.ForbiddenURIs)
-		if err != nil {
-			return fmt.Errorf("queries[%d].forbidden_uris: %w", index, err)
-		}
-		for _, uri := range forbidden {
-			if slices.Contains(expected, uri) {
-				return fmt.Errorf("queries[%d] URI %q is both expected and forbidden", index, uri)
-			}
-		}
-		query.ExpectedURIs, query.ForbiddenURIs = expected, forbidden
+	if suite.Budget == nil {
+		budget := DefaultBudget
+		suite.Budget = &budget
 	}
+	if suite.Delivery == "" {
+		suite.Delivery = ContextDeliveryJSON
+	}
+	if err := validateEvalDelivery(suite.Delivery); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateEvalDelivery(delivery string) error {
+	switch delivery {
+	case "", ContextDeliveryJSON, ContextDeliveryJSONL, ContextDeliveryText:
+		return nil
+	default:
+		return fmt.Errorf("delivery %q must be json, jsonl, or text", delivery)
+	}
+}
+
+func validateEvalQuery(query *EvalQuery, index int, names map[string]struct{}) error {
+	query.Name = strings.TrimSpace(query.Name)
+	query.Question = strings.TrimSpace(query.Question)
+	if query.Name == "" || query.Question == "" {
+		return fmt.Errorf("queries[%d] needs non-empty name and question", index)
+	}
+	if _, exists := names[query.Name]; exists {
+		return fmt.Errorf("queries[%d].name %q is duplicated", index, query.Name)
+	}
+	names[query.Name] = struct{}{}
+	if err := validateEvalDelivery(query.Delivery); err != nil {
+		return fmt.Errorf("queries[%d]: %w", index, err)
+	}
+	if query.K != nil && (*query.K < 1 || *query.K > maxEvalK) {
+		return fmt.Errorf("queries[%d].k is %d; expected 1..%d when set", index, *query.K, maxEvalK)
+	}
+	if query.Budget != nil && (*query.Budget < 1 || *query.Budget > maxEvalBudget) {
+		return fmt.Errorf("queries[%d].budget is %d; expected 1..%d when set", index, *query.Budget, maxEvalBudget)
+	}
+	if query.ExpectEmpty && (len(query.ExpectedURIs) > 0 || len(query.ForbiddenURIs) > 0) {
+		return fmt.Errorf("queries[%d].expect_empty cannot be combined with expected_uris or forbidden_uris", index)
+	}
+	if !query.ExpectEmpty && len(query.ExpectedURIs) == 0 {
+		return fmt.Errorf("queries[%d].expected_uris must contain at least one URI unless expect_empty is true", index)
+	}
+	expected, err := canonicalEvalURIs(query.ExpectedURIs)
+	if err != nil {
+		return fmt.Errorf("queries[%d].expected_uris: %w", index, err)
+	}
+	forbidden, err := canonicalEvalURIs(query.ForbiddenURIs)
+	if err != nil {
+		return fmt.Errorf("queries[%d].forbidden_uris: %w", index, err)
+	}
+	for _, uri := range forbidden {
+		if slices.Contains(expected, uri) {
+			return fmt.Errorf("queries[%d] URI %q is both expected and forbidden", index, uri)
+		}
+	}
+	query.ExpectedURIs, query.ForbiddenURIs = expected, forbidden
 	return nil
 }
 

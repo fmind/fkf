@@ -26,16 +26,16 @@ func renderContextTextRaw(pack *ContextPack, includeItems bool) string {
 	}
 	if includeItems {
 		for _, item := range pack.Items {
-			output.WriteString(renderContextTextItem(item))
+			output.WriteString(renderContextTextItem(receipt.Base, item))
 		}
 	}
 	dropped := len(receipt.Dropped)
 	if receipt.DroppedTotal > 0 {
 		dropped = receipt.DroppedTotal
 	}
-	fmt.Fprintf(&output, "receipt pack for %q · %d/%d selected · %d/%d %s tokens · floor %d\n",
+	fmt.Fprintf(&output, "receipt pack for %q · %d/%d selected · %d/%d %s tokens · floor %d · base %s\n",
 		pack.Query, receipt.Selected, receipt.Candidates, receipt.EncodedTokens, receipt.Budget,
-		contextTextOrDash(receipt.Format), receipt.Floor)
+		contextTextOrDash(receipt.Format), receipt.Floor, receipt.Base)
 	fmt.Fprintf(&output, "window %s · as_of %s", renderContextWindow(receipt.Window), receipt.AsOf)
 	if receipt.NewestEventDay != "" {
 		fmt.Fprintf(&output, " · newest %s (%dd stale)", receipt.NewestEventDay, receipt.StaleDays)
@@ -57,10 +57,10 @@ func renderContextTextRaw(pack *ContextPack, includeItems bool) string {
 	return output.String()
 }
 
-func renderContextTextItem(item ContextItem) string {
+func renderContextTextItem(baseName string, item ContextItem) string {
 	var output strings.Builder
 	fmt.Fprintf(&output, "%d %s %s %s %s", item.Score, item.Kind,
-		contextTextOrDash(item.Date), item.URI, contextTextOrDash(contextTextInline(item.Title)))
+		contextTextOrDash(item.Date), qualifiedCitation(baseName, item.URI), contextTextOrDash(contextTextInline(item.Title)))
 	if fields := compactContextTextFields(item); len(fields) > 0 {
 		fmt.Fprintf(&output, " · %s", strings.Join(fields, " "))
 	}
@@ -129,7 +129,7 @@ func backfillContextText(pack *ContextPack, candidates []*ContextItem, request C
 	itemBytes := make(map[string]int, len(pack.Items)+1)
 	for _, item := range pack.Items {
 		selected[item.URI] = struct{}{}
-		itemBytes[item.URI] = len(contextTextBlock(renderContextTextItem(item)))
+		itemBytes[item.URI] = len(contextTextBlock(renderContextTextItem(pack.Receipt.Base, item)))
 	}
 	fastTrial := len(pack.Items) > 0 && pack.Receipt.Warning == ""
 	receiptBase, selectedBytes := 0, 0
@@ -154,7 +154,7 @@ func backfillContextText(pack *ContextPack, candidates []*ContextItem, request C
 		if pack.Receipt.UsedTokens+candidate.Tokens > budget {
 			continue
 		}
-		candidateBytes := len(contextTextBlock(renderContextTextItem(*candidate)))
+		candidateBytes := len(contextTextBlock(renderContextTextItem(pack.Receipt.Base, *candidate)))
 		itemBytes[candidate.URI] = candidateBytes
 		if fastTrial {
 			trialTokens := contextTextTrialTokens(
@@ -297,7 +297,7 @@ func boundContextTextDrops(pack *ContextPack) {
 func stabilizeContextTextTokens(pack *ContextPack) int {
 	itemBytes := make(map[string]int, len(pack.Items))
 	for _, item := range pack.Items {
-		itemBytes[item.URI] = len(contextTextBlock(renderContextTextItem(item)))
+		itemBytes[item.URI] = len(contextTextBlock(renderContextTextItem(pack.Receipt.Base, item)))
 	}
 	return stabilizeContextTextTokensWithItemBytes(pack, itemBytes)
 }

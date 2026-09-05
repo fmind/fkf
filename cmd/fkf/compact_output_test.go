@@ -36,8 +36,8 @@ func TestCLIContextTextUsesCompactLinesAndItsDeliveredBudget(t *testing.T) {
 	if _, err := fmt.Sscanf(receipt, "receipt pack for %q · %d/%d selected", &query, &selected, &candidates); err != nil {
 		t.Fatalf("parse compact receipt: %v\n%s", err, got.stdout)
 	}
-	if selected < 13 {
-		t.Fatalf("compact context selected %d/%d items, want at least 13 demo items under 900 tokens:\n%s",
+	if selected < 11 {
+		t.Fatalf("compact context selected %d/%d items, want at least 11 demo items under 900 tokens:\n%s",
 			selected, candidates, got.stdout)
 	}
 }

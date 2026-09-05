@@ -57,12 +57,13 @@ type LearnReview struct {
 
 // LearnActionReport records an apply or reject transition into the ignored archive.
 type LearnActionReport struct {
-	ID          string              `json:"id"`
-	Status      string              `json:"status"`
-	Path        string              `json:"path"`
-	Files       []string            `json:"files,omitempty"`
-	Validations []*ValidationReport `json:"validations,omitempty"`
-	Build       *BuildReport        `json:"build,omitempty"`
+	ID           string              `json:"id"`
+	Status       string              `json:"status"`
+	Path         string              `json:"path"`
+	Files        []string            `json:"files,omitempty"`
+	Validations  []*ValidationReport `json:"validations,omitempty"`
+	Build        *BuildReport        `json:"build,omitempty"`
+	RebuildError string              `json:"rebuild_error,omitempty"`
 }
 
 // ProposeLearn creates one deterministic wiki/log.md diff from the current unharvested backlog.
@@ -243,8 +244,8 @@ func RejectLearn(ctx context.Context, base *Base, id string) (*LearnActionReport
 }
 
 // ApplyLearn validates and applies one queued diff, validates every affected authored layer,
-// rebuilds derived caches, and only then archives the proposal. Any failure restores both the
-// authored pages and the derived files to their exact prior bytes.
+// and archives the proposal as one authored transaction. Cache rebuilding follows publication;
+// its failure leaves the approved edit intact and returns an explicit repairable report.
 func ApplyLearn(ctx context.Context, base *Base, id string) (*LearnActionReport, error) {
 	id, err := normalizeLearnProposalID(id)
 	if err != nil {
@@ -255,7 +256,7 @@ func ApplyLearn(ctx context.Context, base *Base, id string) (*LearnActionReport,
 		return nil, err
 	}
 	if archived != nil {
-		return archived, nil
+		return rebuildLearnCaches(ctx, base, archived)
 	}
 	data, err := core.ReadFileLimit(source, maxLearnProposalBytes)
 	if err != nil {
@@ -272,23 +273,20 @@ func ApplyLearn(ctx context.Context, base *Base, id string) (*LearnActionReport,
 	if err != nil {
 		return nil, err
 	}
-	if err := addLearnDerivedSnapshots(base, snapshots); err != nil {
-		return nil, err
-	}
 	appliedDirectory, destination, err := prepareLearnArchive(base, "applied", id)
 	if err != nil {
 		return nil, err
 	}
-	validations, build, err := executeLearnApplication(
+	validations, err := executeLearnApplication(
 		ctx, base, updates, snapshots, layers, source, destination, appliedDirectory, id, data,
 	)
 	if err != nil {
 		return nil, err
 	}
-	return &LearnActionReport{
+	return rebuildLearnCaches(ctx, base, &LearnActionReport{
 		ID: id, Status: "applied", Path: learnProposalPath("applied", id),
-		Files: proposal.Files, Validations: validations, Build: build,
-	}, nil
+		Files: proposal.Files, Validations: validations,
+	})
 }
 
 func activeLearnProposalForApply(
@@ -309,50 +307,16 @@ func activeLearnProposalForApply(
 	return LearnProposal{}, "", nil, fmt.Errorf("%w: learn proposal %s does not exist", fs.ErrNotExist, id)
 }
 
-func addLearnDerivedSnapshots(base *Base, snapshots map[string]learnSnapshot) error {
-	derivedFiles := []struct {
-		uri     string
-		limit   int64
-		private bool
-	}{
-		{uri: core.GraphFile, limit: core.MaxLocalInputBytes},
-		{uri: core.GraphDstFile, limit: core.MaxLocalInputBytes},
-		{uri: core.GraphOffsetsFile, limit: core.MaxLocalInputBytes},
-		{uri: core.GraphMetaFile, limit: core.MaxLocalInputBytes},
-		{uri: core.GraphGenerationFile, limit: core.MaxSourceDocumentBytes},
-		{uri: "wiki/index.md", limit: core.MaxLocalInputBytes},
-		{uri: LexicalIndexPath, limit: maxLexicalIndexBytes, private: true},
-		{uri: lexicalIndexMetaPath, limit: core.MaxSourceDocumentBytes, private: true},
-	}
-	for _, derived := range derivedFiles {
-		if derived.uri == "wiki/index.md" && !base.Store.Enabled(core.LayerWiki) {
-			continue
-		}
-		if _, exists := snapshots[derived.uri]; exists {
-			continue
-		}
-		snapshot, err := snapshotLearnDerivedFile(base, derived.uri, derived.limit, derived.private)
-		if err != nil {
-			return err
-		}
-		snapshots[derived.uri] = snapshot
-	}
-	return nil
-}
-
-func snapshotLearnDerivedFile(base *Base, uri string, limit int64, private bool) (learnSnapshot, error) {
-	if !private {
-		return snapshotLearnFile(base, uri, limit)
-	}
-	rows, meta, err := lexicalIndexPaths(base)
+// Rebuilding is a recoverable follow-up, not part of approval. Repeated apply can repair
+// caches without publishing the same authored bytes again.
+func rebuildLearnCaches(ctx context.Context, base *Base, report *LearnActionReport) (*LearnActionReport, error) {
+	build, err := BuildIfStale(ctx, base, "")
 	if err != nil {
-		return learnSnapshot{}, err
+		report.RebuildError = err.Error()
+		return report, fmt.Errorf("proposal %s is applied; run `fkf build` to repair derived caches: %w", report.ID, err)
 	}
-	absolute := rows
-	if uri == lexicalIndexMetaPath {
-		absolute = meta
-	}
-	return snapshotLearnAbsolute(uri, absolute, limit)
+	report.Build = build
+	return report, nil
 }
 
 func prepareLearnArchive(base *Base, archive, id string) (string, string, error) {
@@ -377,7 +341,7 @@ func executeLearnApplication(
 	layers []core.Layer,
 	source, destination, appliedDirectory, id string,
 	proposalData []byte,
-) ([]*ValidationReport, *BuildReport, error) {
+) ([]*ValidationReport, error) {
 	published := maps.Clone(snapshots)
 	rollback := func(cause error) error {
 		if restoreErr := restoreLearnSnapshots(snapshots, published); restoreErr != nil {
@@ -386,26 +350,20 @@ func executeLearnApplication(
 		return cause
 	}
 	if err := writeLearnUpdates(updates, snapshots, published); err != nil {
-		return nil, nil, rollback(err)
+		return nil, rollback(err)
 	}
-	validations, err := validateLearnUpdates(ctx, base, layers)
+	validations, err := validateLearnUpdates(ctx, base, layers, updates)
 	if err != nil {
-		return nil, nil, rollback(err)
-	}
-	build, err := buildWithObserver(ctx, base, "", false, func() error {
-		return captureLearnDerivedPublications(snapshots, published, updates)
-	})
-	if err != nil {
-		return nil, nil, rollback(fmt.Errorf("rebuild after applying proposal: %w", err))
+		return nil, rollback(err)
 	}
 	if err := moveValidatedLearnProposal(source, destination, id, proposalData); err != nil {
-		return nil, nil, rollback(fmt.Errorf("archive applied proposal %s: %w", id, err))
+		return nil, rollback(fmt.Errorf("archive applied proposal %s: %w", id, err))
 	}
 	if err := syncLearnMove(filepath.Dir(source), appliedDirectory); err != nil {
 		moveBackErr := restoreLearnMove(destination, source)
-		return nil, nil, rollback(errors.Join(fmt.Errorf("sync applied proposal archive: %w", err), moveBackErr))
+		return nil, rollback(errors.Join(fmt.Errorf("sync applied proposal archive: %w", err), moveBackErr))
 	}
-	return validations, build, nil
+	return validations, nil
 }
 
 func moveValidatedLearnProposal(source, destination, id string, expected []byte) error {
@@ -455,8 +413,7 @@ func writeLearnUpdatesWithObserver(
 	snapshots, published map[string]learnSnapshot,
 	observe func(int),
 ) error {
-	// Applying a proposal may spend time snapshotting derived caches. Recheck the authored
-	// inputs at the last possible point so an editor save during that work is never overwritten.
+	// Recheck immediately before each write so a concurrent editor save is never overwritten.
 	if err := verifyLearnUpdateSnapshots(updates, snapshots); err != nil {
 		return err
 	}
@@ -475,26 +432,6 @@ func writeLearnUpdatesWithObserver(
 		if observe != nil {
 			observe(index)
 		}
-	}
-	return nil
-}
-
-func captureLearnDerivedPublications(
-	snapshots, published map[string]learnSnapshot, updates []learnUpdate,
-) error {
-	authored := make(map[string]struct{}, len(updates))
-	for _, update := range updates {
-		authored[update.uri] = struct{}{}
-	}
-	for uri, original := range snapshots {
-		if _, found := authored[uri]; found && uri != "wiki/index.md" {
-			continue
-		}
-		current, err := snapshotLearnAbsolute(uri, original.absolute, original.limit)
-		if err != nil {
-			return err
-		}
-		published[uri] = current
 	}
 	return nil
 }
@@ -524,7 +461,7 @@ func verifyLearnUpdateSnapshot(update learnUpdate, snapshots map[string]learnSna
 }
 
 func validateLearnUpdates(
-	ctx context.Context, base *Base, layers []core.Layer,
+	ctx context.Context, base *Base, layers []core.Layer, updates []learnUpdate,
 ) ([]*ValidationReport, error) {
 	validations := make([]*ValidationReport, 0, len(layers))
 	for _, layer := range layers {
@@ -535,6 +472,19 @@ func validateLearnUpdates(
 		validations = append(validations, report)
 		if !report.OK {
 			return nil, learnValidationError(report)
+		}
+	}
+	// Validate graph declarations before publication without rebuilding or snapshotting caches.
+	if _, err := LoadIdentityResolver(ctx, base); err != nil {
+		return nil, err
+	}
+	for _, update := range updates {
+		page, err := ReadPageContext(ctx, base, update.uri)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := pageEdges(ctx, base, page); err != nil {
+			return nil, err
 		}
 	}
 	return validations, nil

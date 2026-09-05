@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ const (
 
 type lexicalIndexData struct {
 	entries      []lexicalEntry
+	scoreFields  []string
 	postings     map[lexicalPostingKey]map[int]struct{}
 	termScores   map[string]map[int]lexicalTermScore
 	inputsSHA256 string
@@ -611,12 +613,13 @@ func decodeLexicalIndex(
 		return nil, err
 	}
 	defer func() { _ = file.Close() }()
-	entries, err := decodeLexicalEntries(ctx, file, meta)
+	entries, scoreFields, err := decodeLexicalEntries(ctx, file, meta)
 	if err != nil {
 		return nil, err
 	}
 	data := &lexicalIndexData{
-		entries: entries, postings: make(map[lexicalPostingKey]map[int]struct{}, len(wanted)),
+		entries: entries, scoreFields: scoreFields,
+		postings:     make(map[lexicalPostingKey]map[int]struct{}, len(wanted)),
 		termScores:   make(map[string]map[int]lexicalTermScore),
 		inputsSHA256: meta.InputsSHA256, inputs: append([]LexicalInputFile(nil), meta.Inputs...), meta: meta,
 	}
@@ -642,11 +645,11 @@ func decodeLexicalIndex(
 			return nil, err
 		}
 		for _, key := range shardKeys {
-			descriptor, found := lookup[key]
+			descriptor, found := lookup[encodeLexicalLookupKey(key)]
 			if !found {
 				continue
 			}
-			ids, scores, err := readLexicalPosting(ctx, file, descriptor, key, len(entries))
+			ids, scores, err := readLexicalPosting(ctx, file, descriptor, key, len(entries), scoreFields)
 			if err != nil {
 				return nil, err
 			}
@@ -689,11 +692,13 @@ func lexicalIndexFileMatches(file *os.File, meta LexicalIndexMeta) error {
 	return nil
 }
 
-func decodeLexicalEntries(ctx context.Context, file *os.File, meta LexicalIndexMeta) ([]lexicalEntry, error) {
+func decodeLexicalEntries(
+	ctx context.Context, file *os.File, meta LexicalIndexMeta,
+) ([]lexicalEntry, []string, error) {
 	if meta.PostingsOffset > 0 {
 		var terminal [1]byte
 		if _, err := file.ReadAt(terminal[:], meta.PostingsOffset-1); err != nil || terminal[0] != '\n' {
-			return nil, errors.New("lexical index entry section is not newline terminated")
+			return nil, nil, errors.New("lexical index entry section is not newline terminated")
 		}
 	}
 	reader := io.NewSectionReader(file, 0, meta.PostingsOffset)
@@ -701,44 +706,72 @@ func decodeLexicalEntries(ctx context.Context, file *os.File, meta LexicalIndexM
 	scanner := bufio.NewScanner(io.TeeReader(&contextReader{ctx: ctx, reader: reader}, digest))
 	scanner.Buffer(make([]byte, 64<<10), maxLexicalIndexLineBytes)
 	entries := make([]lexicalEntry, 0, meta.Entries)
+	var scoreFields []string
 	consumed := int64(0)
 	for scanner.Scan() {
 		line := scanner.Bytes()
+		if consumed == 0 {
+			var err error
+			scoreFields, err = decodeLexicalScoreFields(line)
+			if err != nil {
+				return nil, nil, err
+			}
+			consumed += int64(len(line) + 1)
+			continue
+		}
 		if len(line) == 0 || line[0] != lexicalEntryRow[0] || len(line) > 1 && line[1] != '\t' {
-			return nil, errors.New("lexical index entry section contains a non-entry row")
+			return nil, nil, errors.New("lexical index entry section contains a non-entry row")
 		}
 		fields := strings.Split(string(line), "\t")
 		entry, err := decodeLexicalEntry(fields, len(entries))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		entries = append(entries, entry)
 		consumed += int64(len(line) + 1)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan lexical index entries: %w", err)
+		return nil, nil, fmt.Errorf("scan lexical index entries: %w", err)
 	}
 	if consumed != meta.PostingsOffset || len(entries) != meta.Entries ||
 		hex.EncodeToString(digest.Sum(nil)) != meta.EntriesSHA256 {
-		return nil, errors.New("lexical index entry rows do not match metadata")
+		return nil, nil, errors.New("lexical index entry rows do not match metadata")
 	}
 	if err := validateLexicalCollapseEntries(entries); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return entries, nil
+	return entries, scoreFields, nil
+}
+
+func decodeLexicalScoreFields(row []byte) ([]string, error) {
+	fields := bytes.Split(row, []byte{'\t'})
+	if len(fields) == 0 || string(fields[0]) != lexicalScoreFieldsRow {
+		return nil, errors.New("lexical index entry section has no score-field dictionary")
+	}
+	result := make([]string, 0, len(fields)-1)
+	previous := ""
+	for _, field := range fields[1:] {
+		value := string(field)
+		if value == "" || !utf8.Valid(field) || value <= previous {
+			return nil, errors.New("lexical score-field dictionary is not canonical")
+		}
+		result = append(result, value)
+		previous = value
+	}
+	return result, nil
 }
 
 type lexicalPostingLookup struct {
-	Key    lexicalPostingKey
-	Offset int64
-	Bytes  int
-	Pairs  int
-	SHA256 string
+	KeyHash string
+	Offset  int64
+	Bytes   int
+	Pairs   int
+	SHA256  string
 }
 
 func readLexicalLookupShard(
 	ctx context.Context, file *os.File, meta LexicalIndexMeta, shardIndex int,
-) (map[lexicalPostingKey]lexicalPostingLookup, error) {
+) (map[string]lexicalPostingLookup, error) {
 	if shardIndex < 0 || shardIndex >= len(meta.LookupShards) {
 		return nil, errors.New("lexical lookup shard is outside the index")
 	}
@@ -747,22 +780,22 @@ func readLexicalLookupShard(
 	reader := io.NewSectionReader(file, shard.Offset, shard.Bytes)
 	scanner := bufio.NewScanner(io.TeeReader(&contextReader{ctx: ctx, reader: reader}, digest))
 	scanner.Buffer(make([]byte, 64<<10), maxLexicalIndexLineBytes)
-	result := make(map[lexicalPostingKey]lexicalPostingLookup, min(shard.Rows, 4096))
-	previous := lexicalPostingKey{}
+	result := make(map[string]lexicalPostingLookup, min(shard.Rows, 4096))
+	previous := ""
 	rows := 0
 	for scanner.Scan() {
 		descriptor, err := decodeLexicalLookupRow(scanner.Bytes(), meta, shardIndex)
 		if err != nil {
 			return nil, err
 		}
-		if previous != (lexicalPostingKey{}) && !lexicalPostingKeyLess(previous, descriptor.Key) {
+		if previous != "" && previous >= descriptor.KeyHash {
 			return nil, errors.New("lexical lookup rows are not in canonical order")
 		}
-		if _, duplicate := result[descriptor.Key]; duplicate {
+		if _, duplicate := result[descriptor.KeyHash]; duplicate {
 			return nil, errors.New("lexical lookup repeats a posting key")
 		}
-		result[descriptor.Key] = descriptor
-		previous = descriptor.Key
+		result[descriptor.KeyHash] = descriptor
+		previous = descriptor.KeyHash
 		rows++
 	}
 	if err := scanner.Err(); err != nil {
@@ -783,35 +816,31 @@ func decodeLexicalLookupRow(
 	}
 	decoded := make([]byte, base64.RawURLEncoding.DecodedLen(len(fields[1])))
 	written, err := base64.RawURLEncoding.Decode(decoded, fields[1])
-	if err != nil || written == 0 || base64.RawURLEncoding.EncodeToString(decoded[:written]) != string(fields[1]) {
+	if err != nil || written != 16 || base64.RawURLEncoding.EncodeToString(decoded[:written]) != string(fields[1]) {
 		return lexicalPostingLookup{}, errors.New("lexical lookup row has an invalid key")
 	}
-	kind, value, found := bytes.Cut(decoded[:written], []byte{0})
-	if !found || len(value) == 0 || !utf8.Valid(value) || bytes.Contains(value, []byte{0}) ||
-		!validLexicalPostingKind(kind) {
-		return lexicalPostingLookup{}, errors.New("lexical lookup row has an invalid key")
-	}
-	key := lexicalPostingKey{Kind: string(kind), Value: string(value)}
-	if lexicalPostingShard(key) != shardIndex {
+	if int(decoded[0])<<4|int(decoded[1]>>4) != shardIndex {
 		return lexicalPostingLookup{}, errors.New("lexical lookup row is in the wrong shard")
 	}
-	offset, ok := parseCanonicalLexicalInt64(fields[2])
+	offset, ok := parseCanonicalLexicalBase36Int64(fields[2])
 	if !ok || offset < meta.PostingsOffset || offset >= meta.LookupOffset {
 		return lexicalPostingLookup{}, errors.New("lexical lookup row has an invalid posting offset")
 	}
-	rowBytes, ok := parseCanonicalLexicalInt(fields[3])
+	rowBytes, ok := parseCanonicalLexicalBase36Int(fields[3])
 	if !ok || rowBytes < 2 || rowBytes > maxLexicalIndexLineBytes || int64(rowBytes) > meta.LookupOffset-offset {
 		return lexicalPostingLookup{}, errors.New("lexical lookup row has an invalid posting size")
 	}
-	pairs, ok := parseCanonicalLexicalInt(fields[4])
+	pairs, ok := parseCanonicalLexicalBase36Int(fields[4])
 	if !ok || pairs < 1 {
 		return lexicalPostingLookup{}, errors.New("lexical lookup row has an invalid posting count")
 	}
 	sha := string(fields[5])
-	if !isCanonicalSHA256(sha) {
+	if !isCanonicalLexicalDigest(sha) {
 		return lexicalPostingLookup{}, errors.New("lexical lookup row has an invalid posting digest")
 	}
-	return lexicalPostingLookup{Key: key, Offset: offset, Bytes: rowBytes, Pairs: pairs, SHA256: sha}, nil
+	return lexicalPostingLookup{
+		KeyHash: string(fields[1]), Offset: offset, Bytes: rowBytes, Pairs: pairs, SHA256: sha,
+	}, nil
 }
 
 func readLexicalPosting(
@@ -820,16 +849,19 @@ func readLexicalPosting(
 	descriptor lexicalPostingLookup,
 	wanted lexicalPostingKey,
 	entryCount int,
+	scoreFields []string,
 ) (map[int]struct{}, map[int]lexicalTermScore, error) {
-	row, err := readLexicalExactRow(ctx, file, descriptor.Offset, descriptor.Bytes, descriptor.SHA256)
+	row, err := readLexicalExactPostingRow(ctx, file, descriptor.Offset, descriptor.Bytes, descriptor.SHA256)
 	if err != nil {
 		return nil, nil, err
 	}
 	key, err := lexicalPostingKeyFromRow(row)
-	if err != nil || key != descriptor.Key || key != wanted {
+	if err != nil || encodeLexicalLookupKey(key) != descriptor.KeyHash || key != wanted {
 		return nil, nil, errors.New("lexical lookup names the wrong posting row")
 	}
-	_, ids, scores, pairs, err := decodeLexicalPosting(row, key, entryCount, lexicalPostingKey{}, true)
+	_, ids, scores, pairs, err := decodeLexicalPosting(
+		row, key, entryCount, lexicalPostingKey{}, true, scoreFields,
+	)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -839,9 +871,33 @@ func readLexicalPosting(
 	return ids, scores, nil
 }
 
+func readLexicalExactPostingRow(
+	ctx context.Context, file *os.File, offset int64, rowBytes int, expectedDigest string,
+) ([]byte, error) {
+	row, err := readLexicalRowBytes(ctx, file, offset, rowBytes)
+	if err != nil {
+		return nil, err
+	}
+	if lexicalBytesDigest(append(bytes.Clone(row), '\n')) != expectedDigest {
+		return nil, errors.New("lexical row does not match its authenticated lookup")
+	}
+	return row, nil
+}
+
 func readLexicalExactRow(
 	ctx context.Context, file *os.File, offset int64, rowBytes int, expectedSHA256 string,
 ) ([]byte, error) {
+	row, err := readLexicalRowBytes(ctx, file, offset, rowBytes)
+	if err != nil {
+		return nil, err
+	}
+	if lexicalBytesSHA256(append(bytes.Clone(row), '\n')) != expectedSHA256 {
+		return nil, errors.New("lexical row does not match its authenticated lookup")
+	}
+	return row, nil
+}
+
+func readLexicalRowBytes(ctx context.Context, file *os.File, offset int64, rowBytes int) ([]byte, error) {
 	if err := checkContext(ctx); err != nil {
 		return nil, err
 	}
@@ -850,15 +906,10 @@ func readLexicalExactRow(
 	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("read lexical row: %w", err)
 	}
-	if n != len(encoded) || len(encoded) < 2 || encoded[len(encoded)-1] != '\n' ||
-		lexicalBytesSHA256(encoded) != expectedSHA256 {
+	if n != len(encoded) || len(encoded) < 2 || encoded[len(encoded)-1] != '\n' {
 		return nil, errors.New("lexical row does not match its authenticated lookup")
 	}
 	return encoded[:len(encoded)-1], nil
-}
-
-func lexicalPostingKeyLess(left, right lexicalPostingKey) bool {
-	return left.Kind < right.Kind || left.Kind == right.Kind && left.Value < right.Value
 }
 
 func parseCanonicalLexicalInt(value []byte) (int, bool) {
@@ -866,12 +917,35 @@ func parseCanonicalLexicalInt(value []byte) (int, bool) {
 	return parsed, ok && strconv.Itoa(parsed) == string(value)
 }
 
-func parseCanonicalLexicalInt64(value []byte) (int64, bool) {
+func parseCanonicalLexicalBase36Int(value []byte) (int, bool) {
+	parsed, ok := parseCanonicalLexicalBase36Int64(value)
+	return int(parsed), ok && parsed <= int64(^uint(0)>>1)
+}
+
+func parseCanonicalLexicalBase36Int64(value []byte) (int64, bool) {
 	if len(value) == 0 {
 		return 0, false
 	}
-	parsed, err := strconv.ParseInt(string(value), 10, 64)
-	return parsed, err == nil && strconv.FormatInt(parsed, 10) == string(value)
+	parsed, err := strconv.ParseInt(string(value), 36, 64)
+	return parsed, err == nil && parsed >= 0 && strconv.FormatInt(parsed, 36) == string(value)
+}
+
+func lexicalIntToUint64(value int) (uint64, bool) {
+	if value < 0 {
+		return 0, false
+	}
+	converted, err := strconv.ParseUint(strconv.Itoa(value), 10, 64)
+	return converted, err == nil
+}
+
+func lexicalUint64ToInt(value uint64) (int, bool) {
+	converted, err := strconv.Atoi(strconv.FormatUint(value, 10))
+	return converted, err == nil
+}
+
+func isCanonicalLexicalDigest(value string) bool {
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size && base64.RawURLEncoding.EncodeToString(decoded) == value
 }
 
 func decodeLexicalIndexFull(
@@ -885,26 +959,29 @@ func decodeLexicalIndexFull(
 	if err := validateLexicalOutputDigest(ctx, file, meta); err != nil {
 		return nil, err
 	}
-	entries, err := decodeLexicalEntries(ctx, file, meta)
+	entries, scoreFields, err := decodeLexicalEntries(ctx, file, meta)
 	if err != nil {
 		return nil, err
 	}
 	data := &lexicalIndexData{
 		entries:      entries,
+		scoreFields:  scoreFields,
 		postings:     make(map[lexicalPostingKey]map[int]struct{}, len(wanted)),
 		termScores:   make(map[string]map[int]lexicalTermScore),
 		inputsSHA256: meta.InputsSHA256,
 		inputs:       append([]LexicalInputFile(nil), meta.Inputs...),
 		meta:         meta,
 	}
-	postingRows, postingPairs, err := scanLexicalPostings(ctx, file, meta, wanted, data.postings, data.termScores)
+	postingRows, postingPairs, err := scanLexicalPostings(
+		ctx, file, meta, wanted, data.postings, data.termScores, scoreFields,
+	)
 	if err != nil {
 		return nil, err
 	}
 	if postingRows != meta.PostingRows || postingPairs != meta.Postings {
 		return nil, errors.New("lexical posting rows do not match metadata")
 	}
-	if err := validateAllLexicalLookups(ctx, file, meta, len(entries)); err != nil {
+	if err := validateAllLexicalLookups(ctx, file, meta, len(entries), scoreFields); err != nil {
 		return nil, err
 	}
 	if err := validateAllLexicalCandidates(ctx, file, meta, entries); err != nil {
@@ -936,6 +1013,7 @@ func scanLexicalPostings(
 	wanted map[lexicalPostingKey]struct{},
 	kept map[lexicalPostingKey]map[int]struct{},
 	keptScores map[string]map[int]lexicalTermScore,
+	scoreFields []string,
 ) (int, int, error) {
 	reader := io.NewSectionReader(file, meta.PostingsOffset, meta.LookupOffset-meta.PostingsOffset)
 	scanner := bufio.NewScanner(&contextReader{ctx: ctx, reader: reader})
@@ -950,7 +1028,9 @@ func scanLexicalPostings(
 			return 0, 0, err
 		}
 		_, keep := wanted[key]
-		key, ids, scores, count, err := decodeLexicalPosting(row, key, meta.Entries, previous, keep)
+		key, ids, scores, count, err := decodeLexicalPosting(
+			row, key, meta.Entries, previous, keep, scoreFields,
+		)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -975,7 +1055,7 @@ func scanLexicalPostings(
 }
 
 func validateAllLexicalLookups(
-	ctx context.Context, file *os.File, meta LexicalIndexMeta, entryCount int,
+	ctx context.Context, file *os.File, meta LexicalIndexMeta, entryCount int, scoreFields []string,
 ) error {
 	rows, pairs := 0, 0
 	for shard := range meta.LookupShards {
@@ -983,8 +1063,18 @@ func validateAllLexicalLookups(
 		if err != nil {
 			return err
 		}
-		for key, descriptor := range lookup {
-			if _, _, err := readLexicalPosting(ctx, file, descriptor, key, entryCount); err != nil {
+		for _, descriptor := range lookup {
+			row, err := readLexicalExactPostingRow(
+				ctx, file, descriptor.Offset, descriptor.Bytes, descriptor.SHA256,
+			)
+			if err != nil {
+				return err
+			}
+			key, err := lexicalPostingKeyFromRow(row)
+			if err != nil || encodeLexicalLookupKey(key) != descriptor.KeyHash || lexicalPostingShard(key) != shard {
+				return errors.New("lexical lookup names the wrong posting row")
+			}
+			if _, _, err := readLexicalPosting(ctx, file, descriptor, key, entryCount, scoreFields); err != nil {
 				return err
 			}
 			rows++
@@ -1252,14 +1342,41 @@ func validLexicalPostingKind(kind []byte) bool {
 }
 
 func decodeLexicalPosting(
-	row []byte, key lexicalPostingKey, entryCount int, previous lexicalPostingKey, keep bool,
+	row []byte,
+	key lexicalPostingKey,
+	entryCount int,
+	previous lexicalPostingKey,
+	keep bool,
+	scoreFields []string,
 ) (lexicalPostingKey, map[int]struct{}, map[int]lexicalTermScore, int, error) {
 	if previous != (lexicalPostingKey{}) && (key.Kind < previous.Kind ||
 		key.Kind == previous.Kind && key.Value <= previous.Value) {
 		return lexicalPostingKey{}, nil, nil, 0, errors.New("lexical posting rows are not in canonical order")
 	}
-	second := bytes.IndexByte(row[2:], '\t') + 2
-	remaining := row[second+1:]
+	first := bytes.IndexByte(row, '\t')
+	secondRelative := bytes.IndexByte(row[first+1:], '\t')
+	if first != 1 || secondRelative <= 0 {
+		return lexicalPostingKey{}, nil, nil, 0, errors.New("lexical posting row has invalid fields")
+	}
+	second := first + 1 + secondRelative
+	if bytes.IndexByte(row[second+1:], '\t') >= 0 {
+		return lexicalPostingKey{}, nil, nil, 0, errors.New("lexical posting row has invalid fields")
+	}
+	payload := make([]byte, base64.RawURLEncoding.DecodedLen(len(row)-second-1))
+	written, err := base64.RawURLEncoding.Decode(payload, row[second+1:])
+	if err != nil || written == 0 || base64.RawURLEncoding.EncodeToString(payload[:written]) != string(row[second+1:]) {
+		return lexicalPostingKey{}, nil, nil, 0, errors.New("lexical posting row has an invalid payload")
+	}
+	ids, scores, pairs, err := decodeLexicalPostingPayload(payload[:written], key, entryCount, keep, scoreFields)
+	if err != nil {
+		return lexicalPostingKey{}, nil, nil, 0, err
+	}
+	return key, ids, scores, pairs, nil
+}
+
+func decodeLexicalPostingPayload(
+	payload []byte, key lexicalPostingKey, entryCount int, keep bool, scoreFields []string,
+) (map[int]struct{}, map[int]lexicalTermScore, int, error) {
 	var ids map[int]struct{}
 	var scores map[int]lexicalTermScore
 	if keep {
@@ -1268,24 +1385,40 @@ func decodeLexicalPosting(
 			scores = make(map[int]lexicalTermScore)
 		}
 	}
-	previousID := -1
+	entryCount64, validEntryCount := lexicalIntToUint64(entryCount)
+	if !validEntryCount {
+		return nil, nil, 0, errors.New("lexical posting entry count is invalid")
+	}
+	var previousID64 uint64
+	hasPreviousID := false
 	pairs := 0
-	for len(remaining) > 0 {
-		field := remaining
-		if separator := bytes.IndexByte(remaining, '\t'); separator >= 0 {
-			field, remaining = remaining[:separator], remaining[separator+1:]
-		} else {
-			remaining = nil
+	for len(payload) > 0 {
+		delta, remaining, ok := consumeCanonicalLexicalUvarint(payload)
+		if !ok || delta == 0 || delta > entryCount64 {
+			return nil, nil, 0, errors.New("lexical posting row has invalid entry IDs")
 		}
-		id, valid := parseLexicalEntryID(field)
+		id64 := delta - 1
+		if hasPreviousID {
+			if delta > ^uint64(0)-previousID64 {
+				return nil, nil, 0, errors.New("lexical posting row has invalid entry IDs")
+			}
+			id64 = previousID64 + delta
+		}
+		if id64 >= entryCount64 {
+			return nil, nil, 0, errors.New("lexical posting row has invalid entry IDs")
+		}
+		id, validID := lexicalUint64ToInt(id64)
+		if !validID {
+			return nil, nil, 0, errors.New("lexical posting row has invalid entry IDs")
+		}
+		payload = remaining
 		var score lexicalTermScore
 		if key.Kind == lexicalContextToken {
-			var err error
-			id, score, err = decodeLexicalTermScore(field, entryCount)
-			valid = err == nil
-		}
-		if !valid || id >= entryCount || id <= previousID {
-			return lexicalPostingKey{}, nil, nil, 0, errors.New("lexical posting row has invalid entry IDs")
+			var valid bool
+			score, payload, valid = decodeLexicalTermScorePayload(payload, scoreFields)
+			if !valid {
+				return nil, nil, 0, errors.New("lexical posting row has an invalid term score")
+			}
 		}
 		if keep {
 			ids[id] = struct{}{}
@@ -1293,13 +1426,65 @@ func decodeLexicalPosting(
 				scores[id] = score
 			}
 		}
-		previousID = id
+		previousID64 = id64
+		hasPreviousID = true
 		pairs++
 	}
 	if pairs == 0 {
-		return lexicalPostingKey{}, nil, nil, 0, errors.New("lexical posting row has no entry IDs")
+		return nil, nil, 0, errors.New("lexical posting row has no entry IDs")
 	}
-	return key, ids, scores, pairs, nil
+	return ids, scores, pairs, nil
+}
+
+func consumeCanonicalLexicalUvarint(data []byte) (uint64, []byte, bool) {
+	value, count := binary.Uvarint(data)
+	if count <= 0 {
+		return 0, nil, false
+	}
+	var canonical [binary.MaxVarintLen64]byte
+	length := binary.PutUvarint(canonical[:], value)
+	if count != length || !bytes.Equal(data[:count], canonical[:length]) {
+		return 0, nil, false
+	}
+	return value, data[count:], true
+}
+
+func decodeLexicalTermScorePayload(
+	payload []byte, scoreFields []string,
+) (lexicalTermScore, []byte, bool) {
+	values := make([]uint64, 6)
+	for index := range values {
+		value, remaining, ok := consumeCanonicalLexicalUvarint(payload)
+		if !ok {
+			return lexicalTermScore{}, nil, false
+		}
+		values[index] = value
+		payload = remaining
+	}
+	fieldCount, ok := lexicalIntToUint64(len(scoreFields))
+	if !ok || values[0] > directIdentifierPriority || values[4] > fieldCount {
+		return lexicalTermScore{}, nil, false
+	}
+	identifierPriority, validIdentifier := lexicalUint64ToInt(values[0])
+	maxWeight, validMaxWeight := lexicalUint64ToInt(values[1])
+	segmentWeight, validWeight := lexicalUint64ToInt(values[2])
+	segmentNormalizer, validNormalizer := lexicalUint64ToInt(values[3])
+	excerptBytes, validExcerpt := lexicalUint64ToInt(values[5])
+	if !validIdentifier || !validMaxWeight || !validWeight || !validNormalizer || !validExcerpt {
+		return lexicalTermScore{}, nil, false
+	}
+	analysis := contextTermAnalysis{
+		matched: true, identifierPriority: identifierPriority, maxWeight: maxWeight,
+	}
+	if values[2] > 0 || values[3] > 0 || values[4] > 0 {
+		if values[2] == 0 || values[3] == 0 || values[4] == 0 {
+			return lexicalTermScore{}, nil, false
+		}
+		analysis.segments = []contextTermSegment{{
+			Field: scoreFields[values[4]-1], weight: segmentWeight, normalizer: segmentNormalizer,
+		}}
+	}
+	return lexicalTermScore{Analysis: analysis, ExcerptBytes: excerptBytes}, payload, true
 }
 
 func parseLexicalEntryID(value []byte) (int, bool) {

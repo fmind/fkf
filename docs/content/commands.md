@@ -45,7 +45,7 @@ fkf brief
 fkf brief --budget 800
 ```
 
-The fixed sections cover attention, today's calendar, due tasks, failing CI, open GitHub items assigned to the declared owner, yesterday's digest, and active projects touched this week. Attention includes failed source login probes, sources missing or older than 24 hours, and unharvested learning bullets. Brief reads stored evidence and runs only the enabled sources' trusted `auth:` probes; it never collects or fetches a body. Text and JSON share one receipt and both fit `--budget`.
+The fixed sections cover attention, today's stored evidence, authored tasks due, yesterday's stored evidence, and active projects touched this week. Attention includes sources beyond their configured freshness limit and unharvested learning bullets. Brief is entirely offline and never runs `auth:`, collection, or body commands; use `fkf status --live` separately for provider readiness. Text and JSON share one receipt and both fit `--budget`.
 
 ### `day` and `timeline`
 
@@ -58,7 +58,7 @@ fkf timeline --since 7d --repo repo:github.com/fmind/fkf
 fkf timeline events/2026-08-28/meeting-notes.json#doc-id --around 2h
 ```
 
-Day groups records by source, collapses repeated titles, and summarizes noisy sources unless `--all` is set. Timeline accepts source, repository, and person filters or centers a bounded range on one record. Both are stored, offline reads with reproducible receipts and equivalent MCP tools.
+Day groups records by source, collapses repeated projected titles, and summarizes any source with six or more matching records unless `--all` is set. Timeline accepts source, repository, and person filters or centers a bounded range on one record. Both use projected fields and explicit relations and remain stored, offline reads with reproducible receipts and equivalent MCP tools.
 
 The digest budget measures only the representation actually delivered: terminal text, indented JSON, compact JSONL, or compact MCP JSON. `receipt.used_tokens` is that complete payload's byte length divided by four and rounded up; `json_tokens` and `text_tokens` remain comparison diagnostics. A budget below the smallest honest receipt fails and reports the format-specific minimum to retry.
 
@@ -163,7 +163,9 @@ Tags are listed with usage counts, most-used first. The bare command is the wiki
 fkf eval
 ```
 
-`evals/queries.yaml` is the base-owned retrieval acceptance set. It declares `k`, a recall threshold, and questions with a window, expected URIs, and forbidden URIs. `fkf init` creates one runnable entry-point check plus commented target-journey prompts, then leaves the file entirely owner-controlled on refresh. Replace or extend that baseline with exact URIs from the base. Evaluation reads stored evidence only and reports each context input digest and ranking version. A missed threshold or forbidden top-k result exits `1`; an invalid suite exits `2`.
+`evals/queries.yaml` is the base-owned retrieval acceptance set. It declares default `k`, `budget`, and `delivery` values, a recall threshold, and optional per-query overrides. `delivery` selects `json` (the default), `jsonl`, or `text` for the context pack; it is independent of the evaluation report's `--format`. Each ordinary query names expected URIs that must arrive within its top-k delivery and forbidden URIs that must be absent from the complete delivered pack. An explicit `expect_empty: true` case requires a genuinely empty answer and cannot declare URI expectations.
+
+`fkf init` creates one runnable entry-point check plus commented target-journey prompts, then leaves the file entirely owner-controlled on refresh. Replace or extend that baseline with exact URIs from the base. Evaluation calls the same final budgeted context path used for delivery and reads stored evidence only. Its report includes effective budgets and delivery formats, delivered bytes and tokens, expected ranks, omissions, forbidden hits, input digests, the ranking version, and one evaluation time. An unmet rank, recall, empty-answer, or forbidden-delivery assertion exits `1`; an invalid suite exits `2`.
 
 ## Run and set up
 
@@ -226,7 +228,9 @@ fkf learn reject <proposal>
 
 Learn is the approval boundary between session evidence and durable knowledge. `propose --dry-run` lists unharvested log candidates with their task-trace citations and writes nothing; without it, FKF stages one deterministic `wiki/log.md` unified diff under `.agents/tmp/learn/`. `review` is a bounded, lock-free read of the active queue.
 
-An agent may also stage a canonical unified diff there for a concept or project change. Its filename is the diff's full lowercase SHA-256 digest, which binds an approval to the exact bytes reviewed. The diff may target only flat `wiki/*.md` and `projects/*.md` pages; deletion, rename, nesting, and every other path are rejected. `apply` rechecks that digest and current file context, writes atomically, runs the existing strict validators for each affected layer, rebuilds derived caches, and archives the accepted diff. Any failure restores the exact authored and cache bytes from before the attempt. `reject` archives the diff without touching knowledge. Repeating an accepted or rejected action is idempotent.
+An agent may also stage a canonical unified diff there for a concept or project change. Its filename is the diff's full lowercase SHA-256 digest, which binds an approval to the exact bytes reviewed. The diff may target only flat `wiki/*.md` and `projects/*.md` pages; deletion, rename, nesting, and every other path are rejected. `apply` rechecks that digest and current file context, writes atomically, validates each affected layer and its graph relations, and archives the accepted diff. A failure before archival restores authored bytes, with concurrent edits protected. Cache rebuilding runs after this transaction; failure returns the applied report with `rebuild_error` and a nonzero exit code while retaining the approved edit. Run `fkf build` or repeat `apply` to repair derived caches. `reject` archives the diff without touching knowledge. Repeating an accepted or rejected action is idempotent.
+
+The bundled learn skill may retain the compact outcome of a skill evaluation in `wiki/skill-impact.md`. Trial design belongs to the host's evaluation workflow, and skill patches remain ordinary Git changes; FKF does not write skills, run models, or authorize external services.
 
 ### `schedule`
 
@@ -235,9 +239,12 @@ fkf schedule install
 fkf schedule status
 fkf schedule remove
 fkf schedule install --dry-run
+fkf schedule install --executable ~/.local/bin/fkf-personal-schedule
 ```
 
-Schedule manages one hourly user unit for the selected base: a systemd user service and timer on Linux, or a launchd agent on macOS. It pins the current FKF executable and absolute base path, exports explicit `HOME` and a sanitized absolute `PATH`, runs `sync --if-due`, then `build --if-stale`. Status and removal inspect the manager independently from the files, so an orphaned active unit remains visible and removable. Dry runs write no file and perform no scheduler mutation; they may run read-only manager status probes.
+Schedule manages one hourly user unit for the selected base: a systemd user service and timer on Linux, or a launchd agent on macOS. It pins an FKF-compatible executable outside the base, the physical base path, explicit `HOME`, and a sanitized absolute `PATH`; it runs `sync --if-due`, then `build --if-stale`. Both commands use text reports to keep cache inventories out of native service logs. `--executable` can pin a user-owned launcher that enters a reviewed tool environment. Status and removal inspect the manager independently from the files, so an orphaned active unit remains visible and removable. Dry runs write no file and perform no scheduler mutation; they may run read-only manager status probes.
+
+The report keeps installation, activation, generated-file drift, and last execution separate. Native scheduler metadata reports `unknown`, `never-run`, `running`, `succeeded`, or `failed`, plus an exit code and native timestamp when available. An active timer is therefore not proof that collection last succeeded. Ordinary `fkf status` remains an offline evidence-health check; use both commands when diagnosing unattended collection.
 
 ### `status`
 
@@ -302,13 +309,14 @@ The stdio server is read-only and requires an explicit base. It exposes bounded 
 
 ```bash
 fkf harness list
-fkf harness print claude
-fkf harness install claude codex
+fkf --base ~/brain harness print claude
+fkf --base ~/brain harness install claude codex
+fkf --base ~/brain harness install claude --workspace ~/fmind
 fkf harness install --all --dry-run
 fkf harness install --all --check
 ```
 
-Harness manages one base's MCP, session-start hook, and skill integrations at user scope. `list` prints the closed supported vocabulary; `print` emits the exact managed fragments without writing; `install` preserves unrelated configuration and refuses an FKF key owned by something else. Use `--dry-run` to inspect changes and `--check` to fail when an installed bridge is missing or drifted. Every managed launch pins the executable and base by absolute path. See [Agent harnesses](../harnesses/).
+Harness registers one base under `fkf-<base-name>`. `list` prints the closed vocabulary; `print` emits exact fragments without writing; `install` preserves unrelated configuration and refuses a scoped key owned by something else. MCP works for every adapter. `--workspace` opts Claude, Codex, Gemini, and Kiro into a physically scoped context hook; unsupported adapters remain MCP-only. Global skill links are never mutated. Use `--dry-run` to inspect changes and `--check` to report drift. See [Agent harnesses](../harnesses/).
 
 ### `upgrade`
 

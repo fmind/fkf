@@ -439,6 +439,10 @@ func sourceDigest(source *Source) string {
 	digest := newFramedDigest("source-execution-v3")
 	digest.boolean("enabled", source.Enabled)
 	digest.field("layer", string(source.Layer))
+	digest.boolean("max-age-hours-set", source.MaxAgeHours != nil)
+	if source.MaxAgeHours != nil {
+		digest.integer("max-age-hours", int64(*source.MaxAgeHours))
+	}
 	for _, argument := range source.Auth {
 		digest.field("auth", argument)
 	}

@@ -179,24 +179,7 @@ func sourceSchema() map[string]any {
 		"type": "object", "additionalProperties": false,
 		"required": []string{"run"},
 		"allOf": []any{
-			map[string]any{
-				"if": map[string]any{
-					"properties": map[string]any{"layer": map[string]any{"const": string(LayerTasks)}},
-					"required":   []string{"layer"},
-				},
-				"then": map[string]any{
-					"required":   []string{"window"},
-					"properties": map[string]any{"window": map[string]any{"const": true}},
-					"not": map[string]any{"anyOf": []any{
-						map[string]any{"required": []string{"records"}},
-						map[string]any{"required": []string{"fields"}},
-						map[string]any{"required": []string{"body"}},
-						map[string]any{"required": []string{"bodies"}},
-						map[string]any{"required": []string{"recency"}},
-					}},
-				},
-				"else": map[string]any{"required": []string{"fields"}},
-			},
+			map[string]any{"required": []string{"fields"}},
 			map[string]any{
 				"if": map[string]any{"anyOf": []any{
 					map[string]any{"not": map[string]any{"required": []string{"layer"}}},
@@ -206,12 +189,23 @@ func sourceSchema() map[string]any {
 					"properties": map[string]any{"fields": map[string]any{"required": []string{FieldID, FieldTime, FieldTitle}}},
 				},
 			},
+			map[string]any{
+				"if": map[string]any{"required": []string{"max_age_hours"}},
+				"then": map[string]any{
+					"required":   []string{"layer"},
+					"properties": map[string]any{"layer": map[string]any{"const": string(LayerIndex)}},
+				},
+			},
 		},
 		"properties": map[string]any{
 			"enabled": map[string]any{"type": "boolean", "description": "Whether sync runs this source. Disabled entries are still validated."},
 			"layer": map[string]any{
-				"type": "string", "enum": []string{string(LayerEvents), string(LayerIndex), string(LayerTasks)}, "default": string(LayerEvents),
-				"description": "events files one JSON document per day; index files one point-in-time JSON document; tasks writes bounded Markdown session traces.",
+				"type": "string", "enum": []string{string(LayerEvents), string(LayerIndex)}, "default": string(LayerEvents),
+				"description": "events files one JSON document per day; index files one point-in-time JSON document.",
+			},
+			"max_age_hours": map[string]any{
+				"type": "integer", "minimum": 1, "maximum": MaxFreshnessAgeHours,
+				"description": "Refresh this index source after this many hours; overrides sync.index_max_age_hours.",
 			},
 			"auth": map[string]any{
 				"type": "array", "minItems": 1, "items": map[string]any{"type": "string"},
@@ -302,8 +296,7 @@ func sourceSchema() map[string]any {
 			"window": map[string]any{
 				"type": "boolean", "default": false,
 				"description": "Render run: ONCE for the whole requested range — {{start}}/{{end}} span " +
-					"every day being collected, not one. Events bucket records by fields.time; tasks sources " +
-					"must enable it and import completed session traces; index sources reject it.",
+					"every day being collected, not one. Events bucket records by fields.time; index sources reject it.",
 			},
 		},
 	}

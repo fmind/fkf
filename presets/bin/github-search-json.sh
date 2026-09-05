@@ -1,5 +1,5 @@
 #!/bin/sh
-# github-search-json.sh <prs|issues> assignee <start> <end> — written into
+# github-search-json.sh <prs|issues> <assignee|repository scope> <start> <end> — written into
 # <base>/bin by `fkf init --preset personal|team`.
 #
 # GitHub Search exposes at most 1,000 results for one query, and a timed-out search can return a
@@ -9,19 +9,42 @@
 # count equals total_count. Canonical URLs are de-duplicated across split boundaries.
 set -eu
 
-[ "$#" -eq 4 ] || {
-  echo "usage: github-search-json.sh <prs|issues> assignee <start> <end>" >&2
+case "${1:-}" in --version | -v) echo "github-search-json.sh (fkf preset helper)"; exit 0 ;; esac
+
+[ "$#" -eq 4 ] || [ "$#" -eq 5 ] || {
+  echo "usage: github-search-json.sh <prs|issues> <assignee|repository scope> <start> <end>" >&2
   exit 2
 }
 
 kind=$1
 mode=$2
-start=$3
-end=$4
+if [ "$mode" = repository ]; then
+  [ "$#" -eq 5 ] || {
+    echo "github-search-json.sh: repository mode needs one owner/name scope" >&2
+    exit 2
+  }
+  scope=$3
+  case "$scope" in
+    */*) ;;
+    *) echo "github-search-json.sh: invalid repository scope" >&2; exit 2 ;;
+  esac
+  case "$scope" in *[!A-Za-z0-9_.\/-]* | /* | */ | */*/*) echo "github-search-json.sh: invalid repository scope" >&2; exit 2 ;; esac
+  qualifier="repo:$scope"
+  start=$4
+  end=$5
+else
+  [ "$#" -eq 4 ] || {
+    echo "github-search-json.sh: assignee mode takes no scope" >&2
+    exit 2
+  }
+  qualifier='assignee:@me'
+  start=$3
+  end=$4
+fi
 
 case "$kind:$mode" in
-  prs:assignee) type_qualifier=is:pr ;;
-  issues:assignee) type_qualifier=is:issue ;;
+  prs:assignee | prs:repository) type_qualifier=is:pr ;;
+  issues:assignee | issues:repository) type_qualifier=is:issue ;;
   *)
     echo "github-search-json.sh: expected prs assignee or issues assignee" >&2
     exit 2
@@ -76,7 +99,7 @@ collect_range() {
   range_start=$(epoch_to_rfc3339 "$1")
   # GitHub's range syntax is inclusive; subtracting one second preserves fkf's [start, end).
   range_end=$(epoch_to_rfc3339 "$(( $2 - 1 ))")
-  query="$type_qualifier assignee:@me updated:$range_start..$range_end"
+  query="$type_qualifier $qualifier updated:$range_start..$range_end"
   raw_page=$(mktemp "$work_dir/raw-page.XXXXXX")
   page=$(mktemp "$work_dir/page.XXXXXX")
   : > "$raw_page"
@@ -182,6 +205,11 @@ collect_range() {
   fi
   if [ "$unique_urls" -ne "$total" ]; then
     echo "github-search-json.sh: retrieved $retrieved results but only $unique_urls unique URLs for [$range_start, $range_end]; cannot prove completeness" >&2
+    return 1
+  fi
+  if [ "$mode" = repository ] && ! jq -e --arg scope "$scope" '
+    all(.[].items[]; .repository_url | endswith("/repos/" + $scope))' "$page" >/dev/null; then
+    echo "github-search-json.sh: GitHub returned a result outside repository $scope" >&2
     return 1
   fi
 

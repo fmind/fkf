@@ -692,6 +692,98 @@ func TestLoadConfigRejectsIndexFreshnessThatCannotBeRepresentedSafely(t *testing
 	}
 }
 
+func TestLoadConfigAppliesPerSourceIndexFreshness(t *testing.T) {
+	const configText = `name: brain
+layers: {index: true}
+sync: {index_max_age_hours: 24}
+sources:
+  repositories:
+    enabled: true
+    layer: index
+    max_age_hours: 48
+    run: [cli, list]
+    fields: {id: .id, title: .title}
+`
+	root := writeBase(t, configText, nil)
+	config, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := config.Sources["repositories"]
+	if source.MaxAgeHours == nil || *source.MaxAgeHours != 48 || source.EffectiveMaxAgeHours(config.Sync.IndexMaxAgeHours) != 48 {
+		t.Fatalf("source freshness = %#v, want explicit 48h", source.MaxAgeHours)
+	}
+
+	without := strings.Replace(configText, "    max_age_hours: 48\n", "", 1)
+	inherited, err := LoadConfig(writeBase(t, without, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := inherited.Sources["repositories"].EffectiveMaxAgeHours(inherited.Sync.IndexMaxAgeHours); got != 24 {
+		t.Fatalf("inherited freshness = %d, want global 24h", got)
+	}
+}
+
+func TestLoadConfigRejectsInvalidPerSourceIndexFreshness(t *testing.T) {
+	const template = `name: brain
+layers: {events: true, index: true}
+sources:
+  source:
+    enabled: true
+    layer: %s
+    max_age_hours: %d
+    run: [cli, list]
+    fields:
+      id: .id
+      time: .time
+      title: .title
+`
+	for _, test := range []struct {
+		name  string
+		layer Layer
+		age   int
+		want  string
+	}{
+		{name: "zero", layer: LayerIndex, age: 0, want: "expected 1.."},
+		{name: "negative", layer: LayerIndex, age: -1, want: "expected 1.."},
+		{name: "excessive", layer: LayerIndex, age: MaxFreshnessAgeHours + 1, want: "expected 1.."},
+		{name: "event source", layer: LayerEvents, age: 24, want: "valid only for an index source"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := LoadConfig(writeBase(t, fmt.Sprintf(template, test.layer, test.age), nil))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadConfig() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLocalOverlayOverridesPerSourceIndexFreshness(t *testing.T) {
+	const configText = `name: brain
+layers: {index: true}
+sync: {index_max_age_hours: 24}
+sources:
+  repositories:
+    enabled: true
+    layer: index
+    run: [cli, list]
+    fields: {id: .id, title: .title}
+`
+	root := writeBase(t, configText, map[string]string{
+		LocalConfigName: "sources:\n  repositories:\n    max_age_hours: 72\n",
+	})
+	config, err := LoadConfig(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := config.Sources["repositories"].EffectiveMaxAgeHours(config.Sync.IndexMaxAgeHours); got != 72 {
+		t.Fatalf("effective freshness = %d, want local override 72h", got)
+	}
+	if got := config.Origins["sources.repositories.max_age_hours"]; !strings.HasSuffix(got, LocalConfigName) {
+		t.Fatalf("freshness origin = %q, want %s", got, LocalConfigName)
+	}
+}
+
 func TestLoadConfigRejectsCommandBinInsideTheBase(t *testing.T) {
 	root := t.TempDir()
 	inside := filepath.Join(root, "tools")
@@ -1031,8 +1123,8 @@ func TestLoadConfigAcceptsWindowOnAnEventsSource(t *testing.T) {
 	}
 }
 
-func TestLoadConfigAcceptsOnlyTheClosedTasksSourceContract(t *testing.T) {
-	valid := `name: brain
+func TestLoadConfigRejectsSourcesThatTargetAuthoredTasks(t *testing.T) {
+	taskSource := `name: brain
 layers: {tasks: true}
 sources:
   agent-session-traces:
@@ -1041,36 +1133,10 @@ sources:
     run: [agent-session-trace.sh, "{{start}}", "{{end}}"]
     window: true
 `
-	loaded, err := LoadConfig(writeBase(t, valid, nil))
-	if err != nil {
-		t.Fatalf("LoadConfig() error = %v, want the dedicated tasks source accepted", err)
-	}
-	source := loaded.Sources["agent-session-traces"]
-	if source.Layer != LayerTasks || !source.Window || len(source.Fields) != 0 || source.Format != FormatJSON {
-		t.Fatalf("tasks source = %+v, want one windowed JSON task-trace importer with no field map", source)
-	}
-
-	for _, test := range []struct {
-		name, addition, want string
-	}{
-		{"window disabled", "", "window must be true"},
-		{"fields", "    fields: {id: .id, title: .title}\n", "fields is not valid"},
-		{"records", "    records: .items[]\n", "records is not valid"},
-		{"body", "    body: [cli, \"{{id}}\"]\n", "body is not valid"},
-		{"bodies", "    bodies: none\n", "bodies is not valid"},
-		{"recency", "    recency: {half_life_days: 7}\n", "recency is not valid"},
-		{"ndjson", "    format: ndjson\n", "must emit one json array"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			candidate := strings.Replace(valid, "    window: true\n", test.addition, 1)
-			if test.name != "window disabled" {
-				candidate += "    window: true\n"
-			}
-			_, err := LoadConfig(writeBase(t, candidate, nil))
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("LoadConfig() error = %v, want %q", err, test.want)
-			}
-		})
+	_, err := LoadConfig(writeBase(t, taskSource, nil))
+	if err == nil || !strings.Contains(err.Error(), "task pages are authored evidence") ||
+		!strings.Contains(err.Error(), "layer: events with fields") {
+		t.Fatalf("LoadConfig() error = %v, want explicit transcript source replacement", err)
 	}
 }
 

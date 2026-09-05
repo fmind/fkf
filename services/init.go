@@ -612,6 +612,15 @@ schema: # shared semantic names; sources only map provider paths to these defini
   repository: {description: Repository associated with the record., cardinality: optional, relation: true, examples: [repo:github.com/owner/name]}
   participant: {description: Person or account involved in the record., cardinality: many, relation: true, examples: [person:email/user@example.test, actor:github.com/login]}
   owner: {description: Person or account that owns the record., cardinality: many, relation: true, examples: [person:email/user@example.test]}
+  status: {description: Current workflow status reported by the source., cardinality: optional}
+  assignee: {description: Person label assigned to the work item., cardinality: optional}
+  project: {description: Project associated with the record., cardinality: optional, relation: true, examples: [project:jira/TEAM]}
+  configured_root: {description: Non-secret configured root reference., cardinality: optional}
+  remote: {description: Sanitized repository remote URL., cardinality: many}
+  language: {description: Language declared by repository metadata., cardinality: many}
+  declared_task: {description: Literal build or test declaration; not execution proof., cardinality: many}
+  instruction: {description: Repository-relative instruction file path., cardinality: many}
+  proof: {description: Evidence scope or proof level., cardinality: optional}
   attachment: {description: Document attached to the record., cardinality: many, relation: true, examples: [document:drive.google.com/file-id]}
   meeting: {description: Calendar event associated with meeting evidence., cardinality: many, relation: true, examples: [events/2026-05-04/google-calendar-events.json#event-id]}
   ticket: {description: Work item associated with the record., cardinality: many, relation: true, examples: [ticket:jira/FKF-1]}

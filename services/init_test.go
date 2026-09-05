@@ -63,6 +63,7 @@ func TestInitCreatesACompleteTrustedBase(t *testing.T) {
 		core.GraphFile, core.GraphDstFile, core.GraphOffsetsFile, core.GraphMetaFile, core.GraphGenerationFile,
 		filepath.FromSlash(core.BaseSkillsDir + "/fkf-use/SKILL.md"),
 		filepath.FromSlash(core.BaseSkillsDir + "/fkf-learn/SKILL.md"),
+		filepath.FromSlash(core.BaseSkillsDir + "/fkf-learn/references/skill-evolution.md"),
 		filepath.FromSlash(core.BaseSkillsDir + "/daily-brief/SKILL.md"),
 		filepath.Join(core.BaseBinDir, "git-log-json.sh"),
 		filepath.Join(core.BaseBinDir, "agent-sessions.sh"),
@@ -526,14 +527,10 @@ func TestInitRefusesUnsafeTestsTreesBeforeWriting(t *testing.T) {
 	}
 }
 
-// assertSourcesAreComplete holds record-producing preset entries to the one source shape: a
-// collection command and fields.id. A tasks source writes validated Markdown instead.
+// assertSourcesAreComplete holds every preset entry to the one record-source shape.
 func assertSourcesAreComplete(t *testing.T, preset string, config *core.Config) {
 	t.Helper()
 	for name, source := range config.Sources {
-		if source.Layer == core.LayerTasks {
-			continue
-		}
 		if source.Fields.Path(core.FieldID).IsZero() {
 			t.Fatalf("%s collector %s declares no fields.id: %+v", preset, name, source)
 		}
@@ -873,8 +870,15 @@ func TestThirtyDayDemoKeepsAnOversizedPinAuditable(t *testing.T) {
 		t.Fatalf("first drop = %+v, want the requested pin preserved ahead of other budget drops",
 			pack.Receipt.Dropped)
 	}
+	_, err = services.BuildContext(t.Context(), base, services.ContextRequest{
+		Query: "retrieval", Budget: 1, Pins: []string{"projects/fkf-rebuild.md"},
+	})
+	var budgetError *services.ContextBudgetError
+	if !errors.As(err, &budgetError) {
+		t.Fatalf("budget-one error = %v, want the exact compact receipt minimum", err)
+	}
 	tiny, err := services.BuildContext(t.Context(), base, services.ContextRequest{
-		Query: "retrieval", Budget: 260, Pins: []string{"projects/fkf-rebuild.md"},
+		Query: "retrieval", Budget: budgetError.Minimum, Pins: []string{"projects/fkf-rebuild.md"},
 	})
 	if err != nil {
 		t.Fatal(err)

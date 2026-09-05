@@ -113,21 +113,27 @@ sources:
     body: [agent-prompt-body.sh, "{{id}}"]
     install: mise use -g jq@latest
 
-  agent-session-traces: # bounded task skeletons from the shared harness-independent store
-    # This is the write-oriented companion to agent-prompts: one completed session becomes one
-    # idempotent tasks/<date>/<repo>-<sid>/TASKS.md skeleton. Requests and the last assistant
-    # message are inert code blocks; git contributes changed paths only, never file contents.
+  agent-session-traces: # bounded transcript evidence from the shared harness-independent store
+    # One completed session becomes an ordinary event record. Requests and the last assistant
+    # message remain untrusted values; git contributes changed paths only, never file contents.
     enabled: true
-    layer: tasks
+    layer: events
     requires: [agent-session-trace.sh, agent-prompt-filter.jq, find, git, jq, mkfifo, xargs]
     window: true
     run: [agent-session-trace.sh, "{{start}}", "{{end}}"]
     timeout: 10m
+    fields:
+      id: .id
+      time: .time
+      title: .title
+      repo: .repo
+      repository: .repository_uri
     install: mise use -g jq@latest
 
   chrome-bookmarks: # a current metadata snapshot across Chromium-family profiles
     enabled: false
     layer: index
+    max_age_hours: 24 # bookmark inventory changes slowly; daily refresh avoids hourly browser reads
     requires: [chrome-bookmarks.sh, jq]
     run: [chrome-bookmarks.sh]
     fields:
@@ -144,6 +150,27 @@ sources:
     fields:
       id: .id
       title: .title
+
+  repository-facts:
+    # Replace this root before enabling. The helper inspects only immediate Git repositories
+    # and bounded metadata; it never runs Git hooks, package scripts, mise, or repository code.
+    enabled: false
+    layer: index
+    max_age_hours: 24
+    requires: [repository-facts.py, python3]
+    run: [repository-facts.py, "{{home}}/REPLACE_WITH_REPOSITORIES"]
+    test: [repository-facts.py, --version]
+    fields:
+      id: .id
+      title: .title
+      repository: .repository_uri
+      configured_root: .root_ref
+      remote: [".remotes[]"]
+      language: [".languages[]"]
+      declared_task: [".declared_tasks[].command"]
+      instruction: [".instructions[]"]
+      proof: .proof
+    install: mise use -g python@latest
 
   writing-documents: # edit the sentinel to one or more explicit authored files before enabling
     enabled: false
@@ -291,6 +318,7 @@ sources:
   github-repositories:
     enabled: false
     layer: index # a point-in-time snapshot, refreshed on age rather than per day
+    max_age_hours: 24 # repository inventory is useful daily, not on every hourly schedule tick
     requires: [github-list-json.sh, gh, jq]
     auth: [gh, auth, status]
     # The authenticated-user endpoint covers repositories you own, collaborate on, or can read
@@ -397,6 +425,7 @@ sources:
   google-calendar-agenda:
     enabled: false
     layer: index
+    max_age_hours: 1 # today's agenda drives scheduled briefs and must stay current within the hour
     requires: [gws-calendars-json.sh, gws-page-json.sh, gws, jq]
     auth: [gws, auth, status]
     run: [gws-calendars-json.sh, "{{start}}", "{{end}}", "{{date}}", "{{next_date}}"]
@@ -580,6 +609,7 @@ sources:
     # is greppable by `fkf find --where`.
     enabled: false
     layer: index
+    max_age_hours: 24 # the complete Drive inventory is intentionally a daily snapshot
     requires: [gws-page-json.sh, gws, jq]
     auth: [gws, auth, status]
     format: ndjson
@@ -881,7 +911,7 @@ sources:
   huggingface-repositories:
     enabled: false
     layer: index
-    requires: [huggingface-repositories-json.sh, hf]
+    requires: [huggingface-repositories-json.sh, hf, jq]
     auth: [hf, auth, whoami]
     run: [huggingface-repositories-json.sh]
     timeout: 5m

@@ -42,6 +42,26 @@ type ScheduleFile struct {
 	State ScheduleFileState `json:"state"`
 }
 
+// ScheduleExecutionState is the closed native last-run vocabulary. Unknown is explicit because
+// an installed or active timer is not evidence that its service ever completed successfully.
+type ScheduleExecutionState string
+
+const (
+	ScheduleExecutionUnknown   ScheduleExecutionState = "unknown"
+	ScheduleExecutionNever     ScheduleExecutionState = "never-run"
+	ScheduleExecutionRunning   ScheduleExecutionState = "running"
+	ScheduleExecutionSucceeded ScheduleExecutionState = "succeeded"
+	ScheduleExecutionFailed    ScheduleExecutionState = "failed"
+)
+
+// ScheduleExecution is the bounded native scheduler evidence for the most recent service run.
+// Timestamp deliberately retains the scheduler's own rendering instead of inventing precision.
+type ScheduleExecution struct {
+	State     ScheduleExecutionState `json:"state"`
+	Timestamp string                 `json:"timestamp,omitempty"`
+	ExitCode  *int                   `json:"exit_code,omitempty"`
+}
+
 // ScheduleRequest supplies the runtime values that must be explicit in a background unit.
 // Tests inject Platform, Home, UID, and Runner so no real user scheduler is ever touched.
 type ScheduleRequest struct {
@@ -58,17 +78,18 @@ type ScheduleRequest struct {
 // ScheduleReport is the complete managed-unit state after the requested operation. Changed on a
 // dry run means that applying the same request would modify the scheduler.
 type ScheduleReport struct {
-	Base      string         `json:"base"`
-	Action    ScheduleAction `json:"action"`
-	Platform  string         `json:"platform"`
-	Name      string         `json:"name"`
-	Files     []ScheduleFile `json:"files"`
-	DryRun    bool           `json:"dry_run,omitempty"`
-	Changed   bool           `json:"changed"`
-	Installed bool           `json:"installed"`
-	Active    bool           `json:"active"`
-	Current   bool           `json:"current"`
-	Complete  bool           `json:"complete"`
+	Base          string            `json:"base"`
+	Action        ScheduleAction    `json:"action"`
+	Platform      string            `json:"platform"`
+	Name          string            `json:"name"`
+	Files         []ScheduleFile    `json:"files"`
+	LastExecution ScheduleExecution `json:"last_execution"`
+	DryRun        bool              `json:"dry_run,omitempty"`
+	Changed       bool              `json:"changed"`
+	Installed     bool              `json:"installed"`
+	Active        bool              `json:"active"`
+	Current       bool              `json:"current"`
+	Complete      bool              `json:"complete"`
 }
 
 type scheduledFile struct {
@@ -141,7 +162,7 @@ func planSchedule(base string, request ScheduleRequest) (*schedulePlan, error) {
 	if request.Action != ScheduleInstall && request.Action != ScheduleStatus && request.Action != ScheduleRemove {
 		return nil, fmt.Errorf("unknown schedule action %q; expected install, status, or remove", request.Action)
 	}
-	root, err := core.ResolveAbsolutePath(base)
+	root, err := core.ResolvePhysicalPath(base)
 	if err != nil {
 		return nil, fmt.Errorf("resolve schedule base: %w", err)
 	}
@@ -151,6 +172,17 @@ func planSchedule(base string, request ScheduleRequest) (*schedulePlan, error) {
 	home := filepath.Clean(request.Home)
 	if request.Executable == "" || !filepath.IsAbs(request.Executable) {
 		return nil, errors.New("schedule requires an explicit absolute fkf executable")
+	}
+	executable, err := core.ResolvePhysicalPath(request.Executable)
+	if err != nil {
+		return nil, fmt.Errorf("resolve schedule executable: %w", err)
+	}
+	relativeExecutable, err := filepath.Rel(root, executable)
+	if err != nil {
+		return nil, fmt.Errorf("compare schedule executable with base: %w", err)
+	}
+	if relativeExecutable == "." || (relativeExecutable != ".." && !strings.HasPrefix(relativeExecutable, ".."+string(filepath.Separator))) {
+		return nil, errors.New("schedule executable must be outside the base")
 	}
 	closedPath := core.SanitizePathList(request.Path, root)
 	if closedPath == "" {
@@ -164,7 +196,7 @@ func planSchedule(base string, request ScheduleRequest) (*schedulePlan, error) {
 	name := "fkf-" + suffix
 	plan := &schedulePlan{
 		base: root, home: home, path: closedPath, platform: request.Platform,
-		executable: filepath.Clean(request.Executable), name: name, uid: request.UID,
+		executable: executable, name: name, uid: request.UID,
 	}
 	if request.Platform == "linux" {
 		directory := filepath.Join(home, ".config", "systemd", "user")
@@ -191,6 +223,7 @@ func inspectSchedule(
 	report := &ScheduleReport{
 		Base: plan.base, Action: request.Action, Platform: plan.platform, Name: plan.name,
 		DryRun: request.DryRun, Files: make([]ScheduleFile, 0, len(plan.files)),
+		LastExecution: ScheduleExecution{State: ScheduleExecutionUnknown},
 	}
 	allExist, allCurrent, anyExist := true, true, false
 	for _, file := range plan.files {
@@ -215,26 +248,120 @@ func inspectSchedule(
 	// Status and removal must detect an orphaned manager unit even when its managed files were
 	// manually deleted. Install only needs the probe when its files are already current.
 	if (allExist && allCurrent) || request.Action == ScheduleStatus || request.Action == ScheduleRemove {
-		report.Active = scheduleManagerActive(ctx, plan, runner)
+		report.Active, report.LastExecution = inspectScheduleManager(ctx, plan, runner)
 	}
 	report.Current = allExist && allCurrent && report.Active
 	return report, anyExist || report.Active, nil
 }
 
-func scheduleManagerActive(ctx context.Context, plan *schedulePlan, runner sources.Runner) bool {
-	commands := [][]string{{"launchctl", "print", "gui/" + strconv.Itoa(plan.uid) + "/com.fmind." + plan.name}}
-	if plan.platform == "linux" {
-		commands = [][]string{
-			{"systemctl", "--user", "is-enabled", "--quiet", plan.name + ".timer"},
-			{"systemctl", "--user", "is-active", "--quiet", plan.name + ".timer"},
+func inspectScheduleManager(
+	ctx context.Context, plan *schedulePlan, runner sources.Runner,
+) (bool, ScheduleExecution) {
+	unknown := ScheduleExecution{State: ScheduleExecutionUnknown}
+	if plan.platform == "darwin" {
+		output, err := runner.Run(ctx, scheduleManagerCommand(plan,
+			[]string{"launchctl", "print", "gui/" + strconv.Itoa(plan.uid) + "/com.fmind." + plan.name}))
+		if err != nil {
+			return false, unknown
 		}
+		return true, parseLaunchdExecution(output)
 	}
-	for _, argv := range commands {
+	for _, argv := range [][]string{
+		{"systemctl", "--user", "is-enabled", "--quiet", plan.name + ".timer"},
+		{"systemctl", "--user", "is-active", "--quiet", plan.name + ".timer"},
+	} {
 		if _, err := runner.Run(ctx, scheduleManagerCommand(plan, argv)); err != nil {
-			return false
+			return false, unknown
 		}
 	}
-	return true
+	output, err := runner.Run(ctx, scheduleManagerCommand(plan, []string{
+		"systemctl", "--user", "show", plan.name + ".service",
+		"--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,ExecMainStartTimestamp",
+	}))
+	if err != nil {
+		return true, unknown
+	}
+	return true, parseSystemdExecution(output)
+}
+
+func parseSystemdExecution(output string) ScheduleExecution {
+	values := make(map[string]string, 6)
+	for _, line := range strings.Split(output, "\n") {
+		key, value, found := strings.Cut(line, "=")
+		if !found || key == "" {
+			continue
+		}
+		if _, duplicate := values[key]; duplicate {
+			return ScheduleExecution{State: ScheduleExecutionUnknown}
+		}
+		values[key] = strings.TrimSpace(value)
+	}
+	if len(values) == 0 {
+		return ScheduleExecution{State: ScheduleExecutionUnknown}
+	}
+	execution := ScheduleExecution{State: ScheduleExecutionUnknown, Timestamp: values["ExecMainStartTimestamp"]}
+	if values["ActiveState"] == "activating" || values["SubState"] == "start" || values["SubState"] == "running" {
+		execution.State = ScheduleExecutionRunning
+		return execution
+	}
+	if execution.Timestamp == "" {
+		execution.State = ScheduleExecutionNever
+		return execution
+	}
+	if values["ExecMainCode"] == "1" || values["ExecMainCode"] == "exited" {
+		if code, err := strconv.Atoi(values["ExecMainStatus"]); err == nil {
+			execution.ExitCode = &code
+		}
+	}
+	if (execution.ExitCode != nil && *execution.ExitCode != 0) ||
+		(values["Result"] != "" && values["Result"] != "success") || values["ActiveState"] == "failed" {
+		execution.State = ScheduleExecutionFailed
+		return execution
+	}
+	if execution.ExitCode != nil && *execution.ExitCode == 0 && values["Result"] == "success" {
+		execution.State = ScheduleExecutionSucceeded
+	}
+	return execution
+}
+
+func parseLaunchdExecution(output string) ScheduleExecution {
+	execution := ScheduleExecution{State: ScheduleExecutionUnknown}
+	runs := -1
+	for _, line := range strings.Split(output, "\n") {
+		key, value, found := strings.Cut(strings.TrimSpace(line), " = ")
+		if !found {
+			continue
+		}
+		switch key {
+		case "state":
+			if value == "running" {
+				execution.State = ScheduleExecutionRunning
+			}
+		case "runs":
+			if parsed, err := strconv.Atoi(value); err == nil {
+				runs = parsed
+			}
+		case "last exit code":
+			if parsed, err := strconv.Atoi(value); err == nil {
+				execution.ExitCode = &parsed
+			}
+		}
+	}
+	if execution.State == ScheduleExecutionRunning {
+		return execution
+	}
+	if runs == 0 {
+		execution.State, execution.ExitCode = ScheduleExecutionNever, nil
+		return execution
+	}
+	if execution.ExitCode != nil {
+		if *execution.ExitCode == 0 {
+			execution.State = ScheduleExecutionSucceeded
+		} else {
+			execution.State = ScheduleExecutionFailed
+		}
+	}
+	return execution
 }
 
 func installSchedule(ctx context.Context, plan *schedulePlan, existed bool, runner sources.Runner) error {
@@ -310,12 +437,13 @@ func systemdService(plan *schedulePlan) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	arguments := []string{plan.executable, "--base", plan.base, "sync", "--if-due"}
+	// Human logs omit cache metadata inventories that can overwhelm the service journal.
+	arguments := []string{plan.executable, "--base", plan.base, "--format", "text", "sync", "--if-due"}
 	syncCommand, err := systemdCommand(arguments)
 	if err != nil {
 		return nil, err
 	}
-	arguments = []string{plan.executable, "--base", plan.base, "build", "--if-stale"}
+	arguments = []string{plan.executable, "--base", plan.base, "--format", "text", "build", "--if-stale"}
 	buildCommand, err := systemdCommand(arguments)
 	if err != nil {
 		return nil, err
@@ -355,7 +483,7 @@ func launchdAgent(plan *schedulePlan) []byte {
 	values := map[string]string{
 		"label": label, "home": plan.home, "path": plan.path,
 		"executable": plan.executable, "base": plan.base,
-		"script": `"$1" --base "$2" sync --if-due && exec "$1" --base "$2" build --if-stale`,
+		"script": `"$1" --base "$2" --format text sync --if-due && exec "$1" --base "$2" --format text build --if-stale`,
 	}
 	for key, value := range values {
 		values[key] = xmlText(value)

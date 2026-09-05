@@ -28,7 +28,7 @@ func TestHarnessCLIPrintsPlansChangesBackupsAndCurrentState(t *testing.T) {
 	if printed.code != ExitSuccess {
 		t.Fatalf("harness print = exit %d stdout %q stderr %q", printed.code, printed.stdout, printed.stderr)
 	}
-	for _, want := range []string{"# ~/.claude.json (json: mcpServers.fkf)", "mcp", "serve", root, "# ~/.claude/skills/daily-brief (link)"} {
+	for _, want := range []string{"# Base: demo (" + root + ")", "# ~/.claude.json (json: mcpServers.fkf-demo)", "mcp", "serve", root} {
 		if !strings.Contains(printed.stdout, want) {
 			t.Errorf("harness print omits %q:\n%s", want, printed.stdout)
 		}
@@ -43,7 +43,7 @@ func TestHarnessCLIPrintsPlansChangesBackupsAndCurrentState(t *testing.T) {
 		t.Fatalf("harness install = exit %d stdout %q stderr %q", installed.code, installed.stdout, installed.stderr)
 	}
 	current := invoke(t, "--format", "text", "--base", root, "harness", "install", "claude", "--check")
-	if current.code != ExitSuccess || current.stdout != "harness check: current\n" {
+	if current.code != ExitSuccess || current.stdout != "harness check for demo ("+root+"): current\n" {
 		t.Fatalf("harness check = exit %d stdout %q stderr %q", current.code, current.stdout, current.stderr)
 	}
 
@@ -52,8 +52,7 @@ func TestHarnessCLIPrintsPlansChangesBackupsAndCurrentState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherBase := filepath.Join(t.TempDir(), "other-base")
-	drifted := strings.Replace(string(config), root, otherBase, 1)
+	drifted := strings.Replace(string(config), `"env": {}`, `"env": {"drift": true}`, 1)
 	if drifted == string(config) {
 		t.Fatal("installed Claude config did not contain the selected base")
 	}
@@ -72,7 +71,8 @@ func TestScheduleCLITextDistinguishesMissingDryRunCurrentAndDrift(t *testing.T) 
 	installFakeScheduleManager(t)
 
 	missing := invoke(t, "--format", "text", "--base", root, "schedule", "status")
-	if missing.code != ExitSuccess || !strings.Contains(missing.stdout, ": missing\n") {
+	if missing.code != ExitSuccess || !strings.Contains(missing.stdout, ": missing\n") ||
+		!strings.Contains(missing.stdout, "last execution: unknown\n") {
 		t.Fatalf("missing schedule = exit %d stdout %q stderr %q", missing.code, missing.stdout, missing.stderr)
 	}
 	dryRun := invoke(t, "--format", "text", "--base", root, "schedule", "install", "--dry-run")
@@ -103,6 +103,32 @@ func TestScheduleCLITextDistinguishesMissingDryRunCurrentAndDrift(t *testing.T) 
 	drifted := invoke(t, "--format", "text", "--base", root, "schedule", "status")
 	if drifted.code != ExitSuccess || !strings.Contains(drifted.stdout, ": drifted\n") {
 		t.Fatalf("drifted schedule = exit %d stdout %q stderr %q", drifted.code, drifted.stdout, drifted.stderr)
+	}
+}
+
+func TestScheduleCLIExecutableOverridePinsTheReviewedLauncher(t *testing.T) {
+	root := demoBase(t)
+	installFakeScheduleManager(t)
+	launcher := filepath.Join(t.TempDir(), "fkf schedule launcher")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	installed := invoke(t, "--format", "text", "--base", root, "schedule", "install", "--executable", launcher)
+	if installed.code != ExitSuccess {
+		t.Fatalf("schedule override = exit %d stdout %q stderr %q", installed.code, installed.stdout, installed.stderr)
+	}
+	entries, err := os.ReadDir(scheduleTestDirectory())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		body, err := os.ReadFile(filepath.Join(scheduleTestDirectory(), entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "sync") && !strings.Contains(string(body), launcher) {
+			t.Fatalf("managed schedule did not pin launcher %q:\n%s", launcher, body)
+		}
 	}
 }
 

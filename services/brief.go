@@ -7,21 +7,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/fmind/fkf/core"
-	"github.com/fmind/fkf/sources"
 )
 
 const (
-	// DefaultBriefBudget leaves room for action, calendar, and work sections in one agent turn.
+	// DefaultBriefBudget leaves room for attention, recent evidence, and authored context.
 	DefaultBriefBudget = 1200
 	MaxBriefBudget     = int(core.MaxNarrativeBytes / 4)
-	briefVersion       = 1
-	briefMaxAgeHours   = 24
+	briefVersion       = 2
 )
 
 // BriefBudgetError reports the smallest complete receipt for a daily brief.
@@ -59,8 +56,9 @@ type BriefSection struct {
 	Items []BriefItem `json:"items"`
 }
 
-// BriefReceipt accounts for the complete JSON and text envelopes and the live auth boundary.
+// BriefReceipt accounts for the complete offline JSON and text envelopes.
 type BriefReceipt struct {
+	Base         string   `json:"base"`
 	Budget       int      `json:"budget"`
 	UsedTokens   int      `json:"used_tokens"`
 	JSONTokens   int      `json:"json_tokens"`
@@ -71,8 +69,6 @@ type BriefReceipt struct {
 	AsOf         string   `json:"as_of"`
 	InputDigest  string   `json:"input_digest"`
 	Owner        string   `json:"owner,omitempty"`
-	AuthChecked  bool     `json:"auth_checked"`
-	AuthRequired []string `json:"auth_required,omitempty"`
 	StaleSources []string `json:"stale_sources,omitempty"`
 	Unharvested  int      `json:"unharvested,omitempty"`
 	BriefVersion int      `json:"brief_version"`
@@ -85,8 +81,8 @@ type BriefReport struct {
 	Receipt  BriefReceipt   `json:"receipt"`
 }
 
-// Brief composes stored evidence, source health, and bounded auth probes. It never collects or
-// fetches a body; when the base is untrusted it stays offline and says trust is the next action.
+// Brief composes stored evidence, source health, and authored context. It never runs a source,
+// auth probe, body command, or collection; live provider readiness belongs to status --live.
 func Brief(ctx context.Context, base *Base, request BriefRequest) (*BriefReport, error) {
 	if err := checkContext(ctx); err != nil {
 		return nil, err
@@ -106,45 +102,25 @@ func Brief(ctx context.Context, base *Base, request BriefRequest) (*BriefReport,
 	owner := briefOwner(resolver)
 
 	status, err := Report(ctx, base, StatusRequest{
-		MaxAgeHours: briefMaxAgeHours, SkipGitAudit: true, evaluationTime: now,
+		SkipGitAudit: true, evaluationTime: now,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("inspect daily source health: %w", err)
 	}
-	authChecked := false
-	if status.Trust.Trusted {
-		status.AuthRequired, err = ProbeSourceAuth(ctx, base, base.Config.EnabledSources(), true)
-		if err != nil {
-			return nil, fmt.Errorf("check source login readiness: %w", err)
-		}
-		authChecked = true
-		markAuthRequired(status)
-	}
 
-	sections := make([]BriefSection, 0, 7)
-	attention := briefAttention(base, status, authChecked)
-	sections = append(sections, attention)
-	today, err := briefTodayCalendar(ctx, base, now)
+	sections := make([]BriefSection, 0, 5)
+	sections = append(sections, briefAttention(status))
+	today, err := briefRecentEvidence(ctx, base, now, 0, "today", "Today")
 	if err != nil {
 		return nil, err
 	}
 	sections = append(sections, today)
-	due, err := briefTasksDue(ctx, base, now)
+	due, err := briefAuthoredTasksDue(ctx, base, now)
 	if err != nil {
 		return nil, err
 	}
 	sections = append(sections, due)
-	failing, err := briefFailingCI(ctx, base)
-	if err != nil {
-		return nil, err
-	}
-	sections = append(sections, failing)
-	open, err := briefOpenItems(ctx, base, resolver, owner)
-	if err != nil {
-		return nil, err
-	}
-	sections = append(sections, open)
-	yesterday, err := briefYesterday(ctx, base, now)
+	yesterday, err := briefRecentEvidence(ctx, base, now, -1, "yesterday", "Yesterday")
 	if err != nil {
 		return nil, err
 	}
@@ -155,14 +131,13 @@ func Brief(ctx context.Context, base *Base, request BriefRequest) (*BriefReport,
 	}
 	sections = append(sections, projects)
 
-	authRequired := append([]string(nil), status.AuthRequired...)
 	staleSources := briefStaleSources(status)
 	report := &BriefReport{
 		Sections: sections,
 		Receipt: BriefReceipt{
-			Budget: budget, AsOf: now.Format(time.DateOnly), Owner: owner,
-			AuthChecked: authChecked, AuthRequired: authRequired, StaleSources: staleSources,
-			Unharvested: status.Unharvested, BriefVersion: briefVersion, ToolVersion: core.Version,
+			Base: base.Config.Name, Budget: budget, AsOf: now.Format(time.DateOnly), Owner: owner,
+			StaleSources: staleSources, Unharvested: status.Unharvested,
+			BriefVersion: briefVersion, ToolVersion: core.Version,
 		},
 	}
 	report.Receipt.Candidates = briefItemCount(report.Sections)
@@ -191,33 +166,18 @@ func briefOwner(resolver *IdentityResolver) string {
 	return ""
 }
 
-func briefAttention(base *Base, status *Status, authChecked bool) BriefSection {
+func briefAttention(status *Status) BriefSection {
 	section := BriefSection{Name: "attention", Title: "Attention", Items: []BriefItem{}}
-	auth := make(map[string]struct{}, len(status.AuthRequired))
-	for _, name := range status.AuthRequired {
-		auth[name] = struct{}{}
-		provider := "provider"
-		if source, found := base.Config.Sources[name]; found && len(source.Auth) > 0 {
-			provider = source.Auth[0]
-		}
-		section.Items = append(section.Items, BriefItem{
-			URI: core.ConfigFileName, Title: "Log in to " + provider + " for " + name,
-			Detail: "auth_required",
-		})
-	}
 	for _, source := range status.Sources {
 		if !source.Enabled || !source.Stale {
 			continue
 		}
-		if _, blocked := auth[source.Name]; blocked {
-			continue
-		}
-		detail := "missing or older than 24h"
+		detail := "missing or beyond its configured freshness limit"
 		if source.LastCollectedAt != "" {
 			detail = fmt.Sprintf("%dh since last collection", source.LagHours)
 		}
 		section.Items = append(section.Items, BriefItem{
-			URI: core.ConfigFileName, Title: "Collect stale source " + source.Name, Detail: detail,
+			URI: core.ConfigFileName, Title: "Refresh stale source " + source.Name, Detail: detail,
 		})
 	}
 	if status.Unharvested > 0 {
@@ -227,174 +187,28 @@ func briefAttention(base *Base, status *Status, authChecked bool) BriefSection {
 		})
 	}
 	if !status.Trust.Trusted {
-		detail := "fkf trust"
-		if !authChecked {
-			detail += "; auth readiness was not probed"
-		}
 		section.Items = append(section.Items, BriefItem{
-			URI: core.ConfigFileName, Title: "Review and trust this base", Detail: detail,
+			URI: core.ConfigFileName, Title: "Review and trust this base", Detail: "fkf trust",
 		})
 	}
 	section.Total = len(section.Items)
 	return section
 }
 
-func briefTodayCalendar(ctx context.Context, base *Base, now time.Time) (BriefSection, error) {
-	section := BriefSection{Name: "today_calendar", Title: "Today's calendar", Items: []BriefItem{}}
-	layers := make([]core.Layer, 0, 2)
-	for _, layer := range []core.Layer{core.LayerEvents, core.LayerIndex} {
-		if base.Store.Enabled(layer) {
-			layers = append(layers, layer)
-		}
-	}
-	if len(layers) == 0 {
-		return section, nil
-	}
-	sourceNames := make([]string, 0)
-	for _, name := range base.Config.SourceNames() {
-		source := base.Config.Sources[name]
-		if strings.Contains(name, "calendar") && slices.Contains(layers, source.Layer) {
-			sourceNames = append(sourceNames, name)
-		}
-	}
-	if len(sourceNames) == 0 {
-		return section, nil
-	}
-	today := now.Format(time.DateOnly)
-	result, err := Find(ctx, base, FindFilter{
-		Sources: sourceNames, Layers: layers,
-		Window: Window{Since: today, Until: today}, Limit: NoFindLimit,
-	}, false)
-	if err != nil {
-		return section, fmt.Errorf("read today's calendar: %w", err)
-	}
-	for _, record := range result.Records {
-		if record.Time == "" || !strings.Contains(record.Source, "calendar") {
-			continue
-		}
-		section.Items = append(section.Items, briefRecordItem(record, ""))
-	}
-	section.Total = len(section.Items)
-	return section, nil
-}
-
-func briefTasksDue(ctx context.Context, base *Base, now time.Time) (BriefSection, error) {
-	section := BriefSection{Name: "tasks_due", Title: "Tasks due", Items: []BriefItem{}}
-	today := now.Format(time.DateOnly)
-	if base.Store.Enabled(core.LayerTasks) {
-		listing, err := ListTasks(ctx, base, Window{}, 0)
-		if err != nil {
-			return section, fmt.Errorf("read authored tasks due: %w", err)
-		}
-		for _, trace := range listing.Traces {
-			page := trace.page
-			due, valid := briefDate(frontmatterString(page.Frontmatter, "due"))
-			if !valid || due > today || briefClosedStatus(page.Status) {
-				continue
-			}
-			section.Items = append(section.Items, BriefItem{
-				URI: page.URI, Title: briefPageTitle(page), Detail: "due " + due,
-			})
-		}
-	}
-	records, err := briefSourceRecords(ctx, base, []string{"google-tasks-items"})
-	if err != nil {
-		return section, fmt.Errorf("read collected tasks due: %w", err)
-	}
-	for _, record := range latestBriefRecords(records, briefTaskKey) {
-		due, valid := briefDate(briefRecordScalar(record.Record, "due"))
-		if !valid || due > today || briefCollectedTaskClosed(record.Record) {
-			continue
-		}
-		section.Items = append(section.Items, briefRecordItem(record, "due "+due+" · google-tasks-items"))
-	}
-	sort.Slice(section.Items, func(i, j int) bool {
-		if section.Items[i].Detail != section.Items[j].Detail {
-			return section.Items[i].Detail < section.Items[j].Detail
-		}
-		return section.Items[i].URI < section.Items[j].URI
-	})
-	section.Total = len(section.Items)
-	return section, nil
-}
-
-func briefTaskKey(record FindRecord) string {
-	if uid := briefRecordScalar(record.Record, "uid"); uid != "" {
-		return record.Source + "\x00" + uid
-	}
-	return briefWorkItemKey(record)
-}
-
-func briefCollectedTaskClosed(record sources.Record) bool {
-	if briefClosedStatus(briefRecordScalar(record, "status")) {
-		return true
-	}
-	for _, field := range []string{"deleted", "hidden"} {
-		if value, ok := record[field].(bool); ok && value {
-			return true
-		}
-	}
-	return false
-}
-
-func briefFailingCI(ctx context.Context, base *Base) (BriefSection, error) {
-	section := BriefSection{Name: "failing_ci", Title: "Failing CI", Items: []BriefItem{}}
-	records, err := briefSourceRecords(ctx, base, []string{"github-runs"})
-	if err != nil {
-		return section, fmt.Errorf("read CI runs: %w", err)
-	}
-	latest := latestBriefRecords(records, briefRunKey)
-	for _, record := range latest {
-		conclusion := strings.ToLower(briefRecordScalar(record.Record, "conclusion"))
-		if !briefFailureConclusion(conclusion) {
-			continue
-		}
-		section.Items = append(section.Items, briefRecordItem(record, "conclusion "+conclusion))
-	}
-	sortBriefItems(section.Items)
-	section.Total = len(section.Items)
-	return section, nil
-}
-
-func briefOpenItems(
-	ctx context.Context,
-	base *Base,
-	resolver *IdentityResolver,
-	owner string,
+func briefRecentEvidence(
+	ctx context.Context, base *Base, now time.Time, offset int, name, title string,
 ) (BriefSection, error) {
-	section := BriefSection{Name: "open_items", Title: "Open items assigned to owner", Items: []BriefItem{}}
-	if owner == "" {
-		return section, nil
-	}
-	records, err := briefSourceRecords(ctx, base, []string{"github-pull-requests", "github-issues"})
-	if err != nil {
-		return section, fmt.Errorf("read open GitHub items: %w", err)
-	}
-	latest := latestBriefRecords(records, briefWorkItemKey)
-	for _, record := range latest {
-		if !strings.EqualFold(briefRecordScalar(record.Record, "state"), "open") ||
-			!briefAssignedToOwner(record, resolver) {
-			continue
-		}
-		section.Items = append(section.Items, briefRecordItem(record, record.Source))
-	}
-	sortBriefItems(section.Items)
-	section.Total = len(section.Items)
-	return section, nil
-}
-
-func briefYesterday(ctx context.Context, base *Base, now time.Time) (BriefSection, error) {
-	section := BriefSection{Name: "yesterday", Title: "Yesterday", Items: []BriefItem{}}
+	section := BriefSection{Name: name, Title: title, Items: []BriefItem{}}
 	if !base.Store.Enabled(core.LayerEvents) {
 		return section, nil
 	}
-	yesterday := now.AddDate(0, 0, -1).Format(time.DateOnly)
+	date := now.AddDate(0, 0, offset).Format(time.DateOnly)
 	report, err := timelineAt(ctx, base, TimelineRequest{
-		Window: Window{Since: yesterday, Until: yesterday, DerivedFrom: "yesterday"},
+		Window: Window{Since: date, Until: date, DerivedFrom: name},
 		Budget: MaxDigestBudget, DeliveryFormat: DigestDeliveryJSON,
 	}, now)
 	if err != nil {
-		return section, fmt.Errorf("build yesterday digest: %w", err)
+		return section, fmt.Errorf("build %s evidence digest: %w", name, err)
 	}
 	for _, group := range report.Groups {
 		if group.Summarized {
@@ -409,6 +223,31 @@ func briefYesterday(ctx context.Context, base *Base, now time.Time) (BriefSectio
 			})
 		}
 	}
+	section.Total = len(section.Items)
+	return section, nil
+}
+
+func briefAuthoredTasksDue(ctx context.Context, base *Base, now time.Time) (BriefSection, error) {
+	section := BriefSection{Name: "tasks_due", Title: "Authored tasks due", Items: []BriefItem{}}
+	if !base.Store.Enabled(core.LayerTasks) {
+		return section, nil
+	}
+	today := now.Format(time.DateOnly)
+	listing, err := ListTasks(ctx, base, Window{}, 0)
+	if err != nil {
+		return section, fmt.Errorf("read authored tasks due: %w", err)
+	}
+	for _, trace := range listing.Traces {
+		page := trace.page
+		due, valid := briefDate(frontmatterString(page.Frontmatter, "due"))
+		if !valid || due > today || briefClosedStatus(page.Status) {
+			continue
+		}
+		section.Items = append(section.Items, BriefItem{
+			URI: page.URI, Title: briefPageTitle(page), Detail: "due " + due,
+		})
+	}
+	sortBriefItems(section.Items)
 	section.Total = len(section.Items)
 	return section, nil
 }
@@ -451,95 +290,6 @@ func briefActiveProjects(ctx context.Context, base *Base, now time.Time) (BriefS
 	return section, nil
 }
 
-func briefSourceRecords(ctx context.Context, base *Base, wanted []string) ([]FindRecord, error) {
-	sources := make([]string, 0, len(wanted))
-	for _, name := range wanted {
-		if source, found := base.Config.Sources[name]; found && source.Layer == core.LayerEvents {
-			sources = append(sources, name)
-		}
-	}
-	if len(sources) == 0 || !base.Store.Enabled(core.LayerEvents) {
-		return nil, nil
-	}
-	result, err := Find(ctx, base, FindFilter{
-		Layers: []core.Layer{core.LayerEvents}, Sources: sources, Limit: NoFindLimit,
-	}, false)
-	if err != nil {
-		return nil, err
-	}
-	return result.Records, nil
-}
-
-func latestBriefRecords(records []FindRecord, key func(FindRecord) string) []FindRecord {
-	latest := make(map[string]FindRecord, len(records))
-	for _, record := range records {
-		value := key(record)
-		prior, found := latest[value]
-		if !found || record.Time > prior.Time || record.Time == prior.Time && record.URI < prior.URI {
-			latest[value] = record
-		}
-	}
-	result := make([]FindRecord, 0, len(latest))
-	for _, record := range latest {
-		result = append(result, record)
-	}
-	SortFindRecords(result)
-	return result
-}
-
-func briefRunKey(record FindRecord) string {
-	repository := firstBriefField(record.Fields, "repository", "repo")
-	workflow := briefRecordScalar(record.Record, "workflowName")
-	if repository != "" && workflow != "" {
-		return repository + "\x00" + workflow
-	}
-	return briefWorkItemKey(record)
-}
-
-func briefWorkItemKey(record FindRecord) string {
-	if record.URL != "" {
-		return record.Source + "\x00" + record.URL
-	}
-	return record.Source + "\x00" + record.URI
-}
-
-func briefAssignedToOwner(record FindRecord, resolver *IdentityResolver) bool {
-	for _, name := range []string{"owner", "assignee"} {
-		for _, value := range record.Fields[name] {
-			if resolver.IsOwner(value) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func briefRecordScalar(record sources.Record, name string) string {
-	value, found := record[name]
-	if !found {
-		return ""
-	}
-	text, _ := core.ScalarString(value)
-	return text
-}
-
-func firstBriefField(fields map[string][]string, names ...string) string {
-	for _, name := range names {
-		if len(fields[name]) > 0 {
-			return fields[name][0]
-		}
-	}
-	return ""
-}
-
-func briefRecordItem(record FindRecord, detail string) BriefItem {
-	title := digestOneLine(record.Title)
-	if title == "" {
-		title = record.URI
-	}
-	return BriefItem{URI: record.URI, Time: record.Time, Title: title, Detail: detail}
-}
-
 func briefPageTitle(page Page) string {
 	if title := digestOneLine(page.Title); title != "" {
 		return title
@@ -562,15 +312,6 @@ func briefDate(value string) (string, bool) {
 	}
 	parsed, err := time.Parse(time.DateOnly, value)
 	return value, err == nil && parsed.Format(time.DateOnly) == value
-}
-
-func briefFailureConclusion(value string) bool {
-	switch value {
-	case "failure", "timed_out", "action_required", "startup_failure", "stale":
-		return true
-	default:
-		return false
-	}
 }
 
 func sortBriefItems(items []BriefItem) {
@@ -604,16 +345,14 @@ func briefItemCount(sections []BriefSection) int {
 func briefInputDigest(report *BriefReport) string {
 	input := struct {
 		Version      int            `json:"version"`
+		Base         string         `json:"base"`
 		AsOf         string         `json:"as_of"`
 		Owner        string         `json:"owner,omitempty"`
-		AuthChecked  bool           `json:"auth_checked"`
-		AuthRequired []string       `json:"auth_required,omitempty"`
 		StaleSources []string       `json:"stale_sources,omitempty"`
 		Unharvested  int            `json:"unharvested,omitempty"`
 		Sections     []BriefSection `json:"sections"`
 	}{
-		Version: briefVersion, AsOf: report.Receipt.AsOf, Owner: report.Receipt.Owner,
-		AuthChecked: report.Receipt.AuthChecked, AuthRequired: report.Receipt.AuthRequired,
+		Version: briefVersion, Base: report.Receipt.Base, AsOf: report.Receipt.AsOf, Owner: report.Receipt.Owner,
 		StaleSources: report.Receipt.StaleSources, Unharvested: report.Receipt.Unharvested,
 		Sections: report.Sections,
 	}
@@ -713,16 +452,16 @@ func RenderBriefText(report *BriefReport) string {
 			}
 			uri := ""
 			if item.URI != "" {
-				uri = " · " + item.URI
+				uri = " · " + qualifiedCitation(report.Receipt.Base, item.URI)
 			}
 			fmt.Fprintf(&output, "%s %s%s%s%s\n", prefix, item.Title, count, detail, uri)
 		}
 	}
 	receipt := report.Receipt
-	fmt.Fprintf(&output, "receipt: selected %d/%d · dropped %d · budget %d · used %d\n",
-		receipt.Selected, receipt.Candidates, receipt.Dropped, receipt.Budget, receipt.UsedTokens)
-	fmt.Fprintf(&output, "receipt: json %d · text %d · owner %s · auth_checked %t\n",
-		receipt.JSONTokens, receipt.TextTokens, briefDash(receipt.Owner), receipt.AuthChecked)
+	fmt.Fprintf(&output, "receipt: selected %d/%d · dropped %d · budget %d · used %d · base %s\n",
+		receipt.Selected, receipt.Candidates, receipt.Dropped, receipt.Budget, receipt.UsedTokens, receipt.Base)
+	fmt.Fprintf(&output, "receipt: json %d · text %d · owner %s · offline=true\n",
+		receipt.JSONTokens, receipt.TextTokens, briefDash(receipt.Owner))
 	fmt.Fprintf(&output, "receipt: input_sha256 %s · brief v%d · fkf %s\n",
 		receipt.InputDigest, receipt.BriefVersion, receipt.ToolVersion)
 	return output.String()

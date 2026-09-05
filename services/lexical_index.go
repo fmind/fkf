@@ -20,11 +20,11 @@ import (
 	"github.com/fmind/fkf/sources"
 )
 
-// FKF deliberately uses a plain postings TSV instead of SQLite FTS5 here. The SQLite option
-// would add a large pure-Go driver and its transitive notice surface to the one shipped binary;
-// the sorted, rebuildable TSV needs only the standard library and stays inspectable with cut,
-// sort, and awk. It is a candidate generator and term-statistics cache only: Go still loads the
-// selected evidence and applies the canonical scorer.
+// FKF deliberately uses a sorted, rebuildable postings file instead of SQLite FTS5 here. The
+// SQLite option would add a large pure-Go driver and its transitive notice surface to the one
+// shipped binary. TSV keeps keys and section boundaries inspectable; delta-varint/base64 payloads
+// remove repeated decimal IDs without a compression dependency. This is a candidate generator
+// and term-statistics cache only: Go still loads selected evidence and applies the canonical scorer.
 const (
 	LexicalIndexPath     = "index/.fkf-index.tsv"
 	lexicalIndexMetaPath = "index/.fkf-index.meta.json"
@@ -33,13 +33,13 @@ const (
 	LexicalIndexFallbackStale   = "stale"
 	LexicalIndexFallbackCorrupt = "corrupt"
 
-	lexicalIndexSchemaVersion    = 2
-	lexicalIndexExtractorVersion = 11
-	lexicalIndexFormat           = "postings-tsv-v1"
+	lexicalIndexSchemaVersion    = 3
+	lexicalIndexExtractorVersion = 12
+	lexicalIndexFormat           = "postings-varint-v2"
 	maxLexicalIndexBytes         = 512 << 20
 	maxLexicalIndexEntries       = 1_000_000
 	lexicalLookupShardCount      = 4096
-	minLexicalLookupRowBytes     = 78
+	minLexicalLookupRowBytes     = 74
 )
 
 var (
@@ -417,7 +417,7 @@ func validateLexicalIndexMeta(meta LexicalIndexMeta) error {
 		meta.PostingsOffset > meta.LookupOffset || meta.LookupOffset > meta.CandidatesOffset ||
 		meta.CandidatesOffset > int64(meta.Bytes):
 		return fmt.Errorf("%w: invalid byte count", errLexicalIndexCorrupt)
-	case meta.Entries == 0 && meta.PostingsOffset != 0 || meta.Entries > 0 && meta.PostingsOffset == 0:
+	case meta.PostingsOffset < int64(len(lexicalScoreFieldsRow)+1):
 		return fmt.Errorf("%w: invalid postings offset", errLexicalIndexCorrupt)
 	case !isCanonicalSHA256(meta.EntriesSHA256) || !isCanonicalSHA256(meta.InputsSHA256) ||
 		!isCanonicalSHA256(meta.SemanticsSHA256) ||

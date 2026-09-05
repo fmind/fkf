@@ -47,7 +47,10 @@ func TestPresetRemoteSourcesDeclareProviderReadinessProbes(t *testing.T) {
 			"huggingface-repositories": {"hf", "auth", "whoami"},
 		},
 		services.PresetTeam: {
-			"github-repositories": {"gh", "auth", "status"},
+			"github-repositories":  {"gh", "auth", "status"},
+			"github-pull-requests": {"gh", "auth", "status"},
+			"github-issues":        {"gh", "auth", "status"},
+			"jira-issues":          {"acli", "jira", "auth", "status"},
 		},
 		services.PresetMinimal: {},
 	}

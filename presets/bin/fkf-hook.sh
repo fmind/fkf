@@ -1,30 +1,23 @@
 #!/bin/sh
-# fkf-hook.sh <harness> [fkf-executable] — written into <base>/bin by `fkf init`. The session-start hook for the base
+# fkf-hook.sh <harness> <fkf-executable> <workspace> — written into <base>/bin by `fkf init`.
+# The session-start hook for the base
 # this script lives in: it reads the hook's stdin when the harness sends one, finds the repository
-# and branch the agent is working in, combines yesterday's stored digest with a budgeted
+# the agent is working in, combines yesterday's stored digest with a budgeted
 # repository pack, and prints it in the envelope the harness expects. One script, one line per harness:
 #
 #   claude       plain text on stdout              Claude Code    SessionStart
 #   codex        {"hookSpecificOutput": …}         Codex CLI      SessionStart
-#   opencode     plain text for its plugin         OpenCode       first system transform
-#   grok         plain text (currently ignored)    Grok           SessionStart
 #   kiro         plain text on stdout              Kiro           SessionStart
-#   copilot      {} (stdout is ignored)             Copilot CLI    sessionStart
 #   gemini       {"hookSpecificOutput": …}         Gemini CLI     SessionStart
-#   cursor       {"additional_context": …}         Cursor         sessionStart
-#   antigravity  {"injectSteps": …}                Antigravity    PreInvocation, first call only
-#   cline        {"contextModification": …}        Cline          TaskStart
 #
-# The base is the directory above this script, so the line that names the script in a harness
-# configuration is the disclosure: `~/brain/bin/fkf-hook.sh claude` says which base the session can
-# see. The pack is evidence, never instructions; fkf reads no secret and executes nothing to
-# produce it. The hook never blocks a session: with no repository, no base, or no fkf on PATH it
-# prints an empty envelope and exits 0. The budget is a constant below; raise it for a harness
-# that starts every session empty, lower it when the hook also fires on every prompt.
+# The managed command discloses the base and workspace. The pack is evidence, never instructions;
+# fkf reads no secret and executes nothing to produce it. The hook never blocks a session: invalid
+# input, a cwd outside the configured workspace, or a missing tool produces an empty envelope.
 set -u
 
-harness=${1:?usage: fkf-hook.sh <claude|codex|gemini|copilot|antigravity|opencode|grok|cursor|kiro|cline>}
-fkf_executable=${2-}
+harness=${1:?usage: fkf-hook.sh <claude|codex|gemini|kiro> <fkf-executable> <workspace>}
+fkf_executable=${2:?usage: fkf-hook.sh <claude|codex|gemini|kiro> <fkf-executable> <workspace>}
+workspace=${3:?usage: fkf-hook.sh <claude|codex|gemini|kiro> <fkf-executable> <workspace>}
 day_budget=600
 repository_budget=850
 compact_budget=600
@@ -52,21 +45,20 @@ esac
 export PATH
 unset script_dir
 
-# Managed harness entries pass the exact binary that installed them, avoiding a stale release
-# earlier on PATH. A direct/manual invocation may still resolve fkf from the closed PATH above.
-if [ -n "$fkf_executable" ]; then
-  case "$fkf_executable" in /*) [ -x "$fkf_executable" ] || exit 0 ;; *) exit 0 ;; esac
-else
-  fkf_executable=$(command -v fkf 2>/dev/null || true)
-  [ -n "$fkf_executable" ] || exit 0
-fi
+# Managed entries pass the exact executable and physical workspace selected at install time.
+case "$fkf_executable" in /*) [ -x "$fkf_executable" ] || exit 0 ;; *) exit 0 ;; esac
+case "$workspace" in /*) ;; *) exit 0 ;; esac
+workspace=$(
+  unset CDPATH
+  cd "$workspace" 2>/dev/null && pwd -P
+) || exit 0
 
 # Every JSON envelope needs jq; without it the promise to never block wins over the pack.
-command -v jq >/dev/null 2>&1 || case "$harness" in claude | opencode | grok | kiro) ;; *) exit 0 ;; esac
+command -v jq >/dev/null 2>&1 || case "$harness" in claude | kiro) ;; *) exit 0 ;; esac
 
 # The hook's JSON arrives on stdin for every harness that sends one; a terminal means none.
 input=""
-if [ ! -t 0 ]; then input=$(cat 2>/dev/null || true); fi
+if [ ! -t 0 ]; then input=$(dd bs=65537 count=1 2>/dev/null || true); fi
 field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null || true; }
 
 # Claude's compact source already carries the conversation summary. Re-inject only the smaller
@@ -77,22 +69,23 @@ if [ "$harness" = "claude" ] && [ "$(field '.source')" = "compact" ]; then compa
 # Nothing to add is a valid answer, spelled the way each harness reads it.
 empty() {
   case "$harness" in
-    claude | opencode | grok | kiro) : ;;
-    cline) echo '{"cancel":false}' ;;
+    claude | kiro) : ;;
     *) echo '{}' ;;
   esac
   exit 0
 }
 
-# Antigravity fires PreInvocation before every model call, so only the first one answers.
-case "$harness" in
-  antigravity) [ "$(field '.invocationNum // 0')" = "0" ] || empty ;;
-esac
-
-# Where the agent works: the harness's own field first (user-level hooks often run from the
-# configuration directory, not the project), then the environment, then this process's cwd.
+# Use only the host protocol's session path. Ambient cwd and environment variables describe the
+# hook process and can inject an unrelated workspace.
+[ "${#input}" -le 65536 ] || empty
+printf '%s' "$input" | jq -e 'type == "object"' >/dev/null 2>&1 || empty
 dir=$(field '.cwd // .workspace_roots[0] // .workspacePaths[0] // .workspaceRoots[0] // .workspaceInfo.rootPath')
-[ -n "$dir" ] || dir=${CLAUDE_PROJECT_DIR:-${GEMINI_PROJECT_DIR:-$PWD}}
+case "$dir" in /*) ;; *) empty ;; esac
+dir=$(
+  unset CDPATH
+  cd "$dir" 2>/dev/null && pwd -P
+) || empty
+case "$dir/" in "$workspace/"*) ;; *) empty ;; esac
 
 # repo_name accepts only an exact GitHub owner/name from a plain identifier, a github.com URL,
 # or a github.com SCP-style remote. Authority userinfo, other hosts, and malformed paths never
@@ -128,12 +121,12 @@ repo_name() {
   printf '%s/%s\n' "$owner" "$name"
 }
 
-# owner/name scores as an exact identifier on every record about the repository; the branch is
-# an ordinary term. An invalid or credential-only remote contributes no repository term.
+# Use the declared repository URI so setup facts and activity share an exact identity. A
+# branch such as main is not a repository identity and can retrieve unrelated work.
 remote=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
 repo=$(repo_name "$remote")
-branch=$(git -C "$dir" branch --show-current 2>/dev/null || true)
-query=$(printf '%s %s' "$repo" "$branch" | sed 's/^ *//; s/ *$//')
+query=""
+if [ -n "$repo" ]; then query="repo:github.com/$repo"; fi
 
 # Startup carries two independently bounded stored reads. Their 600 + 850 token budgets leave
 # room inside the historical 1500-token hook envelope for the two labels below. Compact already
@@ -159,15 +152,12 @@ fi
 [ -n "$pack" ] || empty
 
 case "$harness" in
-  claude | opencode | grok | kiro) printf '%s\n' "$pack" ;;
+  claude | kiro) printf '%s\n' "$pack" ;;
   codex) printf '%s' "$pack" | jq -Rs '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: .}}' ;;
   copilot) echo '{}' ;;
   gemini)
     event=$(field '.hook_event_name'); event=${event:-SessionStart}
     printf '%s' "$pack" | jq -Rs --arg event "$event" '{hookSpecificOutput: {hookEventName: $event, additionalContext: .}}'
     ;;
-  cursor) printf '%s' "$pack" | jq -Rs '{additional_context: .}' ;;
-  antigravity) printf '%s' "$pack" | jq -Rs '{injectSteps: [{ephemeralMessage: .}]}' ;;
-  cline) printf '%s' "$pack" | jq -Rs '{cancel: false, contextModification: .}' ;;
   *) echo "fkf-hook.sh: unknown harness $harness" >&2; exit 1 ;;
 esac

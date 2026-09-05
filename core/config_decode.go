@@ -34,6 +34,7 @@ type fileIdentity struct {
 type fileSource struct {
 	Enabled     bool         `yaml:"enabled"`
 	Layer       string       `yaml:"layer"`
+	MaxAgeHours *int         `yaml:"max_age_hours"`
 	Auth        *[]string    `yaml:"auth"`
 	Run         *[]string    `yaml:"run"`
 	Test        *[]string    `yaml:"test"`
@@ -74,9 +75,10 @@ type fileLocal struct {
 }
 
 type fileLocalSource struct {
-	Enabled *bool     `yaml:"enabled"`
-	Run     *[]string `yaml:"run"`
-	Timeout *string   `yaml:"timeout"`
+	Enabled     *bool     `yaml:"enabled"`
+	Run         *[]string `yaml:"run"`
+	Timeout     *string   `yaml:"timeout"`
+	MaxAgeHours *int      `yaml:"max_age_hours"`
 }
 
 // --- loading -----------------------------------------------------------------------------
@@ -237,6 +239,11 @@ func applyLocalOverlay(config *Config, store Store) error {
 			}
 			source.Timeout = timeout
 			config.Origins["sources."+name+".timeout"] = path
+		}
+		if override.MaxAgeHours != nil {
+			age := *override.MaxAgeHours
+			source.MaxAgeHours = &age
+			config.Origins["sources."+name+".max_age_hours"] = path
 		}
 	}
 	return nil

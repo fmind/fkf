@@ -26,7 +26,9 @@ func newScheduleCommand() *cli.Command {
 }
 
 func newScheduleActionCommand(action services.ScheduleAction, supportsDryRun bool) *cli.Command {
-	flags := []cli.Flag{}
+	flags := []cli.Flag{&cli.StringFlag{
+		Name: "executable", Usage: "Absolute FKF-compatible executable or launcher to pin in the schedule.",
+	}}
 	if supportsDryRun {
 		flags = append(flags, &cli.BoolFlag{Name: "dry-run", Usage: "Print the managed change without writing or invoking the user scheduler."})
 	}
@@ -40,9 +42,12 @@ func newScheduleActionCommand(action services.ScheduleAction, supportsDryRun boo
 			if err != nil {
 				return err
 			}
-			executable, err := os.Executable()
-			if err != nil {
-				return fmt.Errorf("locate current FKF executable: %w", err)
+			executable := cmd.String("executable")
+			if executable == "" {
+				executable, err = os.Executable()
+				if err != nil {
+					return fmt.Errorf("locate current FKF executable: %w", err)
+				}
 			}
 			run := func() error {
 				report, err := services.Schedule(ctx, base.Root(), services.ScheduleRequest{
@@ -88,6 +93,22 @@ func emitSchedule(cmd *cli.Command, report *services.ScheduleReport, err error) 
 		prefix = "schedule dry-run"
 	}
 	if _, err := fmt.Fprintf(cmd.Root().Writer, "%s %s %s: %s\n", prefix, report.Platform, report.Name, state); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(cmd.Root().Writer, "last execution: %s", report.LastExecution.State); err != nil {
+		return err
+	}
+	if report.LastExecution.ExitCode != nil {
+		if _, err := fmt.Fprintf(cmd.Root().Writer, " (exit %d)", *report.LastExecution.ExitCode); err != nil {
+			return err
+		}
+	}
+	if report.LastExecution.Timestamp != "" {
+		if _, err := fmt.Fprintf(cmd.Root().Writer, " at %s", report.LastExecution.Timestamp); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintln(cmd.Root().Writer); err != nil {
 		return err
 	}
 	for _, file := range report.Files {

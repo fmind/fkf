@@ -74,7 +74,7 @@ export FKF_BASE=~/brain
 fkf status
 ```
 
-The personal preset declares a small supported set of local and provider sources, and four of them start enabled — `fkf status` names them. Three write metadata-only evidence to `events/`: git commits, coding-agent session metadata without prompts or responses, and touched agent-memory file metadata. The memory-file source also prefetches each full file into the ignored, manifest-verified body cache under its declared `bodies: sync` policy; the text does not enter the stored document. The fourth, `agent-session-traces`, writes one bounded task skeleton per completed session into `tasks/`: your requests and the last assistant message as inert code blocks, plus changed paths from `git status`. It makes no model call and reads no changed file content; [Agent harnesses](../harnesses/) describes that store. Together they use `git`, `jq`, `sqlite3`, and the standard `find`, `stat`, `touch`, and `xargs` utilities on supported Linux and macOS systems. Shell-history metadata and every network source start disabled. Enable only the sources whose data boundary and prerequisites you have reviewed.
+The personal preset declares a small supported set of local and provider sources, and four local event sources start enabled — `fkf status` names them. Git commits, coding-agent session metadata, and touched agent-memory file metadata omit prompts and responses. The memory-file source also prefetches each full file into the ignored, manifest-verified body cache under its declared `bodies: sync` policy; the text does not enter the stored document. The fourth source, `agent-session-traces`, stores bounded request and assistant excerpts from completed normalized sessions as ordinary untrusted JSON evidence. It makes no model call and reads no changed file content; [Agent harnesses](../harnesses/) describes that store. Collection never creates a task page. Together the enabled helpers use `git`, `jq`, `sqlite3`, and standard POSIX utilities on Linux and macOS. Shell-history metadata, repository facts, and every network source start disabled. Enable only the sources whose data boundary and prerequisites you have reviewed.
 
 Initialization creates:
 
@@ -88,6 +88,16 @@ Initialization creates:
 - a git repository with owner-only files.
 
 Running `fkf init ~/brain` again refreshes FKF-owned skills and managed blocks. It preserves `fkf.yaml`, `AGENTS.md`, custom skills, existing bridges, and existing helpers. After enabling a preset source, run `fkf config helpers --refresh` to install any newly required official helper. `fkf config helpers` compares official helpers with the running binary, and refresh leaves custom scripts untouched.
+
+## Setup checklist
+
+1. Initialize a base with a unique `--name`, then select it explicitly with `--base` when more than one base is connected.
+1. Review `fkf.yaml`; enable only explicit sources and choose provider accounts in the launching process, never in the base.
+1. Refresh official helpers and run the named fake-backed hooks for the sources you enabled.
+1. Inspect `fkf sync --dry-run`, then `fkf trust --check` and the complete `fkf trust --all` disclosure before allowing execution.
+1. Preview each provider source, collect the intended window, and inspect the stored JSON.
+1. Run `fkf build`, `fkf eval`, and the base's validation gate before relying on retrieval.
+1. Inspect `fkf harness install --all --dry-run`, install that base's MCP entries, then pass `--workspace` explicitly when adding supported context hooks.
 
 ## Enable and collect one source
 
@@ -130,6 +140,25 @@ fkf --base ~/brain harness install --all
 `print` lets you inspect the exact integration first. `install` pins the current executable and absolute base in every managed entry, and wraps base-owned hook execution in a trust check. The server exposes bounded `context`, `find`, `day`, `timeline`, `list`, `read`, and `graph` operations. It cannot write, collect, or fetch record bodies. Pageable calls return opaque cursors bound to the normalized effective query and result snapshot. `--base` is required so the launch command states the disclosure boundary.
 
 Keep the base's `AGENTS.md` minimal and specific to that base. FKF instructions belong in the copied skills, and reusable custom workflows belong in their own `.agents/skills/<name>/` packages.
+
+## Share one team base
+
+Use one designated collector. Other team members pull the reviewed JSON and Markdown through Git and keep collection disabled locally; FKF's base lock coordinates processes on one machine, not collectors on different machines.
+
+```bash
+fkf init ~/team-brain --name team --preset team --track-collected
+$EDITOR ~/team-brain/fkf.yaml # replace one GitHub repository and Jira project/site/filter
+fkf --base ~/team-brain config helpers --refresh
+fkf --base ~/team-brain test github-issues github-pull-requests jira-issues
+fkf --base ~/team-brain sync --dry-run
+fkf --base ~/team-brain trust --check
+fkf --base ~/team-brain trust --all
+GH_CONFIG_DIR=~/.config/gh-team fkf --base ~/team-brain sync jira-issues --preview
+```
+
+Select the Jira site in ACLI's machine-local configuration with `acli jira auth switch`; keep its credentials and GitHub's `GH_CONFIG_DIR` out of the base. Preview and collect each enabled source deliberately. Then inspect `git status`, the projected JSON, and `git diff` before a separately authorized commit and push.
+
+`--track-collected` is the durable sharing decision: `git check-ignore events index` should report neither layer, and `git ls-files events index` names collected documents after they are explicitly added. `fkf.local.yaml`, `bodies/`, and `index/.fkf-index.*` stay ignored because they contain machine-local configuration or rebuildable caches. A second clone can run `fkf validate records`, `fkf build`, and offline reads without provider access.
 
 ## Next
 

@@ -84,7 +84,7 @@ func assertConfigSchemaSources(t *testing.T, properties map[string]any) {
 	sourceProperties := mustSchemaObject(t, source["properties"], "source properties")
 	required, _ := source["required"].([]string)
 	if strings.Join(required, ",") != "run" || source["allOf"] == nil {
-		t.Fatalf("the source shape requires %v with conditional layer rules; tasks omit fields while collected JSON requires them", required)
+		t.Fatalf("the source shape requires %v with conditional event-field rules", required)
 	}
 	assertSchemaDescriptionHasPlaceholders(t, source, "run", RunPlaceholders)
 	assertSchemaDescriptionHasPlaceholders(t, source, "test", TestPlaceholders)
@@ -131,6 +131,14 @@ func assertConfigSchemaSources(t *testing.T, properties map[string]any) {
 	halfLife := mustSchemaObject(t, recencyProperties["half_life_days"], "recency half life")
 	if halfLife["minimum"] != 1 || halfLife["maximum"] != MaxRecencyHalfLifeDays {
 		t.Fatalf("recency bounds = %v..%v, want 1..%d", halfLife["minimum"], halfLife["maximum"], MaxRecencyHalfLifeDays)
+	}
+	maxAge := mustSchemaObject(t, sourceProperties["max_age_hours"], "source max age")
+	if maxAge["minimum"] != 1 || maxAge["maximum"] != MaxFreshnessAgeHours {
+		t.Fatalf("source max_age_hours bounds = %v..%v, want 1..%d",
+			maxAge["minimum"], maxAge["maximum"], MaxFreshnessAgeHours)
+	}
+	if !strings.Contains(fmt.Sprint(source["allOf"]), "max_age_hours") {
+		t.Fatal("source schema does not restrict max_age_hours to index sources")
 	}
 	if _, exists := sourceProperties["lookup"]; exists {
 		t.Fatal("the schema still publishes the removed lookup-only execution surface")

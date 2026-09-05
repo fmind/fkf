@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -20,6 +21,20 @@ type scheduleRunner struct {
 
 func (runner *scheduleRunner) Run(_ context.Context, command sources.Command) (string, error) {
 	runner.calls = append(runner.calls, command)
+	return "", nil
+}
+
+type scheduleMetadataRunner struct {
+	calls  []sources.Command
+	output string
+	err    error
+}
+
+func (runner *scheduleMetadataRunner) Run(_ context.Context, command sources.Command) (string, error) {
+	runner.calls = append(runner.calls, command)
+	if slices.Contains(command.Argv, "show") || slices.Contains(command.Argv, "print") {
+		return runner.output, runner.err
+	}
 	return "", nil
 }
 
@@ -93,7 +108,7 @@ func assertLinuxScheduleInstall(
 	timer := readScheduleFile(t, installed.Files[1].Path)
 	for _, want := range []string{
 		`Environment="HOME=` + request.Home + `"`, `Environment="PATH=/usr/bin:/bin"`,
-		request.Executable, base, `"sync" "--if-due"`, `"build" "--if-stale"`,
+		request.Executable, base, `"--format" "text" "sync" "--if-due"`, `"--format" "text" "build" "--if-stale"`,
 	} {
 		if !strings.Contains(service, want) {
 			t.Fatalf("service omits %q:\n%s", want, service)
@@ -117,7 +132,7 @@ func assertLinuxScheduleStatus(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !status.Installed || !status.Active || !status.Current || status.Changed || !status.Complete || len(runner.calls) != 2 {
+	if !status.Installed || !status.Active || !status.Current || status.Changed || !status.Complete || len(runner.calls) != 3 {
 		t.Fatalf("status = %#v with %d commands", status, len(runner.calls))
 	}
 	if !reflect.DeepEqual(runner.calls[0].Argv,
@@ -125,6 +140,9 @@ func assertLinuxScheduleStatus(
 		!reflect.DeepEqual(runner.calls[1].Argv,
 			[]string{"systemctl", "--user", "is-active", "--quiet", status.Name + ".timer"}) {
 		t.Fatalf("systemd status calls = %#v", runner.calls)
+	}
+	if !slices.Contains(runner.calls[2].Argv, "show") {
+		t.Fatalf("systemd status omitted service metadata: %#v", runner.calls)
 	}
 }
 
@@ -139,7 +157,7 @@ func assertLinuxScheduleRemove(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !removed.DryRun || !removed.Changed || !removed.Installed || !removed.Active || len(runner.calls) != 2 {
+	if !removed.DryRun || !removed.Changed || !removed.Installed || !removed.Active || len(runner.calls) != 3 {
 		t.Fatalf("dry remove = %#v with %d commands", removed, len(runner.calls))
 	}
 	runner.calls = nil
@@ -151,9 +169,9 @@ func assertLinuxScheduleRemove(
 	if removed.Installed || !removed.Changed || !removed.Complete {
 		t.Fatalf("removed report = %#v", removed)
 	}
-	if len(runner.calls) != 4 || !reflect.DeepEqual(runner.calls[2].Argv,
+	if len(runner.calls) != 5 || !reflect.DeepEqual(runner.calls[3].Argv,
 		[]string{"systemctl", "--user", "disable", "--now", name + ".timer"}) ||
-		!reflect.DeepEqual(runner.calls[3].Argv, []string{"systemctl", "--user", "daemon-reload"}) {
+		!reflect.DeepEqual(runner.calls[4].Argv, []string{"systemctl", "--user", "daemon-reload"}) {
 		t.Fatalf("systemd removal calls = %#v", runner.calls)
 	}
 	for _, file := range removed.Files {
@@ -193,7 +211,7 @@ func TestScheduleDarwinInstallsManagedHourlyLaunchAgent(t *testing.T) {
 		"<key>StartInterval</key>\n  <integer>3600</integer>",
 		"<key>RunAtLoad</key>\n  <true/>",
 		"<key>HOME</key>", "home &amp; owner", "<key>PATH</key>",
-		`&#34;$1&#34; --base &#34;$2&#34; sync --if-due &amp;&amp; exec &#34;$1&#34; --base &#34;$2&#34; build --if-stale`,
+		`&#34;$1&#34; --base &#34;$2&#34; --format text sync --if-due &amp;&amp; exec &#34;$1&#34; --base &#34;$2&#34; --format text build --if-stale`,
 		"base &amp; evidence",
 	} {
 		if !strings.Contains(plist, want) {
@@ -219,6 +237,7 @@ func TestScheduleRejectsIncompleteOrUnsupportedRuntimeContext(t *testing.T) {
 		{Action: ScheduleInstall, Home: t.TempDir(), Platform: "windows", Executable: executable, Path: "/bin"},
 		{Action: ScheduleInstall, Home: t.TempDir(), Platform: "linux", Executable: "relative", Path: "/bin"},
 		{Action: ScheduleInstall, Home: t.TempDir(), Platform: "linux", Executable: executable, Path: "relative"},
+		{Action: ScheduleInstall, Home: t.TempDir(), Platform: "linux", Executable: filepath.Join(base, "fkf"), Path: "/bin"},
 	}
 	for _, request := range tests {
 		if _, err := Schedule(t.Context(), base, request); err == nil {
@@ -348,15 +367,120 @@ func TestScheduleRemoveDeactivatesAnOrphanedManagerUnit(t *testing.T) {
 	if !report.Changed || report.Installed || report.Active || !report.Complete {
 		t.Fatalf("orphan removal report = %+v", report)
 	}
-	if len(runner.calls) != 4 || !reflect.DeepEqual(runner.calls[0].Argv,
+	if len(runner.calls) != 5 || !reflect.DeepEqual(runner.calls[0].Argv,
 		[]string{"systemctl", "--user", "is-enabled", "--quiet", report.Name + ".timer"}) ||
 		!reflect.DeepEqual(runner.calls[1].Argv,
 			[]string{"systemctl", "--user", "is-active", "--quiet", report.Name + ".timer"}) ||
-		!reflect.DeepEqual(runner.calls[2].Argv,
+		!reflect.DeepEqual(runner.calls[3].Argv,
 			[]string{"systemctl", "--user", "disable", "--now", report.Name + ".timer"}) {
 		t.Fatalf("orphan manager calls = %#v", runner.calls)
 	}
 }
+
+func TestScheduleLinuxReportsTheLastNativeExecutionState(t *testing.T) {
+	base, request, installRunner := linuxScheduleFixture(t)
+	if _, err := Schedule(t.Context(), base, request); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name     string
+		metadata string
+		state    ScheduleExecutionState
+		exitCode *int
+	}{
+		{name: "never", metadata: "Result=success\nExecMainStartTimestamp=\nExecMainCode=0\nExecMainStatus=0\nActiveState=inactive\nSubState=dead\n", state: ScheduleExecutionNever},
+		{name: "running", metadata: "Result=success\nExecMainStartTimestamp=Sat 2026-09-05 08:00:31 CEST\nExecMainCode=0\nExecMainStatus=0\nActiveState=activating\nSubState=start\n", state: ScheduleExecutionRunning},
+		{name: "succeeded", metadata: "Result=success\nExecMainStartTimestamp=Sat 2026-09-05 08:00:31 CEST\nExecMainCode=1\nExecMainStatus=0\nActiveState=inactive\nSubState=dead\n", state: ScheduleExecutionSucceeded, exitCode: intPointer(0)},
+		{name: "failed", metadata: "Result=exit-code\nExecMainStartTimestamp=Sat 2026-09-05 08:00:31 CEST\nExecMainCode=1\nExecMainStatus=17\nActiveState=failed\nSubState=failed\n", state: ScheduleExecutionFailed, exitCode: intPointer(17)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &scheduleMetadataRunner{output: test.metadata}
+			request.Action, request.Runner = ScheduleStatus, runner
+			report, err := Schedule(t.Context(), base, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.LastExecution.State != test.state || !reflect.DeepEqual(report.LastExecution.ExitCode, test.exitCode) {
+				t.Fatalf("last execution = %#v, want state %q exit %#v", report.LastExecution, test.state, test.exitCode)
+			}
+			if test.state != ScheduleExecutionNever && report.LastExecution.Timestamp == "" {
+				t.Fatalf("last execution omitted native timestamp: %#v", report.LastExecution)
+			}
+			if len(runner.calls) != 3 || !slices.Contains(runner.calls[2].Argv, "show") {
+				t.Fatalf("status calls = %#v, want bounded systemctl show after active checks", runner.calls)
+			}
+		})
+	}
+	_ = installRunner
+}
+
+func TestScheduleDarwinReportsRunningNeverAndExitedStates(t *testing.T) {
+	home, base := t.TempDir(), t.TempDir()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	install := ScheduleRequest{
+		Action: ScheduleInstall, Home: home, Platform: "darwin", UID: 501,
+		Executable: executable, Path: "/usr/bin:/bin", Runner: &scheduleRunner{},
+	}
+	if _, err := Schedule(t.Context(), base, install); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, output string
+		state        ScheduleExecutionState
+		exitCode     *int
+	}{
+		{name: "running", output: "state = running\nruns = 2\n", state: ScheduleExecutionRunning},
+		{name: "never", output: "state = not running\nruns = 0\n", state: ScheduleExecutionNever},
+		{name: "succeeded", output: "state = not running\nruns = 2\nlast exit code = 0\n", state: ScheduleExecutionSucceeded, exitCode: intPointer(0)},
+		{name: "failed", output: "state = not running\nruns = 2\nlast exit code = 9\n", state: ScheduleExecutionFailed, exitCode: intPointer(9)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &scheduleMetadataRunner{output: test.output}
+			request := install
+			request.Action, request.Runner = ScheduleStatus, runner
+			report, err := Schedule(t.Context(), base, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.LastExecution.State != test.state || !reflect.DeepEqual(report.LastExecution.ExitCode, test.exitCode) {
+				t.Fatalf("last execution = %#v, want state %q exit %#v", report.LastExecution, test.state, test.exitCode)
+			}
+		})
+	}
+}
+
+func TestScheduleCanonicalizesTheBaseBeforeDerivingItsIdentity(t *testing.T) {
+	realBase := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "base-alias")
+	if err := os.Symlink(realBase, alias); err != nil {
+		t.Skipf("symlinks are unavailable: %v", err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ScheduleRequest{
+		Action: ScheduleStatus, Home: t.TempDir(), Platform: "linux", Executable: executable,
+		Path: "/usr/bin:/bin", Runner: &scheduleMetadataRunner{},
+	}
+	realReport, err := Schedule(t.Context(), realBase, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasReport, err := Schedule(t.Context(), alias, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if realReport.Base != aliasReport.Base || realReport.Name != aliasReport.Name {
+		t.Fatalf("real report %#v and alias report %#v derived different schedule identities", realReport, aliasReport)
+	}
+}
+
+func intPointer(value int) *int { return &value }
 
 func readScheduleFile(t *testing.T, path string) string {
 	t.Helper()

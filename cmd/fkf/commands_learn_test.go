@@ -85,3 +85,35 @@ func writeLearnCLIFile(t *testing.T, root, relative, contents string) {
 		t.Fatal(err)
 	}
 }
+
+func TestLearnCLIReportsAppliedEditWhenCacheRepairFails(t *testing.T) {
+	isolate(t)
+	root := t.TempDir()
+	writeLearnCLIFile(t, root, core.ConfigFileName, cliTestContract+`name: learn-cache-repair
+layers: {tasks: true, projects: true, wiki: true}
+sources: {}
+`)
+	writeLearnCLIFile(t, root, "wiki/index.md", "# Wiki\n")
+	writeLearnCLIFile(t, root, "wiki/log.md", "# Log\n")
+	writeLearnCLIFile(t, root, "tasks/2026-05-09/repair/TASKS.md", "# Repair\n\n## Learned\n\n- Keep approved knowledge after cache failure.\n")
+	staged := invoke(t, "--format", "json", "--base", root, "learn", "propose")
+	var proposal services.LearnProposalReport
+	if err := json.Unmarshal([]byte(staged.stdout), &proposal); err != nil || proposal.Proposal == nil {
+		t.Fatalf("proposal = %+v, error %v, stderr %s", proposal, err, staged.stderr)
+	}
+	if err := os.Mkdir(filepath.Join(root, "graph.tsv"), core.BaseDirMode); err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []string{"json", "text"} {
+		result := invoke(t, "--format", format, "--base", root, "learn", "apply", proposal.Proposal.ID)
+		if result.code != ExitPartial || !strings.Contains(result.stdout, "applied") || !strings.Contains(result.stdout+result.stderr, "fkf build") {
+			t.Fatalf("%s failed repair = %+v, want applied report and failed exit", format, result)
+		}
+		if format == "json" {
+			var report services.LearnActionReport
+			if err := json.Unmarshal([]byte(result.stdout), &report); err != nil || report.Status != "applied" || report.RebuildError == "" {
+				t.Fatalf("repair report = %+v, error %v", report, err)
+			}
+		}
+	}
+}

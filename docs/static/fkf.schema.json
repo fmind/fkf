@@ -161,60 +161,9 @@
         "additionalProperties": false,
         "allOf": [
           {
-            "else": {
-              "required": [
-                "fields"
-              ]
-            },
-            "if": {
-              "properties": {
-                "layer": {
-                  "const": "tasks"
-                }
-              },
-              "required": [
-                "layer"
-              ]
-            },
-            "then": {
-              "not": {
-                "anyOf": [
-                  {
-                    "required": [
-                      "records"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "fields"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "body"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "bodies"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "recency"
-                    ]
-                  }
-                ]
-              },
-              "properties": {
-                "window": {
-                  "const": true
-                }
-              },
-              "required": [
-                "window"
-              ]
-            }
+            "required": [
+              "fields"
+            ]
           },
           {
             "if": {
@@ -245,6 +194,23 @@
                   ]
                 }
               }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "max_age_hours"
+              ]
+            },
+            "then": {
+              "properties": {
+                "layer": {
+                  "const": "index"
+                }
+              },
+              "required": [
+                "layer"
+              ]
             }
           }
         ],
@@ -463,13 +429,18 @@
           },
           "layer": {
             "default": "events",
-            "description": "events files one JSON document per day; index files one point-in-time JSON document; tasks writes bounded Markdown session traces.",
+            "description": "events files one JSON document per day; index files one point-in-time JSON document.",
             "enum": [
               "events",
-              "index",
-              "tasks"
+              "index"
             ],
             "type": "string"
+          },
+          "max_age_hours": {
+            "description": "Refresh this index source after this many hours; overrides sync.index_max_age_hours.",
+            "maximum": 87600,
+            "minimum": 1,
+            "type": "integer"
           },
           "min_interval": {
             "description": "Least time between two invocations of THIS source across the whole sync. Retry spaces the attempts of one failing call; this spaces every call, which is what a provider's rate limit actually counts.",
@@ -583,7 +554,7 @@
           },
           "window": {
             "default": false,
-            "description": "Render run: ONCE for the whole requested range — {{start}}/{{end}} span every day being collected, not one. Events bucket records by fields.time; tasks sources must enable it and import completed session traces; index sources reject it.",
+            "description": "Render run: ONCE for the whole requested range — {{start}}/{{end}} span every day being collected, not one. Events bucket records by fields.time; index sources reject it.",
             "type": "boolean"
           }
         },

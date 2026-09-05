@@ -140,22 +140,23 @@ var placeholderPattern = regexp.MustCompile(`\{\{([a-z][a-z0-9_-]*)\}\}`)
 
 // Source is one declared collection command.
 type Source struct {
-	Name     string        `json:"name"`
-	Enabled  bool          `json:"enabled"`
-	Layer    Layer         `json:"layer"`
-	Auth     []string      `json:"auth,omitempty"`
-	Run      []string      `json:"run"`
-	Test     []string      `json:"test,omitempty"`
-	Format   OutputFormat  `json:"format"`
-	Records  FieldPath     `json:"records,omitzero"`
-	Fields   FieldMap      `json:"fields,omitempty"`
-	Schema   FieldSchema   `json:"-"`
-	Body     []string      `json:"body,omitempty"`
-	Bodies   BodyPolicy    `json:"bodies,omitempty"`
-	Recency  RecencyPolicy `json:"recency,omitzero"`
-	Requires []string      `json:"requires,omitempty"`
-	Install  string        `json:"install,omitempty"`
-	Timeout  time.Duration `json:"timeout,omitempty"`
+	Name        string        `json:"name"`
+	Enabled     bool          `json:"enabled"`
+	Layer       Layer         `json:"layer"`
+	MaxAgeHours *int          `json:"max_age_hours,omitempty"`
+	Auth        []string      `json:"auth,omitempty"`
+	Run         []string      `json:"run"`
+	Test        []string      `json:"test,omitempty"`
+	Format      OutputFormat  `json:"format"`
+	Records     FieldPath     `json:"records,omitzero"`
+	Fields      FieldMap      `json:"fields,omitempty"`
+	Schema      FieldSchema   `json:"-"`
+	Body        []string      `json:"body,omitempty"`
+	Bodies      BodyPolicy    `json:"bodies,omitempty"`
+	Recency     RecencyPolicy `json:"recency,omitzero"`
+	Requires    []string      `json:"requires,omitempty"`
+	Install     string        `json:"install,omitempty"`
+	Timeout     time.Duration `json:"timeout,omitempty"`
 	// Retry and MinInterval declare HOW fkf invokes the command, never what it is, which is
 	// exactly the relationship `timeout:` already has to `run:`. They exist because the
 	// alternative is shell: a rate-limited provider drove a real base to wrap `gh search` in a
@@ -173,6 +174,14 @@ type Source struct {
 	// against a rate limit that counts calls, not days. `window:` collects what `run:`
 	// already returns for a wider range in one call instead of many.
 	Window bool `json:"window,omitempty"`
+}
+
+// EffectiveMaxAgeHours resolves the source-local index cadence against the base default.
+func (source *Source) EffectiveMaxAgeHours(fallback int) int {
+	if source.MaxAgeHours != nil {
+		return *source.MaxAgeHours
+	}
+	return fallback
 }
 
 // RecencyPolicy controls the optional source-local exponential freshness modifier used by

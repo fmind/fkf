@@ -358,6 +358,35 @@ func TestContextResolvesRelativeWindowAndAsOfFromOneClockRead(t *testing.T) {
 	}
 }
 
+func TestContextToolDeliversActualBytesAtEvaluationBudgets(t *testing.T) {
+	session := connect(t, newBase(t))
+	for _, budget := range []int{600, 1500, 3000} {
+		t.Run(fmt.Sprint(budget), func(t *testing.T) {
+			result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+				Name: "context", Arguments: map[string]any{"query": "FK-412", "budget": budget},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.IsError {
+				t.Fatalf("context(%d) = %+v", budget, result.Content)
+			}
+			text, ok := result.Content[0].(*mcp.TextContent)
+			if !ok {
+				t.Fatalf("content = %T, want compact JSON text", result.Content[0])
+			}
+			var pack services.ContextPack
+			if err := json.Unmarshal([]byte(text.Text), &pack); err != nil {
+				t.Fatalf("decode context text: %v", err)
+			}
+			if actual := len(text.Text); actual > budget*4 || pack.Receipt.Budget != budget ||
+				pack.Receipt.EncodedTokens > budget {
+				t.Fatalf("budget %d: MCP bytes=%d receipt=%+v", budget, actual, pack.Receipt)
+			}
+		})
+	}
+}
+
 func TestFindAcceptsEveryRepeatableCLIRecordFilter(t *testing.T) {
 	session := connect(t, newBase(t))
 	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{

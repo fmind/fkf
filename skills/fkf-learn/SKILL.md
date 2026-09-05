@@ -1,12 +1,14 @@
 ---
 name: fkf-learn
-description: Stage verified fkf task and memory findings as reviewable wiki or project diffs. Invoke when a session produced a durable decision, pattern, status change, or dead end.
+description: Stage verified fkf findings as reviewable wiki or project diffs. Use after a durable decision, pattern, status change, dead end, or skill lesson.
 license: MIT
 ---
 
 # Learn from a base
 
 Turn session evidence into a bounded proposal another person can review. Never edit `wiki/` or `projects/` directly: durable knowledge changes only through `fkf learn apply` after approval.
+
+When several FKF registrations are available, select the base named by the user or delivery receipt and pass `--base <selected-base>` to every command. Never infer a base from this skill's filesystem location. Preserve base-qualified citations such as `fkf://<base-name>/<relative-uri>` in review notes.
 
 If nothing is worth retaining, leave the trace unchanged and stop. A useful run should reduce `fkf list tasks learned --unharvested` only after its proposal is applied.
 
@@ -44,6 +46,8 @@ Open a cached memory body only when it supports a specific candidate. Reuse an e
 | `projects/<slug>.md` | An effort needs durable intent, status, questions, or decisions. |
 
 Keep wiki and projects flat. A project is not a task tracker; link to tickets rather than copying them.
+
+When evidence suggests changing a skill, follow the [skill outcome boundary](references/skill-evolution.md). The host's evaluation workflow owns trial design; FKF retains only the cited result.
 
 ### 3. Stage a unified diff
 
@@ -86,7 +90,7 @@ fkf learn apply <id>   # approved
 fkf learn reject <id>  # declined
 ```
 
-`apply` checks the patch against current bytes, runs strict wiki/project validators, rebuilds derived caches, and archives the diff. Any failure rolls the pages and caches back. Confirm the remaining backlog with `fkf list tasks learned --unharvested`.
+`apply` checks current bytes, validates the authored changes, and archives the approved diff as one transaction. Validation or archive failure rolls back authored edits. Cache rebuilding follows; a cache failure keeps the approved edit and reports `rebuild_error`. Run `fkf build` or repeat `apply` to repair it. Confirm the remaining backlog with `fkf list tasks learned --unharvested`.
 
 ## Nightly routine
 

@@ -232,6 +232,39 @@ cat "$GH_FIXTURE_DIR/incomplete.json"
 	}
 }
 
+func TestGitHubSearchJSONRepositoryModeRejectsOutOfScopeResults(t *testing.T) {
+	fixtures := t.TempDir()
+	item := githubSearchAPIItem("https://github.example.test/other/project/issues/1")
+	item["repository_url"] = "https://api.github.example.test/repos/other/project"
+	writeGitHubSearchEnvelope(t, filepath.Join(fixtures, "page.json"), 1, false, []map[string]any{
+		item,
+	})
+	fakeBin := t.TempDir()
+	writeFakeGitHubCLI(t, fakeBin, `#!/bin/sh
+set -eu
+printf '%s\n' "$*" > "$GH_CALL_LOG"
+cat "$GH_FIXTURE_DIR/page.json"
+`)
+	calls := filepath.Join(t.TempDir(), "calls")
+	command := githubSearchCommand(t, fakeBin, fixtures, calls,
+		"issues", "repository", "acme/project", "2026-05-04T00:00:00Z", "2026-05-04T00:00:01Z")
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err == nil {
+		t.Fatal("github-search-json.sh accepted a result outside its declared repository")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("github-search-json.sh emitted partial output: %s", stdout.Bytes())
+	}
+	log, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(log), "q=is:issue repo:acme/project updated:") {
+		t.Fatalf("repository query was not explicitly scoped: %s", log)
+	}
+}
+
 func TestGitHubSearchJSONRejectsRetrievedCountBelowTotalCount(t *testing.T) {
 	fixtures := t.TempDir()
 	writeGitHubSearchEnvelope(t, filepath.Join(fixtures, "short.json"), 2, false, []map[string]any{
