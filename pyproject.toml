@@ -1,0 +1,122 @@
+[project]
+name = "fkf"
+version = "5.0.0"
+description = "Local, offline evidence retrieval for coding agents"
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "Médéric Hurier" }]
+keywords = ["agents", "knowledge", "mcp", "retrieval"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.14",
+  "Typing :: Typed",
+]
+dependencies = [
+  "markdown-it-py>=4.2.0,<5",
+  "mcp>=2.1.1,<3",
+  "pydantic>=2.13.5,<3",
+  "pyyaml>=6.0.3,<7",
+  "typer>=0.27.2,<1",
+]
+
+[project.urls]
+Documentation = "https://fmind.github.io/fkf/"
+Issues = "https://github.com/fmind/fkf/issues"
+Repository = "https://github.com/fmind/fkf"
+
+[project.scripts]
+fkf = "fkf:main"
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+  "pytest-cov>=7.1.0",
+  "pytest-watcher>=0.6.3",
+  "pytest>=9.1.1",
+  "ruff>=0.16.6",
+  "ty>=0.0.70,<0.1",
+  "validate-pyproject>=0.25",
+  "zensical>=0.0.59,<0.1",
+]
+
+[tool.ruff]
+extend-exclude = ["src/fkf/assets_data/presets/bin"]
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.format]
+docstring-code-format = true
+line-ending = "lf"
+quote-style = "double"
+
+[tool.ruff.lint]
+select = [
+  "A",
+  "ARG",
+  "ASYNC",
+  "B",
+  "C4",
+  "E",
+  "ERA",
+  "F",
+  "FA",
+  "FURB",
+  "I",
+  "ISC",
+  "LOG",
+  "N",
+  "PERF",
+  "PGH",
+  "PIE",
+  "PT",
+  "PTH",
+  "Q",
+  "RET",
+  "RSE",
+  "RUF",
+  "S",
+  "SIM",
+  "SLF",
+  "T10",
+  "T20",
+  "TID",
+  "UP",
+  "W",
+]
+ignore = [
+  "ASYNC240", # FKF performs bounded local filesystem work from async MCP handlers.
+  "E501", # Long CLI help and schema descriptions are clearer as one string.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+  "S101", # pytest assertions are the test contract.
+  "T201", # Test diagnostics may use print.
+]
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.pytest.ini_options]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+filterwarnings = ["error"]
+testpaths = ["tests"]
+xfail_strict = true
+
+[tool.coverage.run]
+branch = true
+source = ["fkf"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+skip_empty = true

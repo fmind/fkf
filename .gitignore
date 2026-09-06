@@ -1,8 +1,17 @@
-# Build artifacts. `go build ./cmd/fkf` from the root writes ./fkf; mise writes bin/fkf.
-/bin/
+# Generated package and coverage artifacts.
 /dist/
-/fkf
+/.coverage
+/.cache/
+/.pytest_cache/
+/.opengrep/
 /coverage.out
+/.venv/
+/htmlcov/
+*.egg-info/
+
+# Preserve developer-local binaries from pre-v5 checkouts without shipping them.
+/bin/
+/fkf
 
 # Machine-local: a developer's exported credentials, agent scratch space, prompts, plans, and
 # local skills. Contributor skills under .agents/skills/ stay versioned.
@@ -17,3 +26,5 @@
 __pycache__/
 *.pyc
 /.ruff_cache/
+/site/
+/.ty/

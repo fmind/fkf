@@ -26,11 +26,11 @@ Run `mise run docs:watch` for the documentation site. The canonical task vocabul
 
 Keep the affected contracts together:
 
-- A CLI change includes focused tests, help output, and the matching README or Hugo documentation.
+- A CLI change includes focused tests, help output, and the matching README or Zensical documentation.
 - A loader change includes `mise run generate:schema`; never edit the published schema by hand.
-- A Go toolchain or linked-dependency change updates `THIRD_PARTY_NOTICES.md`; the invariant test rejects missing runtime and module entries.
-- A preset source includes one small, synthetic fixture under `services/testdata/sources/` that matches the provider CLI's real JSON shape and exercises its open `fields:` map. Keep a short command inline; put longer glue in a `.sh` or `.py` helper under the base `bin/` template.
-- A URI, retrieval, learning, or brief change keeps the affected bundled skill under `skills/` — `fkf-use`, `fkf-learn`, or `daily-brief` — aligned with the executable behavior.
+- A runtime dependency change updates `uv.lock` and `THIRD_PARTY_NOTICES.md`; the invariant test rejects missing or extra distributed packages.
+- A preset source includes one small, synthetic fixture under `tests/assets/fixtures/sources/` that matches the provider CLI's real JSON shape and exercises its open `fields:` map. Keep a short command inline; put longer glue in a `.sh` or `.py` helper under the base `bin/` template.
+- A URI, retrieval, learning, or brief change keeps the affected bundled skill under `src/fkf/assets_data/skills/` — `fkf-use`, `fkf-learn`, or `daily-brief` — aligned with the command behavior.
 
 Tests must be hermetic: temporary homes, no real base discovery, no provider call, and every provider-backed declared command replaced through the runner seam. The relative-base CLI regression may execute only its deterministic helper created inside the temporary base; AGENTS.md records the other narrow local-tool exceptions.
 
@@ -42,7 +42,7 @@ Run a focused test while developing, then the complete gate before asking for re
 mise run all
 ```
 
-Do not skip or weaken a check, suppress a warning, or lower the coverage floor. For documentation-only changes, still run the repository gate; its strict Hugo build, rendered link check, workflow lint, and security checks are part of the product contract.
+Do not skip or weaken a check, suppress a warning, or lower the coverage floor. For documentation-only changes, still run the repository gate; its strict Zensical build, rendered link check, workflow lint, and security checks are part of the product contract.
 
 ## Open the pull request
 

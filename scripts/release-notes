@@ -1,5 +1,5 @@
 #!/bin/sh
-# Print exactly one tagged section from CHANGELOG.md for GoReleaser/GitHub.
+# Print exactly one tagged section from CHANGELOG.md for the GitHub release.
 set -eu
 
 tag=${1:?usage: release-notes <tag> [changelog]}

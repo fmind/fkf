@@ -3,6 +3,9 @@ severity:
   - CRITICAL
 exit-code: 1
 scan:
+  skip-dirs:
+    # This ignored checkout contains the SAST rule project's own intentionally vulnerable fixtures.
+    - .opengrep
   scanners:
     - license
     - misconfig
@@ -12,3 +15,6 @@ vulnerability:
   # A CRITICAL with no patch available is exactly the finding that needs a decision, so it must
   # surface rather than be filtered out into a green run.
   ignore-unfixed: false
+license:
+  # Dependency and loose-file license checks stay visible in the same fail-closed scan.
+  full: true

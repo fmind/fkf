@@ -2,6 +2,28 @@
 
 All notable changes to `fkf` are documented here. This project follows [Semantic Versioning](https://semver.org/) from its first public release.
 
+## Unreleased
+
+## [v5.0.0](https://github.com/fmind/fkf/releases/tag/v5.0.0) - 2026-09-07
+
+### Highlights
+
+- Reimplement FKF as one typed Python 3.14 package while preserving the `fkf` command, `fkf: 1` configuration and evidence envelopes, trust digests, rebuildable graph and lexical cache contracts, ranking version 7, offline reads, and bounded read-only MCP surface.
+- Publish a wheel and source distribution for `uv tool install fkf` and one-shot `uvx fkf` use, with locked uv development, strict Ruff and ty checks, hermetic branch-coverage tests, PyPI trusted publishing, and GitHub build-provenance attestations.
+- Consolidate provider execution behind one direct-argv boundary, package presets and skills as runtime resources, and retain deterministic differential coverage against the final Go implementation.
+- Load the MCP SDK only for MCP commands so ordinary CLI startup does not pay for its server and transport stack.
+- Replace the Hugo module with a locked, self-contained Zensical documentation build while preserving the published Pages routes.
+
+### Breaking changes
+
+- Replace native release archives, `install.sh`, and the self-replacing `fkf upgrade` command with standard Python packaging. Use `uv tool upgrade fkf` for a persistent uv installation.
+- Narrow the existing `?jq=` and `--where` selector spelling to the safe field-path grammar plus optional terminal `| length`; arbitrary jq programs are rejected instead of running an embedded evaluator.
+
+### Upgrade notes
+
+- Existing bases and collected evidence need no migration or re-collection. After installing v5, refresh official helpers, review and renew execution trust, then rebuild derived caches: `fkf config helpers --refresh`, `fkf trust --all`, and `fkf build all`.
+- Use a persistent `uv tool install fkf` launcher for harness and schedule integrations. Reserve `uvx` for one-shot commands.
+
 ## [v4.0.1](https://github.com/fmind/fkf/releases/tag/v4.0.1) - 2026-09-04
 
 ### Fixed
