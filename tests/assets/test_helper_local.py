@@ -30,6 +30,47 @@ def _install_delayed_oversized_provider(helpers: HelperInstallation, name: str) 
     target.chmod(0o700)
 
 
+@pytest.mark.parametrize(
+    ("harness", "stdout"),
+    [("claude", ""), ("codex", "{}\n"), ("gemini", "{}\n"), ("kiro", "")],
+)
+def test_session_hook_does_not_read_terminal_stdin_or_execute_a_child(
+    helpers: HelperInstallation,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    harness: str,
+    stdout: str,
+) -> None:
+    class TerminalBuffer:
+        @staticmethod
+        def isatty() -> bool:
+            return True
+
+        @staticmethod
+        def read(_size: int) -> bytes:
+            raise AssertionError("terminal stdin must not be read")
+
+    class TerminalStdin:
+        buffer = TerminalBuffer()
+
+    workspace = helpers.root / "workspace"
+    workspace.mkdir()
+    executable = helpers.root / "fkf"
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o700)
+    namespace = runpy.run_path(os.fspath(helpers.bin / "fkf-hook.py"))
+    main = namespace["main"]
+    monkeypatch.setattr(main.__globals__["sys"], "stdin", TerminalStdin())
+
+    def unexpected_invoke(_arguments: list[str], _environment: dict[str, str]) -> str:
+        raise AssertionError("terminal invocation must not execute a child")
+
+    monkeypatch.setitem(main.__globals__, "invoke", unexpected_invoke)
+
+    assert main([harness, os.fspath(executable), os.fspath(workspace)]) == 0
+    assert capsys.readouterr() == (stdout, "")
+
+
 def test_session_hook_terminates_an_oversized_child_process_group(helpers: HelperInstallation) -> None:
     workspace = helpers.root / "workspace"
     workspace.mkdir()

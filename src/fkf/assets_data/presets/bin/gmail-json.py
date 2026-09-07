@@ -8,7 +8,10 @@ import json
 import subprocess
 import sys
 import unicodedata
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from email.errors import HeaderParseError, NonASCIILocalPartDefect, ObsoleteHeaderDefect
+from email.headerregistry import Address, AddressHeader, HeaderRegistry
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -17,6 +20,14 @@ MAX_PROVIDER_BYTES = 64 << 20
 MAX_OUTPUT_BYTES = 64 << 20
 MAX_RECORDS = 10_000
 PAGE_ALL = ("--page-all", "--page-limit", "100")
+MAILBOX_PLACEHOLDER = "fkf@example.invalid"
+ALLOWED_MAILBOX_DEFECTS = (NonASCIILocalPartDefect, ObsoleteHeaderDefect)
+
+
+@dataclass(frozen=True)
+class Mailbox:
+    display_name: str
+    address: str
 
 
 def instant(value: str) -> datetime:
@@ -71,15 +82,85 @@ def clean_title(value: Any) -> str:
     return " ".join(visible.split())
 
 
-def address_uris(values: list[Any]) -> list[str]:
-    addresses: set[str] = set()
+def semantic_addresses(registry: HeaderRegistry, value: str) -> list[Address]:
+    try:
+        header = registry("to", value)
+    except HeaderParseError as error:
+        raise ValueError("invalid mailbox header") from error
+    if not isinstance(header, AddressHeader):
+        raise TypeError("mailbox parser returned an unexpected header type")
+    if any(not isinstance(defect, ALLOWED_MAILBOX_DEFECTS) for defect in header.defects) or any(
+        not address.username or not address.domain for address in header.addresses
+    ):
+        raise ValueError("invalid mailbox header")
+    return list(header.addresses)
+
+
+def address_matches(registry: HeaderRegistry, value: str, expected: Address) -> bool:
+    try:
+        candidate = semantic_addresses(registry, value)
+    except ValueError:
+        return False
+    return len(candidate) == 1 and (candidate[0].username, candidate[0].domain) == (
+        expected.username,
+        expected.domain,
+    )
+
+
+def corresponding_addresses(registry: HeaderRegistry, raw: list[str], semantic: list[Address]) -> list[str]:
+    available = list(raw)
+    corresponding: list[str] = []
+    for expected in semantic:
+        match = next(
+            (index for index, candidate in enumerate(available) if address_matches(registry, candidate, expected)),
+            None,
+        )
+        corresponding.append(expected.addr_spec if match is None else available.pop(match))
+    return corresponding
+
+
+def mailboxes(values: list[object]) -> list[Mailbox]:
+    parsed: list[Mailbox] = []
+    registry = HeaderRegistry()
     for value in values:
         if not isinstance(value, str):
             continue
-        for _, address in email.utils.getaddresses([value]):
-            lowered = address.lower()
-            if lowered.count("@") == 1 and not any(character.isspace() for character in lowered):
-                addresses.add("person:email/" + quote(lowered, safe="/:@+").replace("~", "%7E"))
+        semantic = semantic_addresses(registry, value)
+        # The legacy strict parser rejects valid domain literals. Its permissive
+        # mode is safe here only after the header registry accepts the whole value.
+        raw = [address for _, address in email.utils.getaddresses([value], strict=False) if address]
+        addresses = corresponding_addresses(registry, raw, semantic)
+        if not all(
+            address_matches(registry, address, expected)
+            for address, expected in zip(addresses, semantic, strict=True)
+        ):
+            raise ValueError("invalid mailbox header")
+        parsed.extend(
+            Mailbox(expected.display_name, address) for address, expected in zip(addresses, semantic, strict=True)
+        )
+    return parsed
+
+
+def formatted_mailboxes(values: list[Mailbox]) -> list[str]:
+    formatted: list[str] = []
+    for value in values:
+        if not value.display_name:
+            formatted.append(value.address)
+            continue
+        # Format only the name so the parser-approved addr-spec keeps its quoting and case.
+        rendered = str(Address(display_name=value.display_name, addr_spec=MAILBOX_PLACEHOLDER))
+        suffix = f" <{MAILBOX_PLACEHOLDER}>"
+        if not rendered.endswith(suffix):
+            raise RuntimeError("cannot format mailbox display name")
+        formatted.append(f"{rendered.removesuffix(suffix)} <{value.address}>")
+    return formatted
+
+
+def address_uris(values: list[Mailbox]) -> list[str]:
+    addresses: set[str] = set()
+    for value in values:
+        lowered = value.address.lower()
+        addresses.add("person:email/" + quote(lowered, safe="/:@+").replace("~", "%7E"))
     return sorted(addresses)
 
 
@@ -96,6 +177,8 @@ def project(message: Any, start_ms: int, end_ms: int) -> dict[str, Any] | None:
     mapped = {str(item.get("name", "")).lower(): item.get("value") for item in headers}
     subject = clean_title(mapped.get("subject")) or "Email without subject"
     recipients = [value for key in ("to", "cc") if (value := mapped.get(key)) is not None]
+    recipient_mailboxes = mailboxes(recipients)
+    sender_mailboxes = mailboxes([mapped.get("from")])
     return {
         "id": message.get("id"),
         "threadId": message.get("threadId"),
@@ -104,9 +187,9 @@ def project(message: Any, start_ms: int, end_ms: int) -> dict[str, Any] | None:
         "sizeEstimate": message.get("sizeEstimate"),
         "subject": subject,
         "from": mapped.get("from"),
-        "to": [address for value in recipients for _, address in email.utils.getaddresses([str(value)])],
+        "to": formatted_mailboxes(recipient_mailboxes),
         "list_id": mapped.get("list-id"),
-        "participant_uris": address_uris([mapped.get("from"), *recipients]),
+        "participant_uris": address_uris([*sender_mailboxes, *recipient_mailboxes]),
     }
 
 
