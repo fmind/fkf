@@ -182,6 +182,97 @@ def test_stdio_runner_stops_the_sdk_server_when_the_invocation_event_is_set() ->
     assert stopped.wait(timeout=1)
 
 
+def test_stdio_runner_propagates_the_sdk_server_exception_unchanged() -> None:
+    from fkf.cli_mcp import _run_stdio
+
+    expected = RuntimeError("SDK server failed")
+
+    class FailingServer:
+        async def run_stdio_async(self) -> None:
+            raise expected
+
+    with pytest.raises(RuntimeError) as raised:
+        _run_stdio(cast("MCPServer[None]", FailingServer()), Event())
+
+    assert raised.value is expected
+
+
+def test_stdio_runner_cancels_and_awaits_the_sdk_server_when_the_runner_is_cancelled() -> None:
+    from fkf.cli_mcp import _serve_stdio
+
+    async def exercise() -> None:
+        started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        release_cleanup = asyncio.Event()
+        stopped = asyncio.Event()
+
+        class BlockingServer:
+            task: asyncio.Task[None] | None = None
+
+            async def run_stdio_async(self) -> None:
+                self.task = asyncio.current_task()
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cleanup_started.set()
+                    await release_cleanup.wait()
+                    stopped.set()
+
+        server = BlockingServer()
+        runner = asyncio.create_task(_serve_stdio(cast("MCPServer[None]", server), Event()))
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        runner.cancel()
+        await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+        awaited_cleanup = not runner.done()
+        release_cleanup.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await runner
+
+        assert awaited_cleanup
+        assert stopped.is_set()
+        assert server.task is not None
+        assert server.task.cancelled()
+
+    asyncio.run(exercise())
+
+
+def test_stdio_runner_does_not_accumulate_callbacks_while_polling_cancellation() -> None:
+    from fkf.cli_mcp import _run_stdio
+
+    class BlockingServer:
+        task: asyncio.Task[None] | None = None
+
+        async def run_stdio_async(self) -> None:
+            self.task = asyncio.current_task()
+            await asyncio.Event().wait()
+
+    class ProbeCancellation:
+        def __init__(self, server: BlockingServer) -> None:
+            self.server = server
+            self.polls = 0
+            self.callback_counts: list[int] = []
+
+        def is_set(self) -> bool:
+            self.polls += 1
+            if self.server.task is not None:
+                self.callback_counts.append(
+                    len(self.server.task._callbacks or ())  # noqa: SLF001 - Python 3.14 callback-retention seam.
+                )
+            return self.polls >= 6
+
+    server = BlockingServer()
+    cancel = ProbeCancellation(server)
+
+    with pytest.raises(CanceledError, match="MCP server canceled"):
+        _run_stdio(cast("MCPServer[None]", server), cancel)
+
+    assert len(cancel.callback_counts) >= 4
+    assert max(cancel.callback_counts) <= 1
+
+
 def test_mcp_help_preserves_aliases_and_names_the_read_only_surface() -> None:
     parent_code, parent_stdout, parent_stderr = _invoke("mcp")
     serve_code, serve_stdout, serve_stderr = _invoke("mcp", "serve", "--help")

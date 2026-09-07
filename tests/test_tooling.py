@@ -69,8 +69,10 @@ def test_package_version_has_extractable_release_notes() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
-    assert "Reimplement FKF as one typed Python" in completed.stdout
-    assert "v4.0.1" not in completed.stdout
+    release_notes = completed.stdout.strip()
+    assert release_notes.startswith("### ")
+    assert "\n- " in release_notes
+    assert "\n## [" not in release_notes
 
 
 def test_release_tag_verifier_accepts_a_direct_tag_on_current_main(tmp_path: Path) -> None:
@@ -235,6 +237,7 @@ def run_release_asset_verifier(
     *,
     local_assets: dict[str, bytes],
     remote_assets: dict[str, bytes],
+    local_symlinks: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     dist = tmp_path / "dist"
     remote = tmp_path / "remote"
@@ -244,6 +247,8 @@ def run_release_asset_verifier(
     fake_bin.mkdir()
     for name, content in local_assets.items():
         (dist / name).write_bytes(content)
+    for name, target in (local_symlinks or {}).items():
+        (dist / name).symlink_to(target)
     for name, content in remote_assets.items():
         (remote / name).write_bytes(content)
 
@@ -298,12 +303,72 @@ def test_release_asset_verifier_accepts_exact_inventory_and_bytes(tmp_path: Path
     assert completed.stdout == ""
 
 
+def test_release_asset_verifier_ignores_exact_uv_dist_marker(tmp_path: Path) -> None:
+    release_assets = {
+        "fkf-5.0.0-py3-none-any.whl": b"wheel",
+        "fkf-5.0.0.tar.gz": b"sdist",
+    }
+
+    completed = run_release_asset_verifier(
+        tmp_path,
+        local_assets={**release_assets, ".gitignore": b"*"},
+        remote_assets=release_assets,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == ""
+
+
 def test_release_asset_verifier_rejects_an_empty_local_inventory(tmp_path: Path) -> None:
     completed = run_release_asset_verifier(tmp_path, local_assets={}, remote_assets={})
 
     assert completed.returncode == 1
     assert completed.stdout == ""
     assert "dist contains no release assets" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("name", "content"),
+    [
+        (".gitignore", b"*\n"),
+        (".gitignore", b"!"),
+        (".unexpected", b"hidden"),
+        ("unexpected.txt", b"ordinary"),
+    ],
+)
+def test_release_asset_verifier_rejects_non_marker_local_entries(tmp_path: Path, name: str, content: bytes) -> None:
+    release_assets = {
+        "fkf-5.0.0-py3-none-any.whl": b"wheel",
+        "fkf-5.0.0.tar.gz": b"sdist",
+    }
+
+    completed = run_release_asset_verifier(
+        tmp_path,
+        local_assets={**release_assets, name: content},
+        remote_assets=release_assets,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert "release asset inventory does not match dist" in completed.stderr
+
+
+def test_release_asset_verifier_rejects_a_symlinked_uv_marker(tmp_path: Path) -> None:
+    release_assets = {
+        "fkf-5.0.0-py3-none-any.whl": b"wheel",
+        "fkf-5.0.0.tar.gz": b"sdist",
+    }
+
+    completed = run_release_asset_verifier(
+        tmp_path,
+        local_assets=release_assets,
+        local_symlinks={".gitignore": "fkf-5.0.0-py3-none-any.whl"},
+        remote_assets=release_assets,
+    )
+
+    assert completed.returncode == 1
+    assert completed.stdout == ""
+    assert "dist contains a non-regular release asset .gitignore" in completed.stderr
 
 
 @pytest.mark.parametrize(
