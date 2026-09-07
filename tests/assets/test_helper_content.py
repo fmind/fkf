@@ -100,6 +100,186 @@ esac
     assert validate_helper_output(personal, "google-gmail-emails", gmail.stdout).count == 1
 
 
+def test_gmail_preserves_provider_formatted_recipients(tmp_path: Path, helpers: HelperInstallation) -> None:
+    helpers.fake(
+        "gws",
+        """case "$*" in
+  *"users messages list"*) printf '%s\n' '{"messages":[{"id":"message-1"}]}' ;;
+  *'"id":"message-1"'*) printf '%s\n' "$GMAIL_MESSAGE" ;;
+  *) exit 2 ;;
+esac
+""",
+    )
+    message = {
+        "id": "message-1",
+        "threadId": "thread-1",
+        "internalDate": "1777885200000",
+        "payload": {
+            "headers": [
+                {"name": "Subject", "value": "Mailbox preservation"},
+                {"name": "From", "value": "Jane Doe <jane@example.test>"},
+                {
+                    "name": "To",
+                    "value": (
+                        'Jane Doe <JANE@example.test>, "Doe, John" <john@example.test>, John <"john..doe"@example.test>'
+                    ),
+                },
+                {
+                    "name": "Cc",
+                    "value": (
+                        'Other <other@example.test>, Leading <".john"@Example.test>, '
+                        'Trailing <"john."@example.test>, PLAIN@Example.test'
+                    ),
+                },
+            ]
+        },
+    }
+    result = helpers.run(
+        "gmail-json.py",
+        "2026-05-04T00:00:00Z",
+        "2026-05-05T00:00:00Z",
+        environment={"GMAIL_MESSAGE": json.dumps(message, separators=(",", ":"))},
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    record = json.loads(result.stdout)
+    assert record["from"] == "Jane Doe <jane@example.test>"
+    assert record["to"] == [
+        "Jane Doe <JANE@example.test>",
+        '"Doe, John" <john@example.test>',
+        'John <"john..doe"@example.test>',
+        "Other <other@example.test>",
+        'Leading <".john"@Example.test>',
+        'Trailing <"john."@example.test>',
+        "PLAIN@Example.test",
+    ]
+    assert record["participant_uris"] == [
+        "person:email/%22.john%22@example.test",
+        "person:email/%22john.%22@example.test",
+        "person:email/%22john..doe%22@example.test",
+        "person:email/jane@example.test",
+        "person:email/john@example.test",
+        "person:email/other@example.test",
+        "person:email/plain@example.test",
+    ]
+    assert validate_helper_output(load_preset(tmp_path, "personal"), "google-gmail-emails", result.stdout).count == 1
+
+
+def test_gmail_preserves_smtputf8_recipients(tmp_path: Path, helpers: HelperInstallation) -> None:
+    helpers.fake(
+        "gws",
+        """case "$*" in
+  *"users messages list"*) printf '%s\n' '{"messages":[{"id":"message-1"}]}' ;;
+  *'"id":"message-1"'*) printf '%s\n' "$GMAIL_MESSAGE" ;;
+  *) exit 2 ;;
+esac
+""",
+    )
+    message = {
+        "id": "message-1",
+        "threadId": "thread-1",
+        "internalDate": "1777885200000",
+        "payload": {
+            "headers": [
+                {"name": "Subject", "value": "SMTPUTF8 preservation"},
+                {"name": "From", "value": "Sender <SENDER@example.test>"},
+                {"name": "To", "value": "Jöhn <jöhn@Example.test>"},
+                {"name": "Cc", "value": '"Dœ, Jane" <JANE@example.test>'},
+            ]
+        },
+    }
+    result = helpers.run(
+        "gmail-json.py",
+        "2026-05-04T00:00:00Z",
+        "2026-05-05T00:00:00Z",
+        environment={"GMAIL_MESSAGE": json.dumps(message, separators=(",", ":"))},
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    record = json.loads(result.stdout)
+    assert record["to"] == [
+        "Jöhn <jöhn@Example.test>",
+        '"Dœ, Jane" <JANE@example.test>',
+    ]
+    assert record["participant_uris"] == [
+        "person:email/j%C3%B6hn@example.test",
+        "person:email/jane@example.test",
+        "person:email/sender@example.test",
+    ]
+    assert validate_helper_output(load_preset(tmp_path, "personal"), "google-gmail-emails", result.stdout).count == 1
+
+
+def test_gmail_preserves_groups_domain_literals_and_quoted_at(tmp_path: Path, helpers: HelperInstallation) -> None:
+    helpers.fake(
+        "gws",
+        """case "$*" in
+  *"users messages list"*) printf '%s\n' '{"messages":[{"id":"message-1"}]}' ;;
+  *'"id":"message-1"'*) printf '%s\n' "$GMAIL_MESSAGE" ;;
+  *) exit 2 ;;
+esac
+""",
+    )
+    message = {
+        "id": "message-1",
+        "threadId": "thread-1",
+        "internalDate": "1777885200000",
+        "payload": {
+            "headers": [
+                {"name": "Subject", "value": "Address grammar"},
+                {
+                    "name": "To",
+                    "value": ('Friends: Literal <user@[127.0.0.1]>, Quoted <"local@part"@Example.test>;'),
+                },
+                {
+                    "name": "Cc",
+                    "value": (
+                        "Outside <OUT@example.test>, a(comment)@(comment)example.com, "
+                        "=?utf-8?q?J=C3=B6hn?= <encoded@example.test>, "
+                        'Routed <@route1,@route2:routed@example.test>, QuotedDots <"route..neighbor"@Example.test>'
+                    ),
+                },
+            ]
+        },
+    }
+    result = helpers.run(
+        "gmail-json.py",
+        "2026-05-04T00:00:00Z",
+        "2026-05-05T00:00:00Z",
+        environment={"GMAIL_MESSAGE": json.dumps(message, separators=(",", ":"))},
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    record = json.loads(result.stdout)
+    assert record["to"] == [
+        "Literal <user@[127.0.0.1]>",
+        'Quoted <"local@part"@Example.test>',
+        "Outside <OUT@example.test>",
+        "a@example.com",
+        "Jöhn <encoded@example.test>",
+        "Routed <routed@example.test>",
+        'QuotedDots <"route..neighbor"@Example.test>',
+    ]
+    assert record["participant_uris"] == [
+        "person:email/%22local@part%22@example.test",
+        "person:email/%22route..neighbor%22@example.test",
+        "person:email/a@example.com",
+        "person:email/encoded@example.test",
+        "person:email/out@example.test",
+        "person:email/routed@example.test",
+        "person:email/user@%5B127.0.0.1%5D",
+    ]
+    assert validate_helper_output(load_preset(tmp_path, "personal"), "google-gmail-emails", result.stdout).count == 1
+
+    for invalid in ("Broken <a@@example.test>", "evil@example.test\nBcc: victim@example.test"):
+        message["payload"]["headers"][1]["value"] = invalid
+        malformed = helpers.run(
+            "gmail-json.py",
+            "2026-05-04T00:00:00Z",
+            "2026-05-05T00:00:00Z",
+            environment={"GMAIL_MESSAGE": json.dumps(message, separators=(",", ":"))},
+        )
+        assert malformed.returncode != 0
+        assert malformed.stdout == b""
+        assert b"invalid mailbox header" in malformed.stderr
+
+
 def test_rss_titles_drop_invisible_format_characters(tmp_path: Path, helpers: HelperInstallation) -> None:
     feed = tmp_path / "feed.xml"
     feed.write_text(

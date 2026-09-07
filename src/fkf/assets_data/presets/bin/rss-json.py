@@ -10,15 +10,15 @@ import email.utils
 import hashlib
 import json
 import os
+import pyexpat
 import stat
 import subprocess
 import sys
 import tempfile
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -59,19 +59,15 @@ class Element:
     attributes: dict[str, str]
     content: list[str | Element]
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Element]:
         return (item for item in self.content if isinstance(item, Element))
 
-    def get(self, name: str, default: str | None = None) -> str | None:
-        folded = name.casefold()
-        return next((value for key, value in self.attributes.items() if key.casefold() == folded), default)
-
-    def iter(self):
+    def iter(self) -> Iterator[Element]:
         yield self
         for child_element in self:
             yield from child_element.iter()
 
-    def itertext(self):
+    def itertext(self) -> Iterator[str]:
         for item in self.content:
             if isinstance(item, Element):
                 yield from item.itertext()
@@ -81,6 +77,99 @@ class Element:
 
 class XMLParseError(ValueError):
     """The bounded feed bytes are not safe, well-formed XML."""
+
+
+class XMLTreeParser:
+    """Build a small feed tree with Expat while rejecting every DTD path."""
+
+    def __init__(self) -> None:
+        self.root: Element | None = None
+        self.stack: list[Element] = []
+
+    def start_element(self, name: str, attributes: dict[str, str]) -> None:
+        element = Element(name, attributes, [])
+        if self.stack:
+            self.stack[-1].content.append(element)
+        elif self.root is None:
+            self.root = element
+        else:
+            raise XMLParseError("multiple XML roots")
+        self.stack.append(element)
+
+    def end_element(self, name: str) -> None:
+        if not self.stack or self.stack[-1].tag != name:
+            raise XMLParseError(f"mismatched closing tag {name}")
+        self.stack.pop()
+
+    def character_data(self, data: str) -> None:
+        if self.stack:
+            self.stack[-1].content.append(data)
+        elif data.strip():
+            raise XMLParseError("text outside the XML root")
+
+    @staticmethod
+    def reject_processing_instruction(target: str, data: str) -> None:
+        del target, data
+        raise XMLParseError("processing instructions are forbidden")
+
+    @staticmethod
+    def reject_doctype(
+        name: str,
+        system_id: str | None,
+        public_id: str | None,
+        has_internal_subset: int,
+    ) -> None:
+        del name, system_id, public_id, has_internal_subset
+        raise XMLParseError("DTD declarations are forbidden")
+
+    @staticmethod
+    def reject_entity(
+        name: str,
+        is_parameter: int,
+        value: str | None,
+        base: str | None,
+        system_id: str | None,
+        public_id: str | None,
+        notation_name: str | None,
+    ) -> None:
+        del name, is_parameter, value, base, system_id, public_id, notation_name
+        raise XMLParseError("DTD entity declarations are forbidden")
+
+    @staticmethod
+    def reject_external_entity(
+        context: str | None,
+        base: str | None,
+        system_id: str | None,
+        public_id: str | None,
+    ) -> int:
+        del context, base, system_id, public_id
+        raise XMLParseError("external XML entities are forbidden")
+
+    def parse(self, source: bytes) -> Element:
+        # The direct binding keeps this copied helper dependency-free and exposes
+        # the handlers needed to reject every DTD before building the tree.
+        parser = pyexpat.ParserCreate(namespace_separator="}")
+        parser.buffer_text = True
+        parser.StartElementHandler = self.start_element
+        parser.EndElementHandler = self.end_element
+        parser.CharacterDataHandler = self.character_data
+        parser.ProcessingInstructionHandler = self.reject_processing_instruction
+        parser.StartDoctypeDeclHandler = self.reject_doctype
+        parser.EntityDeclHandler = self.reject_entity
+        parser.ExternalEntityRefHandler = self.reject_external_entity
+        if not parser.SetParamEntityParsing(pyexpat.XML_PARAM_ENTITY_PARSING_NEVER):
+            raise XMLParseError("cannot disable XML parameter entities")
+        try:
+            parser.Parse(source, True)
+        except XMLParseError:
+            raise
+        except (LookupError, ValueError, pyexpat.ExpatError) as error:
+            raise XMLParseError("invalid XML") from error
+        if self.stack:
+            raise XMLParseError("unclosed XML element")
+        if self.root is None:
+            raise XMLParseError("empty XML document")
+        return self.root
 
 
 def file_fingerprint(value: os.stat_result) -> FileFingerprint:
@@ -140,50 +229,13 @@ def read_regular(
     return bytes(source)
 
 
-class XMLTreeParser(HTMLParser):
-    """Build a strict-enough feed tree without enabling DTD or external-entity machinery."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.root: Element | None = None
-        self.stack: list[Element] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        element = Element(tag, {key: value or "" for key, value in attrs}, [])
-        if self.stack:
-            self.stack[-1].content.append(element)
-        elif self.root is None:
-            self.root = element
-        else:
-            raise XMLParseError("multiple XML roots")
-        self.stack.append(element)
-
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.handle_starttag(tag, attrs)
-        self.handle_endtag(tag)
-
-    def handle_endtag(self, tag: str) -> None:
-        if not self.stack or self.stack[-1].tag != tag:
-            raise XMLParseError(f"mismatched closing tag {tag}")
-        self.stack.pop()
-
-    def handle_data(self, data: str) -> None:
-        if self.stack:
-            self.stack[-1].content.append(data)
-        elif data.strip():
-            raise XMLParseError("text outside the XML root")
-
-    def handle_decl(self, decl: str) -> None:
-        del decl
-        raise XMLParseError("DTD declarations are forbidden")
-
-    def handle_pi(self, data: str) -> None:
-        if not data.casefold().startswith("xml "):
-            raise XMLParseError("processing instructions are forbidden")
-
-
 def local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1].split(":", 1)[-1]
+
+
+def attribute(element: Element, name: str) -> str | None:
+    folded = name.casefold()
+    return next((value for key, value in element.attributes.items() if key.casefold() == folded), None)
 
 
 def clean_title(value: str | None) -> str:
@@ -206,7 +258,7 @@ def element_text(element: Element | None) -> str | None:
     if element is None:
         return None
     value = "".join(element.itertext()).strip()
-    return value or element.get("href")
+    return value or attribute(element, "href")
 
 
 def child(element: Element, *names: str) -> Element | None:
@@ -222,7 +274,7 @@ def link(element: Element) -> str | None:
     links = children(element, "link")
     if not links:
         return None
-    chosen = next((item for item in links if item.get("rel") in {None, "alternate"}), links[0])
+    chosen = next((item for item in links if attribute(item, "rel") in {None, "alternate"}), links[0])
     return element_text(chosen)
 
 
@@ -256,21 +308,8 @@ def scrub(value: Any, endpoint: str, identity: str) -> Any:
 
 
 def secure_xml(source: bytes) -> Element:
-    """Parse the small feed subset while refusing DTDs and entity declarations."""
-    upper = source.upper()
-    if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
-        raise XMLParseError("DTD and entity declarations are forbidden")
-    parser = XMLTreeParser()
-    try:
-        parser.feed(source.decode("utf-8-sig"))
-        parser.close()
-    except (UnicodeError, XMLParseError) as error:
-        raise XMLParseError(str(error)) from error
-    if parser.stack:
-        raise XMLParseError("unclosed XML element")
-    if parser.root is None:
-        raise XMLParseError("empty XML document")
-    return parser.root
+    """Parse bounded feed bytes while refusing every DTD declaration."""
+    return XMLTreeParser().parse(source)
 
 
 def parse_opml(path: Path, visibility: str) -> list[tuple[str, str, str]]:
@@ -285,12 +324,12 @@ def parse_opml(path: Path, visibility: str) -> list[tuple[str, str, str]]:
     records: list[tuple[str, str, str]] = []
 
     def walk(outline: Element, folder: str) -> None:
-        endpoint = outline.get("xmlUrl")
+        endpoint = attribute(outline, "xmlUrl")
         if endpoint is not None:
             if len(records) >= MAX_FEEDS:
                 raise ValueError(f"at most {MAX_FEEDS} feeds are allowed")
             records.append((visibility, endpoint, folder.replace("\t", " ").replace("\r", " ").replace("\n", " ")))
-        next_folder = outline.get("text") or folder
+        next_folder = attribute(outline, "text") or folder
         for nested in children(outline, "outline"):
             walk(nested, next_folder)
 

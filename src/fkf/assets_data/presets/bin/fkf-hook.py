@@ -158,6 +158,8 @@ def main(arguments: list[str]) -> int:
             path = f"{home}/.local/bin:{home}/go/bin:{home}/.local/share/mise/shims:{path}"
         environment = dict(os.environ)
         environment["PATH"] = path
+        if sys.stdin.buffer.isatty():
+            return empty(harness)
         raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
         if len(raw) > MAX_INPUT_BYTES:
             return empty(harness)

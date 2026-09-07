@@ -10,6 +10,9 @@ All notable changes to `fkf` are documented here. This project follows [Semantic
 
 - Prevent long-lived MCP stdio servers on Python 3.14 from accumulating timeout callbacks during cancellation polling, eliminating age-correlated CPU and memory growth.
 - Let local release verification ignore only uv's exact one-byte `dist/.gitignore` marker while continuing to reject every other unexpected asset.
+- Parse RSS, Atom, and OPML with a DTD-rejecting XML parser so valid CDATA and predefined or numeric references retain their text without enabling entity expansion.
+- Preserve provider-formatted Gmail recipient names while continuing to derive normalized participant identities from mailbox addresses.
+- Keep agent session hooks non-blocking when invoked with terminal standard input.
 
 ## [v5.0.0](https://github.com/fmind/fkf/releases/tag/v5.0.0) - 2026-09-07
 

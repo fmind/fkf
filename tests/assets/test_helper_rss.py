@@ -54,6 +54,136 @@ cp "$RSS_FIXTURE" "$output"
     )
 
 
+def test_rss_xml_preserves_cdata_entities_namespaces_attributes_and_nested_text() -> None:
+    namespace = runpy.run_path("src/fkf/assets_data/presets/bin/rss-json.py")
+    feed_type = namespace["Feed"]
+    normalize = namespace["normalize"]
+    source = b"""<?xml version="1.0"?>
+<atom:feed xmlns:atom="https://www.w3.org/2005/Atom">
+  <atom:title><![CDATA[Research <!DOCTYPE text> &amp;]]> &amp; &#x1f680;</atom:title>
+  <atom:link REL="alternate" HREF="http://example.test/site"/>
+  <atom:entry>
+    <atom:id>post&#45;1</atom:id>
+    <atom:title>Nested <atom:em>XML</atom:em> &amp; entities</atom:title>
+    <atom:link REL="alternate" HREF="http://example.test/post-1"/>
+    <atom:updated>2026-05-04T09:00:00Z</atom:updated>
+  </atom:entry>
+</atom:feed>"""
+
+    record, items = normalize(
+        feed_type(1, "public", "https://example.test/feed.xml", "https://example.test/feed.xml", ""),
+        source,
+    )
+
+    assert record["title"] == "Research <!DOCTYPE text> &amp; & 🚀"
+    assert record["site_url"] == "https://example.test/site"
+    assert len(items) == 1
+    assert items[0]["title"] == "Nested XML & entities"
+    assert items[0]["url"] == "https://example.test/post-1"
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        '<!DOCTYPE rss [<!ENTITY author "Mallory">]>',
+        '<!DOCTYPE rss SYSTEM "https://example.test/feed.dtd">',
+    ],
+    ids=["internal", "external"],
+)
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
+def test_rss_xml_rejects_internal_and_external_dtds(declaration: str, encoding: str) -> None:
+    namespace = runpy.run_path("src/fkf/assets_data/presets/bin/rss-json.py")
+    secure_xml = namespace["secure_xml"]
+    parse_error = namespace["XMLParseError"]
+    document = (
+        f'<?xml version="1.0" encoding="{encoding.upper()}"?>'
+        f"{declaration}<rss><channel><title>&author;</title></channel></rss>"
+    )
+
+    with pytest.raises(parse_error, match=r"DTD.*forbidden"):
+        secure_xml(document.encode(encoding))
+
+
+@pytest.mark.parametrize(
+    ("encoding", "codec"),
+    [("UTF-8", "utf-8"), ("UTF-16", "utf-16"), ("ISO-8859-1", "iso-8859-1")],
+)
+def test_rss_xml_honors_encodings_standalone_declarations_and_comments(
+    encoding: str,
+    codec: str,
+) -> None:
+    namespace = runpy.run_path("src/fkf/assets_data/presets/bin/rss-json.py")
+    secure_xml = namespace["secure_xml"]
+    child = namespace["child"]
+    element_text = namespace["element_text"]
+    document = (
+        f'<?xml version="1.0" encoding="{encoding}" standalone="yes"?>'
+        "<rss><!-- ignored --><channel><title>Café<!-- ignored --> &#x1f680;</title></channel></rss>"
+    )
+
+    root = secure_xml(document.encode(codec))
+
+    assert element_text(child(child(root, "channel"), "title")) == "Café 🚀"
+
+
+def test_rss_xml_rejects_processing_instructions() -> None:
+    namespace = runpy.run_path("src/fkf/assets_data/presets/bin/rss-json.py")
+    secure_xml = namespace["secure_xml"]
+    parse_error = namespace["XMLParseError"]
+
+    with pytest.raises(parse_error, match="processing instructions are forbidden"):
+        secure_xml(b"<?feed refresh?><rss></rss>")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        b"<rss><channel></rss>",
+        b"<rss></rss><feed></feed>",
+        b"<rss><channel><title>&custom;</title></channel></rss>",
+        b'<?xml version="1.0" encoding="x-nope"?><rss></rss>',
+        b'<?xml version="1.0" encoding="UTF-7"?><rss></rss>',
+    ],
+    ids=["malformed", "multiple-roots", "undeclared-entity", "unknown-encoding", "unsupported-encoding"],
+)
+def test_rss_xml_rejects_invalid_documents(source: bytes) -> None:
+    namespace = runpy.run_path("src/fkf/assets_data/presets/bin/rss-json.py")
+    secure_xml = namespace["secure_xml"]
+    parse_error = namespace["XMLParseError"]
+
+    with pytest.raises(parse_error, match="invalid XML"):
+        secure_xml(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        b'<?xml version="1.0" encoding="x-nope"?><rss></rss>',
+        b'<?xml version="1.0" encoding="UTF-7"?><rss></rss>',
+    ],
+    ids=["unknown", "unsupported"],
+)
+def test_rss_reports_invalid_xml_encodings_without_traceback(
+    helpers: HelperInstallation,
+    source: bytes,
+) -> None:
+    fixture = helpers.home / "feed.xml"
+    fixture.write_bytes(source)
+    call_log = helpers.root / "curl-calls"
+    _install_copying_curl(helpers)
+
+    result = helpers.run(
+        "rss-json.py",
+        "https://example.test/feed.xml",
+        environment={"CALL_LOG": os.fspath(call_log), "RSS_FIXTURE": os.fspath(fixture)},
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert b"not XML" in result.stderr
+    assert b"Traceback" not in result.stderr
+
+
 def test_rss_opml_accepts_exact_limit_and_rejects_limit_plus_one_before_curl(
     helpers: HelperInstallation,
 ) -> None:
