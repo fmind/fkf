@@ -14,6 +14,8 @@ from fkf.source_runtime import Environment
 from fkf.source_tests import SourceTestOutcome, SourceTestRequest, run_source_tests
 from fkf.store import Layer, Store
 
+_SENSITIVE_STDERR = b"provider-stderr-secret-9f5d"
+
 
 class _Clock:
     def __init__(self) -> None:
@@ -35,7 +37,7 @@ class _Runner:
         self.calls.append(command)
         self.cancels.append(cancel)
         if self.fail:
-            raise CommandFailureError(7, b"private")
+            raise CommandFailureError(7, _SENSITIVE_STDERR)
         return CommandResult(b"")
 
 
@@ -64,12 +66,16 @@ def test_default_selects_only_enabled_hooks(monkeypatch: pytest.MonkeyPatch, tmp
 
 
 def test_all_continues_after_safe_failures(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    base = _base(tmp_path, _Runner(fail=True))
+    private_root = tmp_path / "private-root"
+    private_root.mkdir()
+    base = _base(private_root, _Runner(fail=True))
     monkeypatch.setattr("fkf.source_tests.require_trust", lambda _config, **_kwargs: None)
     report = run_source_tests(base, SourceTestRequest(all=True))
+    failure_summary = report.failure_summary()
     assert (report.passed, report.failed, report.complete) == (0, 2, False)
-    assert "active: command exited with status 7" in report.failure_summary()
-    assert "private" not in report.failure_summary()
+    assert "active: command exited with status 7" in failure_summary
+    assert "private-root/fixture" in failure_summary
+    assert _SENSITIVE_STDERR.decode() not in failure_summary
 
 
 def test_named_disabled_hook_runs_and_invalid_selections_fail(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

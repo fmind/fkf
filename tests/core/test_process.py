@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import signal
 import threading
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
 
+import fkf.process as process_module
 from fkf.process import (
     MAX_COMMAND_OUTPUT_BYTES,
     Command,
@@ -186,6 +189,54 @@ def test_runner_bounds_each_output_stream_independently(tmp_path: Path, stream: 
 
     with pytest.raises(CommandOutputTooLargeError, match="exceeded 8 bytes"):
         SubprocessRunner().run(_command(os.fspath(helper), max_output_bytes=8))
+
+
+def test_runner_tolerates_group_permission_race_after_child_exit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    helper = tmp_path / "overflow"
+    _executable(helper, "#!/bin/sh\nprintf 123456789\n")
+
+    def deny_reaped_group(process_group: int, _signal_number: int) -> None:
+        try:
+            waited, _status = os.waitpid(process_group, 0)
+        except ChildProcessError:
+            pass
+        else:
+            assert waited == process_group
+        raise PermissionError(errno.EPERM, "simulated Darwin process-group race")
+
+    monkeypatch.setattr(process_module.os, "killpg", deny_reaped_group)
+
+    with pytest.raises(CommandOutputTooLargeError, match="exceeded 8 bytes"):
+        SubprocessRunner().run(_command(os.fspath(helper), max_output_bytes=8))
+
+
+def test_runner_cleans_up_when_group_signal_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    helper = tmp_path / "overflow"
+    marker = tmp_path / "pid"
+    _executable(helper, '#!/bin/sh\nprintf "%s" "$$" > "$1"\nprintf 123456789\nwhile :; do :; done\n')
+    kill_process_group = os.killpg
+
+    def fail_group_signal(_process_group: int, _signal_number: int) -> None:
+        raise OSError(errno.EINVAL, "simulated unexpected process-group failure")
+
+    monkeypatch.setattr(process_module.os, "killpg", fail_group_signal)
+    monkeypatch.setattr(process_module, "_KILL_WAIT_SECONDS", 0.01)
+
+    process_group: int | None = None
+    try:
+        with pytest.raises(OSError, match="unexpected process-group failure"):
+            SubprocessRunner().run(_command(os.fspath(helper), os.fspath(marker), max_output_bytes=8))
+        process_group = int(marker.read_text())
+        with pytest.raises(ChildProcessError):
+            os.waitpid(process_group, os.WNOHANG)
+    finally:
+        if process_group is not None:
+            with suppress(ProcessLookupError):
+                kill_process_group(process_group, signal.SIGKILL)
+            with suppress(ChildProcessError):
+                os.waitpid(process_group, 0)
 
 
 def test_output_limit_wins_over_a_later_timeout(tmp_path: Path) -> None:

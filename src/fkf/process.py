@@ -399,15 +399,11 @@ class SubprocessRunner:
         try:
             streams, termination = _communicate(process, command, cancel=cancel, quiet=quiet)
         except BaseException:
-            _kill_process_group(process)
-            _close_process_pipes(process)
-            _wait_after_kill(process)
+            _terminate_process_group(process)
             raise
 
         if termination is not None:
-            _kill_process_group(process)
-            _close_process_pipes(process)
-            _wait_after_kill(process)
+            _terminate_process_group(process)
             if termination is _Termination.OUTPUT_LIMIT:
                 error: CommandError = CommandOutputTooLargeError(
                     f"command output exceeded {command.max_output_bytes} bytes"
@@ -535,8 +531,19 @@ def _write_stdin(
 
 
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
+    # Poll first to reduce the PID-reuse race before signaling, while still trying
+    # the group because an exited leader may have left descendants holding pipes.
+    process.poll()
     try:
         os.killpg(process.pid, signal.SIGKILL)
+    except PermissionError:
+        if process.poll() is not None:
+            return
+        # Preserve the signaling failure, but stop the direct child so cleanup can
+        # reap it instead of leaking pipes or a zombie.
+        with suppress(ProcessLookupError):
+            process.kill()
+        raise
     except ProcessLookupError:
         if process.poll() is None:
             with suppress(ProcessLookupError):
@@ -544,6 +551,16 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
     except OSError as error:
         if error.errno != errno.ESRCH:
             raise
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    try:
+        _kill_process_group(process)
+    finally:
+        try:
+            _close_process_pipes(process)
+        finally:
+            _wait_after_kill(process)
 
 
 def _close_process_pipes(process: subprocess.Popen[bytes]) -> None:
