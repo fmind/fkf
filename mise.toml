@@ -1,19 +1,15 @@
 [tools]
 actionlint = "1.7.12"
-dprint = "0.57.1"
+dprint = "0.57.4"
 gitleaks = "8.30.1"
-go = "1.27.1"
-golangci-lint = "2.13.2"
-goreleaser = "2.18.0"
-gotestsum = "1.13.0"
-hugo-extended = "0.165.0"
 jq = "1.8.2"
 lefthook = "2.1.12"
 lychee = "0.24.2"
+opengrep = "1.29.0"
 python = "3.14.7"
-ruff = "0.16.6"
 shellcheck = "0.11.0"
 trivy = "0.74.0"
+"aqua:astral-sh/uv" = "0.12.10"
 yq = "4.53.6"
 # 1.30 requires GitHub's new $/ self-reference, which actionlint 1.7.12 cannot parse yet
 # (rhysd/actionlint#711). Keep both strict gates warning-free rather than suppressing either.
@@ -34,26 +30,16 @@ run_auto_install = false
 [tasks.all]
 alias = "a"
 description = "Format, check, test, and build the project"
-run = [
-  "mise run format",
-  "mise run check",
-  "mise run test",
-  "mise run check:coverage",
-  "mise run build",
-]
+run = ["mise run format", "mise run check", "mise run test", "mise run build"]
+
+[tasks.benchmark]
+description = "Observe FKF CLI latency over a deterministic 100k-record scale corpus"
+run = "uv run python scripts/benchmark_scale.py"
 
 [tasks.build]
 alias = "b"
-description = "Build the fkf binary"
-# No `sources`/`outputs`: the version stamp reads the git tag, which no file glob can express
-# (packed refs make `.git/refs/tags/**` stop matching with no error), so a cached skip would
-# ship a binary stamped with the previous release. A warm re-link costs a second.
-run = 'go build -ldflags "-X github.com/fmind/fkf/core.version=$(git describe --tags --always --dirty)" -o bin/fkf ./cmd/fkf'
-
-[tasks.benchmark]
-description = "Measure the supported 100k-record and 500k-edge envelope"
-depends = ["build"]
-run = "go test ./cmd/fkf -run '^TestScaleCorpusShape$' -bench '^BenchmarkScaleEnvelope$' -benchtime=1x -count=1"
+description = "Build and verify the wheel and source distribution"
+run = ["uv sync --locked", "rm -rf dist", "uv build --wheel --sdist", "mise run test:package"]
 
 [tasks.check]
 alias = "c"
@@ -65,173 +51,297 @@ depends = [
   "check:leaks",
   "check:links",
   "check:lint",
-  "check:notices",
-  "check:python",
+  "check:sast",
   "check:scan",
+  "check:schema",
   "check:shell",
+  "check:types",
   "check:vuln",
 ]
 
-[tasks."check:docs"]
-description = "Build the documentation site strictly and verify every link it renders"
-# The root base URL lets lychee resolve rendered links; Git dates are disabled because an
-# uncommitted page has none.
-env = { HUGO_ENABLEGITINFO = "false" }
+[tasks."check:actions"]
+description = "Validate GitHub Actions and Dependabot configuration"
 run = [
-  "rm -rf docs/tmp/check",
-  "hugo build --source docs --destination tmp/check --baseURL http://localhost/ --logLevel warn --panicOnWarning --printPathWarnings",
-  "FKF_DOCS_BUILD_DIR=\"$PWD/docs/tmp/check\" go test ./internal/checks -run '^TestDocumentationDistributionContracts$' -count=1",
-  "lychee --offline --root-dir docs/tmp/check --no-progress 'docs/tmp/check/**/*.html'",
+  "actionlint",
+  "zizmor --offline --persona=pedantic .github/workflows",
+  "zizmor --offline --collect dependabot --strict-collection .",
 ]
 
-[tasks."docs:build"]
-description = "Build the production documentation site into docs/public"
-dir = "docs"
-run = "hugo build --gc --minify"
+[tasks."check:docs"]
+description = "Build the documentation site strictly and verify every rendered link"
+shell = "bash -c"
+run = [
+  "uv run zensical build --clean --strict",
+  '''
+uv run python - <<'PY'
+from pathlib import Path
 
-[tasks."docs:watch"]
-alias = "w"
-description = "Serve the documentation site locally with live reload"
-dir = "docs"
-run = "hugo server --buildDrafts --navigateToChanged"
+site = Path("site")
+expected_pages = {
+    "docs/base/index.html",
+    "docs/commands/index.html",
+    "docs/context/index.html",
+    "docs/getting-started/index.html",
+    "docs/harnesses/index.html",
+    "docs/identities/index.html",
+    "docs/index.html",
+    "docs/mcp/index.html",
+    "docs/okf/index.html",
+    "docs/privacy/index.html",
+    "docs/schema/index.html",
+    "docs/sources/index.html",
+    "docs/uris-graph/index.html",
+    "index.html",
+    "third-party-notices/index.html",
+}
+required_assets = {
+    "fkf.schema.json",
+    "fmind-logo.webp",
+    "third-party/lucide-LICENSE.txt",
+    "third-party/zensical-0.0.59-LICENSE.txt",
+    "third-party/zensical-javascript-LICENSE.txt",
+}
+actual_pages = {path.relative_to(site).as_posix() for path in site.rglob("index.html")}
+missing_assets = sorted(relative for relative in required_assets if not (site / relative).is_file())
+if actual_pages != expected_pages or missing_assets:
+    missing_pages = sorted(expected_pages - actual_pages)
+    unexpected_pages = sorted(actual_pages - expected_pages)
+    raise SystemExit(
+        "documentation route contract failed: "
+        f"missing_pages={missing_pages}, unexpected_pages={unexpected_pages}, "
+        f"missing_assets={missing_assets}"
+    )
+PY
+''',
+  '''
+set -euo pipefail
+fkf_site_root=$(mktemp -d)
+trap 'rm -rf "$fkf_site_root"' EXIT
+ln -s "$PWD/site" "$fkf_site_root/fkf"
+lychee --offline --root-dir "$fkf_site_root" --no-progress 'site/**/*.html'
+''',
+]
 
 [tasks."check:format"]
 alias = "cf"
-description = "Check Go, config, markup, and whitespace formatting without rewriting"
+description = "Check Python, metadata, lockfile, markup, and whitespace formatting"
 run = [
+  "uv run validate-pyproject pyproject.toml",
+  "uv run ruff format --check",
   "dprint check",
-  "golangci-lint fmt --diff",
+  "uv lock --check",
   "git diff --check \"$(git hash-object -t tree /dev/null)\"",
 ]
 
 [tasks."check:leaks"]
 alias = "cs"
-description = "Audit the git history for leaked secrets (gitleaks)"
-run = "gitleaks git --verbose"
+description = "Audit staged changes or both recent commits and the working tree for leaked secrets"
+run = """
+sh -c '
+if [ "$#" -gt 0 ]; then
+  gitleaks git --redact=100 --verbose "$@"
+elif git rev-parse --verify HEAD >/dev/null 2>&1; then
+  gitleaks git --redact=100 --log-opts="--max-count=100" --verbose
+  gitleaks dir . --redact=100 --verbose
+else
+  gitleaks dir . --redact=100 --verbose
+fi
+' --
+"""
 
 [tasks."check:links"]
 description = "Validate links in the repository's own Markdown"
-# docs/ is deliberately excluded: a Hugo page's links resolve through Hugo's routing rather
-# than the filesystem, so check:docs is what validates those, after rendering.
-run = "git ls-files -z '*.md' ':!:docs/**' | xargs -0 lychee --offline --no-progress"
-
-[tasks."check:notices"]
-description = "Verify legal notices match the runtime and linked Go modules"
-run = "go test ./internal/checks -run '^TestThirdPartyNoticesAreCurrent$' -count=1"
+# Zensical validates documentation source links and anchors before lychee checks rendered output.
+run = '''
+bash -c '
+set -euo pipefail
+git ls-files -z --cached --others --exclude-standard -- "*.md" ":(exclude)docs/**" |
+  while IFS= read -r -d "" path; do
+    # The index still names unstaged deletions; only the existing working-tree set is reviewable.
+    if [ -f "$path" ]; then
+      printf "%s\0" "$path"
+    fi
+  done |
+  xargs -0 lychee --offline --no-progress --
+'
+'''
 
 [tasks."check:lint"]
 alias = "cl"
-description = "Lint Go sources (golangci-lint)"
-run = "golangci-lint run ./..."
+description = "Lint application, tests, and shipped Python helpers (Ruff)"
+# Helpers are copied byte-for-byte into bases and keep their reviewed script style. The
+# isolated pass applies Ruff's correctness rules without rewriting that published surface.
+run = [
+  "uv run ruff check",
+  "uv run ruff check --isolated --no-cache src/fkf/assets_data/presets/bin",
+]
 
 [tasks."check:outdated"]
-description = "Report drift in the pinned toolchain (needs the network, never fails)"
-# The pinned tools belong to no Dependabot ecosystem, so this is the only thing that looks at
-# them. --local excludes unrelated user-level pins. Non-blocking on purpose: a stale pin is a
-# decision to make, not a static check failure.
+description = "Report drift in the pinned toolchain without failing the gate"
 run = "mise outdated --local --bump || true"
 
 [tasks."check:scan"]
 description = "Scan the repository for vulnerabilities, secrets, licenses, and misconfigurations"
 run = "trivy --config trivy.yaml fs ."
 
-[tasks."check:python"]
-description = "Lint every shipped Python helper"
-# --isolated keeps user-level Ruff config from making the local and clean-CI rule sets differ;
-# --no-cache keeps the check from writing a .ruff_cache into a contributor's tree.
-run = "ruff check --isolated --no-cache presets/bin"
+[tasks."check:sast"]
+description = "Scan Python and workflow code for insecure patterns (opengrep)"
+depends = ["install:sast"]
+run = "opengrep scan --error --quiet --config .opengrep/rules/python/lang/security --config .opengrep/rules/yaml/github-actions/security ."
+
+[tasks."check:schema"]
+description = "Verify the committed JSON Schema matches the Python configuration loader"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+schema=$(mktemp)
+trap 'rm -f "$schema"' EXIT
+uv run fkf config schema > "$schema"
+diff -u docs/fkf.schema.json "$schema"
+'''
 
 [tasks."check:shell"]
 description = "Lint every shipped and release shell helper"
-# Filter by language: presets/bin also holds reviewed jq programs and a Python helper, whose
-# gates are the internal/checks smoke run and check:python.
-run = "find presets/bin -type f -name '*.sh' -print0 | xargs -0 shellcheck -S warning install.sh scripts/release-notes"
+run = "find src/fkf/assets_data/presets/bin -type f -name '*.sh' -print0 | xargs -0 shellcheck -S warning scripts/release-notes scripts/verify-release-assets scripts/verify-release-tag"
+
+[tasks."check:types"]
+alias = "ct"
+description = "Type-check Python sources (ty)"
+run = "uv run ty check"
 
 [tasks."check:vuln"]
 alias = "cv"
-description = "Scan Go code for known vulnerabilities (govulncheck)"
-run = "go tool govulncheck ./..."
-
-[tasks."check:actions"]
-description = "Validate the CI/CD workflows and the release configuration"
-run = [
-  "actionlint",
-  "zizmor --offline --persona=pedantic .github/workflows",
-  "zizmor --offline --collect dependabot --strict-collection .",
-  "goreleaser check",
-]
+description = "Scan locked Python dependencies for known vulnerabilities"
+run = "uv audit --preview-features audit-command --locked"
 
 [tasks.clean]
 alias = "n"
-description = "Remove build artifacts and generated output"
-run = "rm -rf bin dist fkf coverage.out docs/public docs/tmp docs/resources docs/.hugo_build.lock"
-
-[tasks.format]
-alias = "f"
-description = "Format all sources and documents"
-depends = ["format:dprint", "format:go"]
-
-[tasks."format:dprint"]
-description = "Format JSON, Markdown, TOML, and YAML"
-run = "dprint fmt"
-
-[tasks."format:go"]
-description = "Format Go sources and imports (gofumpt + goimports)"
-# Through golangci-lint, which already configures both formatters in .golangci.yml.
-run = "golangci-lint fmt"
-
-[tasks.install]
-alias = "i"
-description = "Sync dependencies, install the fkf binary, and install Git hooks"
-run = ["go mod tidy", "mise run install:binary", "lefthook install"]
-
-[tasks."install:binary"]
-description = "Install fkf into ~/.local/bin"
-depends = ["build"]
-run = 'mkdir -p "$HOME/.local/bin" && install -m 0755 bin/fkf "$HOME/.local/bin/fkf" && "$HOME/.local/bin/fkf" --version'
-
-[tasks."generate:schema"]
-description = "Rewrite docs/static/fkf.schema.json from the configuration loader"
-run = "go run ./cmd/fkf config schema > docs/static/fkf.schema.json"
-
-[tasks."generate:notices"]
-description = "Rewrite legal notices for the runtime and linked Go modules"
-run = "go test ./internal/checks -run '^TestThirdPartyNoticesAreCurrent$' -count=1 -args -update-third-party-notices"
-
-[tasks."release:build"]
-description = "Build release archives into dist/ with GoReleaser"
-run = "goreleaser release --clean --snapshot"
-
-[tasks.test]
-alias = "t"
-description = "Run the hermetic test suite with race detection and coverage"
-shell = "bash -c"
-# A temporary HOME with FKF_BASE unset and XDG_STATE_HOME redirected is what stops the suite
-# from discovering a real base or trusting one. The two Go caches are carried across so a
-# changed HOME does not also mean a cold build.
-run = '''
-set -euo pipefail
-home=$(mktemp -d)
-trap 'rm -rf "$home"' EXIT
-env -u FKF_BASE HOME="$home" XDG_STATE_HOME="$home/state" \
-  GOCACHE="$(go env GOCACHE)" GOMODCACHE="$(go env GOMODCACHE)" \
-  gotestsum --format pkgname -- -race -coverpkg=./... -coverprofile=coverage.out ./...
-'''
+description = "Remove generated build, test, and documentation output"
+run = "rm -rf dist site .cache .coverage htmlcov .pytest_cache .ruff_cache .ty"
 
 [tasks.coverage]
 alias = "v"
-description = "Show per-function statement coverage (run `mise run test` first)"
-run = "go tool cover -func=coverage.out"
+description = "Write an HTML branch-coverage report"
+depends = ["test"]
+run = "uv run coverage html"
 
-[tasks."check:coverage"]
-description = "Fail when total statement coverage falls below the floor (run `mise run test` first)"
+[tasks."docs:build"]
+description = "Build the production documentation site into site"
+run = "uv run zensical build --clean --strict"
+
+[tasks."docs:watch"]
+alias = "w"
+description = "Serve the documentation site locally with live reload"
+run = "uv run zensical serve"
+
+[tasks.format]
+alias = "f"
+description = "Format Python, JSON, Markdown, TOML, and YAML"
+depends = ["format:dprint", "format:python"]
+
+[tasks."format:dprint"]
+description = "Format JSON, Markdown, TOML, and YAML"
+run = "dprint fmt --allow-no-files"
+
+[tasks."format:python"]
+description = "Format Python sources and sort imports"
+raw_args = true
+run = """
+bash -c '
+set -euo pipefail
+if [ "$#" -eq 0 ]; then set -- .; fi
+uv run ruff check --select=I --fix --force-exclude "$@"
+uv run ruff format --force-exclude "$@"
+' --
+"""
+
+[tasks."generate:schema"]
+description = "Rewrite the JSON Schema from the Python configuration loader atomically"
 shell = "bash -c"
-# A ratchet: raise the floor as coverage improves, never lower it to make a change pass.
-# pipefail is what makes a missing or corrupt coverage.out fail here rather than pass silently.
 run = '''
 set -euo pipefail
-go tool cover -func=coverage.out | awk -v floor=85 '/^total:/ {
-  printf "coverage %s (floor %d%%)\n", $NF, floor
-  exit ($NF + 0 < floor)
-}'
+schema=$(mktemp docs/fkf.schema.json.XXXXXX)
+trap 'rm -f "$schema"' EXIT
+uv run fkf config schema > "$schema"
+mv "$schema" docs/fkf.schema.json
 '''
+
+[tasks.install]
+alias = "i"
+description = "Sync locked dependencies and install Git hooks"
+run = ["uv sync --locked", "lefthook install"]
+
+[tasks."install:sast"]
+description = "Fetch the commit-pinned opengrep rules"
+run = "bash scripts/install-sast.sh f1d2b562b414783763fd02a6ed2736eaed622efa"
+
+[tasks.test]
+alias = "t"
+description = "Run the hermetic test suite with branch coverage"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+fkf_test_home=$(mktemp -d)
+trap 'rm -rf "$fkf_test_home"' EXIT
+env -u FKF_BASE HOME="$fkf_test_home" XDG_STATE_HOME="$fkf_test_home/state" \
+  uv run pytest --basetemp="$fkf_test_home/pytest" \
+    --cov=fkf --cov-branch --cov-report=term-missing --cov-fail-under=85
+'''
+
+[tasks."test:package"]
+description = "Install and invoke the wheel and source distribution outside the checkout"
+shell = "bash -c"
+run = '''
+set -euo pipefail
+wheel_count=$(find dist -maxdepth 1 -type f -name 'fkf-*.whl' | wc -l)
+sdist_count=$(find dist -maxdepth 1 -type f -name 'fkf-*.tar.gz' | wc -l)
+[ "$wheel_count" -eq 1 ] && [ "$sdist_count" -eq 1 ] || {
+  echo "expected exactly one fkf wheel and one source distribution" >&2
+  exit 1
+}
+project_root=$PWD
+wheel="$project_root/$(find dist -maxdepth 1 -type f -name 'fkf-*.whl')"
+sdist="$project_root/$(find dist -maxdepth 1 -type f -name 'fkf-*.tar.gz')"
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+for distribution in wheel sdist; do
+  uv venv --python 3.14 "$tmp/$distribution-venv"
+  # Seed the exact locked runtime closure without installing the checkout.
+  VIRTUAL_ENV="$tmp/$distribution-venv" \
+    uv sync --project "$project_root" --locked --offline --no-dev --no-install-project --active
+done
+cd "$tmp"
+uv pip install --offline --no-deps --python "$tmp/wheel-venv/bin/python" "$wheel"
+"$tmp/wheel-venv/bin/fkf" --version
+uv pip check --python "$tmp/wheel-venv/bin/python"
+uv pip install --offline --no-deps --python "$tmp/sdist-venv/bin/python" "$sdist"
+"$tmp/sdist-venv/bin/fkf" --version
+uv pip check --python "$tmp/sdist-venv/bin/python"
+# Exercise packaged assets and derived reads in both artifacts, with no user base or state.
+for distribution in wheel sdist; do
+  fkf_package_home="$tmp/$distribution-home"
+  mkdir "$fkf_package_home"
+  (
+    unset FKF_BASE
+    export HOME="$fkf_package_home" XDG_STATE_HOME="$fkf_package_home/state"
+    fkf_package_bin="$tmp/$distribution-venv/bin/fkf"
+    "$fkf_package_bin" init "$tmp/$distribution-base" --demo 2 --skip-git
+    "$fkf_package_bin" --base "$tmp/$distribution-base" build --check
+    "$fkf_package_bin" --base "$tmp/$distribution-base" context "retrieval boundary" --budget 850
+  )
+done
+'''
+
+[tasks."test:watch"]
+alias = "tw"
+description = "Run the test suite in watch mode"
+run = "uv run pytest-watcher ."
+
+[tasks.upgrade]
+alias = "u"
+description = "Upgrade dependencies to latest compatible versions"
+run = "uv sync --upgrade"
+
+[tasks.watch]
+description = "Run the FKF CLI from the working tree"
+run = "uv run fkf"

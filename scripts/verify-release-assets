@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Refuse publication unless the release has exactly the locally verified artifacts.
+set -euo pipefail
+
+: "${GITHUB_REF_NAME:?GITHUB_REF_NAME is required}"
+
+shopt -s dotglob nullglob
+local_assets=(dist/*)
+if ((${#local_assets[@]} == 0)); then
+  echo "dist contains no release assets" >&2
+  exit 1
+fi
+
+temporary="$(mktemp -d)"
+trap 'rm -rf "${temporary}"' EXIT
+downloaded="${temporary}/assets"
+mkdir "${downloaded}"
+
+# Downloading the complete release gives one read-only inventory whose bytes can
+# be compared without trusting metadata digests or filename patterns.
+gh release download "${GITHUB_REF_NAME}" --dir "${downloaded}"
+
+remote_assets=("${downloaded}"/*)
+local_names="${temporary}/local-names"
+remote_names="${temporary}/remote-names"
+: >"${local_names}"
+: >"${remote_names}"
+
+for asset in "${local_assets[@]}"; do
+  if [[ ! -f "${asset}" || -L "${asset}" ]]; then
+    echo "dist contains a non-regular release asset ${asset##*/}" >&2
+    exit 1
+  fi
+  printf '%s\n' "${asset##*/}" >>"${local_names}"
+done
+for asset in "${remote_assets[@]}"; do
+  if [[ ! -f "${asset}" || -L "${asset}" ]]; then
+    echo "release contains a non-regular asset ${asset##*/}" >&2
+    exit 1
+  fi
+  printf '%s\n' "${asset##*/}" >>"${remote_names}"
+done
+
+LC_ALL=C sort -o "${local_names}" "${local_names}"
+LC_ALL=C sort -o "${remote_names}" "${remote_names}"
+if ! cmp -s "${local_names}" "${remote_names}"; then
+  echo "release asset inventory does not match dist" >&2
+  exit 1
+fi
+
+for asset in "${local_assets[@]}"; do
+  name="${asset##*/}"
+  if ! cmp -s "${asset}" "${downloaded}/${name}"; then
+    echo "release asset ${name} does not match dist" >&2
+    exit 1
+  fi
+done

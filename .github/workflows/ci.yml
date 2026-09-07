@@ -3,28 +3,26 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_call: # CD reuses this matrix so a tagged release is gated on every target it ships
+  workflow_call: # A tag release verifies the exact commit through the same canonical gate.
 permissions:
   contents: read
 concurrency:
-  # A literal `ci-` rather than github.workflow, which reports the caller's name during a
-  # reusable call: sharing CD's group would queue this gate behind the run waiting on it.
   group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   verify:
-    name: Verify (${{ matrix.target }})
+    name: Verify Python package (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: linux-amd64
+          - target: linux-x64
             runner: ubuntu-24.04
           - target: linux-arm64
             runner: ubuntu-24.04-arm
-          - target: darwin-amd64
+          - target: macos-x64
             runner: macos-15-intel
-          - target: darwin-arm64
+          - target: macos-arm64
             runner: macos-15
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -32,16 +30,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0 # check:leaks scans history
+          fetch-depth: 100 # check:leaks scans the last 100 commits; a shallower clone hides them.
           persist-credentials: false
       - name: Install locked toolchain
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.1
-      - name: Run project gate
+      - name: Run canonical gate
         run: mise run all
-      - name: Cross-build release archives
-        if: matrix.target == 'linux-amd64'
-        run: mise run release:build
       - name: Verify clean checkout
         run: test -z "$(git status --porcelain)"

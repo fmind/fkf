@@ -6,12 +6,12 @@ pre-commit:
       glob: "*.{md,json,jsonc,yaml,yml,toml}"
       run: mise run format:dprint {staged_files}
       stage_fixed: true
-    format:go:
+    format:python:
       priority: 2
-      glob: "*.go"
-      run: mise run format:go {staged_files}
+      glob: "*.py"
+      run: mise run format:python {staged_files}
       stage_fixed: true
-    # check:leaks scans committed history, which by definition cannot see what is staged.
+    # The default history/worktree pass cannot see a partially staged snapshot exactly.
     leaks:
       priority: 3
       run: mise run check:leaks --staged
@@ -24,7 +24,3 @@ pre-push:
     test:
       priority: 1
       run: mise run test
-    # Reads the coverage.out the step above just wrote, so the ratchet costs milliseconds.
-    coverage:
-      priority: 2
-      run: mise run check:coverage

@@ -13,54 +13,325 @@ concurrency:
   group: cd-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  # A tag push does not trigger CI, so the release gate has to run that matrix itself; the
-  # reusable call inherits this run's ref, verifying the exact commit on every shipped target.
   verify:
     name: Verify release commit
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
-  release:
-    name: Publish release binaries
+
+  build_python_package:
+    name: Build Python distributions
     needs: verify
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
-      contents: write # create the release and upload its archives
-      id-token: write # mint the OIDC token the provenance attestation is signed with
-      attestations: write # record build provenance for each published archive
-      artifact-metadata: write # associate the attested files with this repository
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
       - name: Install locked toolchain
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.1
-          cache: false # a release must not consume a cache a pull request could have poisoned
-      # No gate step here: `needs: verify` already ran `mise run all` and the clean-checkout
-      # check on this commit for all four targets, and GoReleaser refuses a dirty tree itself.
-      - name: Build draft release
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+          cache: false # A release must not consume a cache a pull request could have poisoned.
+      - name: Match package version to tag
         run: |
-          scripts/release-notes "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
-          goreleaser release --clean --release-notes "$RUNNER_TEMP/release-notes.md"
-      - name: Attest build provenance
+          package_version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          test "$GITHUB_REF_NAME" = "v${package_version}"
+      - name: Build and smoke-test distributions
+        run: mise run build
+      - name: Record distribution hashes
+        run: sha256sum dist/*.whl dist/*.tar.gz > python-package.sha256
+      - name: Upload distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-package-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            python-package.sha256
+          if-no-files-found: error
+          retention-days: 1
+
+  attest_python_package:
+    name: Attest Python distributions
+    needs: build_python_package
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write # Mint the OIDC token only after the candidate has been built and transferred.
+      attestations: write # Publish provenance for the exact wheel and source archive.
+      artifact-metadata: write # Associate attestations with this repository.
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-package-distributions
+      - name: Verify distribution hashes
+        run: |
+          sha256sum --check --strict python-package.sha256
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 2
+      - name: Attest distribution provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
-            dist/fkf_*.tar.gz
-            dist/checksums.txt
-      - name: Publish attested release
+            dist/*.whl
+            dist/*.tar.gz
+
+  stage_github_release:
+    name: Stage draft GitHub release
+    needs: attest_python_package
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # Create or verify the draft and upload its immutable candidates.
+    steps:
+      - name: Checkout release notes
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-package-distributions
+      - name: Verify distribution hashes
+        run: |
+          sha256sum --check --strict python-package.sha256
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 2
+      - name: Bind remote tag to workflow commit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "$GITHUB_REF_NAME" --draft=false --verify-tag
+        run: scripts/verify-release-tag
+      - name: Create or verify draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          scripts/release-notes "$GITHUB_REF_NAME" > "$RUNNER_TEMP/release-notes.md"
+          release_args=(--prerelease=false)
+          case "$GITHUB_REF_NAME" in *-*) release_args=(--prerelease) ;; esac
+
+          if is_draft="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            test "$is_draft" = true || test "$is_draft" = false
+            existing="$RUNNER_TEMP/existing-release-assets"
+            mkdir "$existing"
+            gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' |
+              while IFS= read -r name; do
+                test -n "$name" || continue
+                test -f "dist/$name" || {
+                  echo "draft release has unexpected asset $name" >&2
+                  exit 1
+                }
+                gh release download "$GITHUB_REF_NAME" --pattern "$name" --dir "$existing"
+                cmp "dist/$name" "$existing/$name"
+              done
+            for asset in dist/*; do
+              name="${asset##*/}"
+              if ! gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | grep -Fqx "$name"; then
+                if [ "$is_draft" = true ]; then
+                  gh release upload "$GITHUB_REF_NAME" "$asset"
+                else
+                  echo "public release is missing expected asset $name" >&2
+                  exit 1
+                fi
+              fi
+            done
+            if [ "$is_draft" = false ]; then
+              echo "release $GITHUB_REF_NAME is already public with the exact artifacts"
+              exit 0
+            fi
+            gh release edit "$GITHUB_REF_NAME" --draft --verify-tag \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" \
+              "${release_args[@]}"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --draft \
+              --verify-tag \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" \
+              "${release_args[@]}"
+          fi
+      - name: Verify staged release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/verify-release-assets
+
+  publish_python_package:
+    name: Publish to PyPI
+    needs: stage_github_release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/fkf
+    permissions:
+      contents: read # Check out the tag verifier without granting repository writes.
+      id-token: write # PyPI Trusted Publishing is the only authority this job receives.
+    steps:
+      - name: Checkout release verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-package-distributions
+      - name: Verify distribution hashes
+        run: |
+          sha256sum --check --strict python-package.sha256
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 2
+      - name: Recheck remote tag before PyPI publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/verify-release-tag
+      - name: Publish distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
+          skip-existing: true
+      - name: Verify PyPI distribution integrity
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          MAX_ATTEMPTS = 6
+          RETRY_SECONDS = 5
+
+          distribution_paths = [
+              path
+              for path in Path("dist").iterdir()
+              if path.is_file() and not path.name.endswith(".publish.attestation")
+          ]
+          expected = {
+              path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in distribution_paths
+          }
+          if not expected:
+              raise SystemExit("dist/ contains no distributions")
+
+          tag = os.environ["GITHUB_REF_NAME"]
+          if not tag.startswith("v") or len(tag) == 1:
+              raise SystemExit(f"release tag has no v-prefixed version: {tag!r}")
+          version = urllib.parse.quote(tag[1:], safe="")
+          url = f"https://pypi.org/pypi/fkf/{version}/json"
+          last_transient = "PyPI release was not visible"
+
+          for attempt in range(1, MAX_ATTEMPTS + 1):
+              request = urllib.request.Request(
+                  url,
+                  headers={"Accept": "application/json", "Cache-Control": "no-cache"},
+              )
+              try:
+                  with urllib.request.urlopen(request, timeout=15) as response:
+                      payload = json.load(response)
+                  entries = payload["urls"]
+                  remote = {
+                      entry["filename"]: entry["digests"]["sha256"]
+                      for entry in entries
+                  }
+                  if len(remote) != len(entries):
+                      raise SystemExit("PyPI returned duplicate distribution filenames")
+              except urllib.error.HTTPError as error:
+                  error.close()
+                  if error.code not in {404, 429} and not 500 <= error.code < 600:
+                      raise
+                  last_transient = f"PyPI returned HTTP {error.code}"
+              except (
+                  json.JSONDecodeError,
+                  KeyError,
+                  TimeoutError,
+                  TypeError,
+                  UnicodeDecodeError,
+                  urllib.error.URLError,
+              ) as error:
+                  last_transient = f"PyPI returned an unusable response: {error}"
+              else:
+                  unexpected = sorted(remote.keys() - expected.keys())
+                  conflicts = sorted(
+                      name
+                      for name in remote.keys() & expected.keys()
+                      if remote[name] != expected[name]
+                  )
+                  if unexpected or conflicts:
+                      raise SystemExit(
+                          "PyPI distribution mismatch: "
+                          f"unexpected={unexpected}, conflicting_sha256={conflicts}"
+                      )
+                  missing = sorted(expected.keys() - remote.keys())
+                  if remote == expected:
+                      print("PyPI filenames and SHA-256 digests match dist/")
+                      break
+                  last_transient = f"PyPI release is missing {missing}"
+
+              if attempt == MAX_ATTEMPTS:
+                  raise SystemExit(
+                      f"PyPI integrity was not observable after {MAX_ATTEMPTS} attempts: "
+                      f"{last_transient}"
+                  )
+              time.sleep(RETRY_SECONDS)
+          PY
+
+  publish_github_release:
+    name: Publish GitHub release
+    needs: publish_python_package
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write # Publish the already-attested draft after PyPI succeeds.
+    steps:
+      - name: Checkout release verifier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-package-distributions
+      - name: Verify distribution hashes
+        run: |
+          sha256sum --check --strict python-package.sha256
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 2
+      - name: Recheck remote tag before GitHub publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/verify-release-tag
+      - name: Verify final release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/verify-release-assets
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          is_draft="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)"
+          if [ "$is_draft" = true ]; then
+            gh release edit "$GITHUB_REF_NAME" --draft=false --verify-tag
+          elif [ "$is_draft" = false ]; then
+            echo "release $GITHUB_REF_NAME is already public"
+          else
+            echo "release $GITHUB_REF_NAME returned an invalid draft state" >&2
+            exit 1
+          fi
+
   pages_candidate:
     name: Admit current documentation candidate
     if: >-
@@ -94,6 +365,7 @@ jobs:
             echo "deploy=false" >>"$GITHUB_OUTPUT"
             echo "::notice::Skipping documentation for a superseded main commit."
           fi
+
   pages:
     name: Publish documentation
     needs: pages_candidate
@@ -105,40 +377,33 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      pages: write # configure-pages turns Pages on, deploy-pages publishes the artifact
-      id-token: write # authenticate both calls through GitHub's OIDC boundary
+      pages: write # configure-pages turns Pages on, deploy-pages publishes the artifact.
+      id-token: write # Authenticate both calls through GitHub's OIDC boundary.
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    env:
-      HUGO_ENVIRONMENT: production
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
-          fetch-depth: 0 # enableGitInfo needs file history
           persist-credentials: false
       - name: Install locked toolchain
         uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           version: 2026.9.1
-          cache: false # publishing must not consume a pull-request cache
+          cache: false # Publishing must not consume a pull-request cache.
       - name: Verify documentation
         run: mise run check:docs
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
         with:
-          enablement: true # the first run has to turn Pages on; idempotent afterwards
-      - name: Build documentation
-        env:
-          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
-        run: mise run docs:build -- --baseURL "$PAGES_BASE_URL/"
+          enablement: true
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: docs/public
+          path: site
       - name: Recheck main immediately before deployment
         id: current
         env:

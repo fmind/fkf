@@ -4,12 +4,12 @@
   "markdown": {
     "textWrap": "never"
   },
-  // Source fixtures under services/testdata/sources/ carry a real, semantic constraint some
+  // Source fixtures under tests/assets/fixtures/sources/ carry a real, semantic constraint some
   // presets rely on: an ndjson-format source needs the whole fixture as ONE physical line, so
-  // sources.DecodeRecords splits it the same way it would split a real CLI's stdout. Pretty-
+  // collectors rely on: the decoder splits it the same way it would split a real CLI's stdout. Pretty-
   // printing one across many lines is not a style choice here — it silently breaks what the
   // fixture is testing, which is why this directory is exempt rather than reformatted.
-  "excludes": ["services/testdata/sources/**"],
+  "excludes": ["tests/assets/fixtures/sources/**"],
   "plugins": [
     "npm:dprint-plugin-yaml@0.6.0",
     "npm:@dprint/json@0.23.0",

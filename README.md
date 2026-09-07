@@ -1,12 +1,12 @@
 # fkf — Fmind Knowledge Framework
 
-[![CI](https://github.com/fmind/fkf/actions/workflows/ci.yml/badge.svg)](https://github.com/fmind/fkf/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/fmind/fkf?sort=semver)](https://github.com/fmind/fkf/releases/latest) [![Go Reference](https://pkg.go.dev/badge/github.com/fmind/fkf.svg)](https://pkg.go.dev/github.com/fmind/fkf) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/fmind/fkf/actions/workflows/ci.yml/badge.svg)](https://github.com/fmind/fkf/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/fmind/fkf?sort=semver)](https://github.com/fmind/fkf/releases/latest) [![Python 3.14+](https://img.shields.io/badge/Python-3.14%2B-blue.svg)](https://www.python.org/) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 **Your coding agent knows your repository. It does not know the meeting that set the constraint, the review that rejected the approach, or the ticket that explains why the code looks like that.**
 
 `fkf` collects that work history into a git repository you own — plain JSON and Markdown, gathered by the provider CLIs you already trust — and hands your agent a small, budgeted, reproducible slice of it on demand.
 
-One binary. No account, daemon, database, or telemetry. Stored reads are offline.
+One command. No account, daemon, database, or telemetry. Stored reads are offline.
 
 ## See it in 30 seconds
 
@@ -29,7 +29,7 @@ The demo base is synthetic, but it is a real base: 30 days of events across six 
 ... 3 more selected items ...
  80 wiki   wiki/index.md  Wiki · navigation-page:-50(curated navigation ranks below concept pages)
 receipt pack for "retrieval boundary" · 9/736 selected · <1024 text tokens · floor 10
-window <30 days> · as_of <today> · digest <hex> · ranking v6 · dropped 717
+window <30 days> · as_of <today> · digest <hex> · ranking v7 · dropped 717
 ```
 
 One decision, scattered across a commit, a calendar invite, an email, and a Jira issue, pulled back together under a token budget.
@@ -44,21 +44,21 @@ Then look around the base with `fkf find`, `fkf graph repo:github.com/fmind/fkf 
 
 ## Install
 
-The installer picks the right Linux or macOS archive, verifies it against the published checksums, and writes to `~/.local/bin` without `sudo`:
+FKF is a Python 3.14 package. Install its stable `fkf` launcher with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/fmind/fkf/main/install.sh | sh
+uv tool install fkf
 ```
 
-Require GitHub's release provenance attestation as well with an authenticated `gh`:
+Use `uvx fkf ...` for a one-shot command without a persistent installation. Harness and schedule integration intentionally require a stable installed launcher because their configuration must keep working after the invoking process exits.
+
+Upgrade an installed tool through the package manager:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/fmind/fkf/main/install.sh | FKF_VERIFY_ATTESTATION=1 sh
+uv tool upgrade fkf
 ```
 
-Set `FKF_INSTALL_DIR` to an absolute directory to change the destination, or `FKF_VERSION` to pin a release. Archives and `checksums.txt` are on the [latest release](https://github.com/fmind/fkf/releases/latest); each archive holds the binary, license, README, and linked-dependency notices.
-
-Already installed? `fkf upgrade` replaces the running executable in place, verifying the checksum first.
+Wheel and source distributions are published to PyPI and attached to the [matching GitHub release](https://github.com/fmind/fkf/releases/latest) with build-provenance attestations.
 
 FKF supports Linux and macOS. WSL2 works when the base stays on its Linux filesystem; native Windows is out of scope because cancellation uses POSIX process groups.
 
@@ -71,13 +71,13 @@ mise install --locked
 mise run install
 ```
 
-The module intentionally stays `github.com/fmind/fkf`, so Go's major-version import rules keep `go install github.com/fmind/fkf/cmd/fkf@latest` on the v1 line. Use a release archive or a tagged checkout for v2 and later.
+To exercise the checkout without installing its launcher, run commands as `uv run fkf ...`.
 
 </details>
 
 ## Connect your own work
 
-Start with one real source. The personal preset ships a reviewed GitHub Search helper — it needs `gh` and `jq` on your `PATH`, and `gh` owns the login:
+Start with one real source. The personal preset ships a reviewed GitHub Search helper — it needs `python3` and `gh` on your `PATH`, and `gh` owns the login:
 
 ```bash
 gh auth status
@@ -105,22 +105,22 @@ Four ideas cover most of FKF.
 ```text
 events/YYYY-MM-DD/  one complete JSON document per event source
 index/              current point-in-time source documents
-tasks/              agent session traces and learned items
+tasks/              authored execution evidence and learned items
 projects/           active, paused, or completed efforts
 wiki/               reusable decisions, patterns, tools, and insights
 graph.tsv           rebuildable relation cache at the base root
 ```
 
-**A source is a command.** A source runs a reviewed command that prints one JSON document, and the named CLI owns its login. Adding GitHub, Google Workspace, Jira, or a local database needs no Go adapter — just YAML and, when the glue gets real, a small reviewed helper under the base's `bin/`:
+**A source is a command.** A source runs a reviewed command that prints one JSON document, and the named CLI owns its login. Adding GitHub, Google Workspace, Jira, or a local database needs no framework adapter — just YAML and, when the glue gets real, a small reviewed helper under the base's `bin/`:
 
 ```yaml
 sources:
   github-pull-requests:
     enabled: true
     layer: events
-    requires: [github-search-json.sh, gh, jq]
+    requires: [github-search-json.py, python3, gh]
     window: true
-    run: [github-search-json.sh, prs, assignee, "{{start}}", "{{end}}"]
+    run: [github-search-json.py, prs, assignee, "{{start}}", "{{end}}"]
     fields:
       id: .url
       time: .updatedAt
@@ -142,18 +142,19 @@ Full detail: [sources](https://fmind.github.io/fkf/docs/sources/), [URIs and the
 ```bash
 fkf harness install --all --dry-run --base ~/brain
 fkf harness install --all --base ~/brain
+fkf harness install claude codex gemini kiro --workspace ~/fmind --base ~/brain
 ```
 
-The first command shows exactly what FKF would manage. The second wires the base into Claude Code, Codex, Gemini, Copilot, Antigravity, OpenCode, Grok, Cursor, Kiro, and Cline, pinning the executable and base by absolute path. If you manage your client configuration yourself, the primitive is `fkf mcp serve --base ~/brain`.
+The first command shows exactly what FKF would manage. The second registers read-only MCP under the base-scoped key `fkf-<name>` in all ten adapters. The third opts the four adapters with verified passive output into automatic context for one physical workspace. FKF does not create global links to a base's skills. If you manage client configuration yourself, the primitive is `fkf mcp serve --base ~/brain`.
 
-The MCP server is read-only and bounded: `context`, `find`, `day`, `timeline`, `list`, `read`, and `graph`. It cannot write, run a shell, or fetch bodies. Connecting does not preload your base or train anything—the agent asks for a pack when it needs one. The bundled `fkf-use`, `fkf-learn`, and `daily-brief` skills teach it how. See the [harness guide](https://fmind.github.io/fkf/docs/harnesses/).
+The MCP server is read-only and bounded: `context`, `find`, `day`, `timeline`, `list`, `read`, and `graph`. It cannot write, run a shell, or fetch bodies. The agent asks for a pack when it needs one. Ordinary lookups use `context` and a cited `read`; configuration inspection and task traces belong to setup or meaningful work. The bundled `fkf-use`, `fkf-learn`, and `daily-brief` skills teach it how. See the [harness guide](https://fmind.github.io/fkf/docs/harnesses/).
 
 ## Trust and privacy
 
 - **FKF reads no credential** and expands no secret environment variable. Provider credentials stay with the provider CLI.
 - **Collected content is untrusted data** — evidence, never instructions. A stored value never becomes shell syntax or an executable name.
 - **`fkf trust` hashes the executable plan**: the effective `auth:`, `run:`, `test:`, and `body:` argv plus every file under the base's `bin/` and `tests/`. A meaningful change requires review again. It detects change; it is not a sandbox.
-- **Stored reads are offline.** `read --body` is the explicit read-time fetch; `sync` may prefetch bodies under the opt-in `bodies: sync` policy, while `brief` and `status --live` run only bounded trusted `auth:` probes.
+- **Stored reads are offline, including `brief`.** `read --body` is the explicit read-time fetch; `sync` may prefetch bodies under the opt-in `bodies: sync` policy. Explicit `status --live` runs only bounded trusted `auth:` probes.
 - **FKF encrypts nothing and provides no backup.** Protect the disk and the remote. Whether event and index documents enter git history is your choice at `init`, recorded in `.gitignore`.
 
 Details and the full threat boundary: [privacy and trust](https://fmind.github.io/fkf/docs/privacy/).
@@ -169,11 +170,11 @@ Configuration and stored documents each carry `fkf: 1`. Evidence-envelope additi
 Start with [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), and the [Code of Conduct](CODE_OF_CONDUCT.md). Report vulnerabilities through a [private security advisory](https://github.com/fmind/fkf/security/advisories/new), never a public issue — see [SECURITY.md](SECURITY.md).
 
 ```bash
-mise run all       # format, check, test, coverage, and build
-mise run benchmark # optional 100k-record and 500k-edge observation
+mise run all      # format, check, branch-coverage tests, and package build
+mise run coverage # optional HTML branch-coverage report
 ```
 
-The suite is hermetic and race-enabled. The benchmark measures the supported 100,000-record and 500,000-edge envelope as a local observation, never as a cross-machine threshold.
+The suite is hermetic and holds branch coverage to its ratcheted floor. Large graph observations remain opt-in test cases, never cross-machine thresholds.
 
 Full documentation: <https://fmind.github.io/fkf/>
 

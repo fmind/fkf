@@ -1,0 +1,74 @@
+[project]
+site_name = "fkf"
+site_url = "https://fmind.github.io/fkf/"
+site_description = "Owned, offline evidence retrieval for coding agents."
+site_author = "Médéric Hurier"
+copyright = "Copyright &copy; 2026 Médéric Hurier (Fmind)."
+docs_dir = "docs"
+site_dir = "site"
+strict = true
+extra_css = ["stylesheets/extra.css"]
+extra_javascript = ["javascripts/accessibility.js"]
+nav = [
+  { "Overview" = "docs/index.md" },
+  { "Getting started" = "docs/getting-started.md" },
+  { "Understand FKF" = [
+    { "The base and fkf.yaml" = "docs/base.md" },
+    { "Sources are commands" = "docs/sources.md" },
+    { "URIs and the graph" = "docs/uris-graph.md" },
+    { "Context packs and receipts" = "docs/context.md" },
+    { "The wiki format" = "docs/okf.md" },
+    { "Identities" = "docs/identities.md" },
+  ] },
+  { "Reference" = [
+    { "Command reference" = "docs/commands.md" },
+    { "Configuration schema" = "docs/schema.md" },
+  ] },
+  { "Connect agents" = [
+    { "MCP server" = "docs/mcp.md" },
+    { "Agent harnesses" = "docs/harnesses.md" },
+  ] },
+  { "Trust and legal" = [
+    { "Privacy and security" = "docs/privacy.md" },
+    { "Third-party notices" = "third-party-notices.md" },
+  ] },
+]
+
+[project.theme]
+language = "en"
+logo = "fmind-logo.webp"
+favicon = "fmind-logo.webp"
+font = false
+features = [
+  "content.code.copy",
+  "content.code.select",
+  "navigation.footer",
+  "navigation.instant",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.tracking",
+]
+
+[[project.extra.social]]
+icon = "lucide/git-branch"
+link = "https://github.com/fmind/fkf"
+name = "FKF on GitHub"
+
+[project.markdown_extensions]
+attr_list = {}
+md_in_html = {}
+toc.permalink = true
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.line_spans = "__span"
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.superfences = {}
+
+[project.plugins.redirects]
+# Preserve the original Pages contract: the repository root leads to the documentation overview.
+redirect_maps = { "index.md" = "docs/index.md" }
+
+[project.plugins.search]
+# Zensical 0.0.59's visible search dialog is absent from the accessibility tree.
+enabled = false
