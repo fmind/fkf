@@ -37,10 +37,9 @@ async def _serve_stdio(server: MCPServer[None], cancel: Cancellation) -> None:
     task = asyncio.create_task(server.run_stdio_async())
     try:
         while not task.done() and not cancel.is_set():
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=0.05)
-            except TimeoutError:
-                continue
+            # wait() removes its callback after each timeout; repeated shield()
+            # timeouts retain callbacks on the long-lived task under Python 3.14.
+            await asyncio.wait((task,), timeout=0.05)
         if cancel.is_set():
             task.cancel()
             with suppress(asyncio.CancelledError):

@@ -4,6 +4,13 @@ All notable changes to `fkf` are documented here. This project follows [Semantic
 
 ## Unreleased
 
+## [v5.0.1](https://github.com/fmind/fkf/releases/tag/v5.0.1) - 2026-09-07
+
+### Fixed
+
+- Prevent long-lived MCP stdio servers on Python 3.14 from accumulating timeout callbacks during cancellation polling, eliminating age-correlated CPU and memory growth.
+- Let local release verification ignore only uv's exact one-byte `dist/.gitignore` marker while continuing to reject every other unexpected asset.
+
 ## [v5.0.0](https://github.com/fmind/fkf/releases/tag/v5.0.0) - 2026-09-07
 
 ### Highlights

@@ -5,7 +5,15 @@ set -euo pipefail
 : "${GITHUB_REF_NAME:?GITHUB_REF_NAME is required}"
 
 shopt -s dotglob nullglob
-local_assets=(dist/*)
+local_assets=()
+for asset in dist/*; do
+  # uv owns this exact one-byte marker; it is build metadata, not a release asset.
+  if [[ "${asset##*/}" == ".gitignore" && -f "${asset}" && ! -L "${asset}" ]] &&
+    cmp -s "${asset}" <(printf '*'); then
+    continue
+  fi
+  local_assets+=("${asset}")
+done
 if ((${#local_assets[@]} == 0)); then
   echo "dist contains no release assets" >&2
   exit 1

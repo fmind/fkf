@@ -150,6 +150,9 @@ def test_notices_match_the_complete_locked_runtime_distribution_closure() -> Non
 
 def test_distribution_packages_both_project_and_third_party_licenses() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    notices = (ROOT / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
 
     assert project["license"] == "MIT"
     assert project["license-files"] == ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+    assert notices.startswith("# Third-party notices\n\nFKF depends on ")
+    assert re.search(r"\bFKF v?\d+\.\d+\.\d+\b", notices) is None
