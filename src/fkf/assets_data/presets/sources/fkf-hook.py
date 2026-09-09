@@ -21,7 +21,8 @@ REPOSITORY_BUDGET = 850
 COMPACT_BUDGET = 600
 MAX_INPUT_BYTES = 1 << 16
 MAX_INVOKE_BYTES = 1 << 20
-INVOKE_TIMEOUT_SECONDS = 6.0
+INVOKE_TIMEOUT_SECONDS = 10.0
+HOOK_TIMEOUT_SECONDS = 15.0
 READ_BYTES = 64 << 10
 GITHUB_PART = re.compile(r"^[A-Za-z0-9._-]+$")
 SYSTEM_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin"
@@ -89,11 +90,10 @@ def stop_process_group(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=1)
 
 
-def bounded_output(process: subprocess.Popen[bytes]) -> tuple[int, bytes]:
+def bounded_output(process: subprocess.Popen[bytes], deadline: float) -> tuple[int, bytes]:
     if process.stdout is None:  # pragma: no cover
         raise RuntimeError("hook child has no stdout pipe")
     output = bytearray()
-    deadline = time.monotonic() + INVOKE_TIMEOUT_SECONDS
     with selectors.DefaultSelector() as selector:
         selector.register(process.stdout, selectors.EVENT_READ)
         while True:
@@ -111,9 +111,14 @@ def bounded_output(process: subprocess.Popen[bytes]) -> tuple[int, bytes]:
                 raise ValueError("hook child output exceeds 1 MiB")
 
 
-def invoke(arguments: list[str], environment: dict[str, str]) -> str:
+def invoke(arguments: list[str], environment: dict[str, str], *, deadline: float | None = None) -> str:
     if not arguments or (arguments[0] != "git" and not Path(arguments[0]).is_absolute()):
         raise ValueError("unexpected hook executable")
+    child_deadline = time.monotonic() + INVOKE_TIMEOUT_SECONDS
+    if deadline is not None:
+        child_deadline = min(child_deadline, deadline)
+    if child_deadline <= time.monotonic():
+        raise TimeoutError("hook child timed out")
     process = subprocess.Popen(
         ["/usr/bin/env", *arguments],
         env=environment,
@@ -122,7 +127,7 @@ def invoke(arguments: list[str], environment: dict[str, str]) -> str:
         start_new_session=True,
     )
     try:
-        returncode, output = bounded_output(process)
+        returncode, output = bounded_output(process, child_deadline)
     except BaseException:
         stop_process_group(process)
         raise
@@ -169,7 +174,9 @@ def main(arguments: list[str]) -> int:
         cwd = Path(cwd_value).resolve(strict=True)
         if not cwd.is_dir() or not cwd.is_relative_to(workspace):
             return empty(harness)
-        remote = invoke(["git", "-C", os.fspath(cwd), "remote", "get-url", "origin"], environment)
+        # Share one deadline across all children, with margin inside the harness limit.
+        deadline = time.monotonic() + HOOK_TIMEOUT_SECONDS
+        remote = invoke(["git", "-C", os.fspath(cwd), "remote", "get-url", "origin"], environment, deadline=deadline)
         repo = repo_name(remote)
         pack = ""
         if not compact:
@@ -186,6 +193,7 @@ def main(arguments: list[str]) -> int:
                     "text",
                 ],
                 environment,
+                deadline=deadline,
             )
             if day:
                 pack = f"Yesterday:\n{day}"
@@ -205,6 +213,7 @@ def main(arguments: list[str]) -> int:
                     f"repo:github.com/{repo}",
                 ],
                 environment,
+                deadline=deadline,
             )
             if repository:
                 pack = f"{pack}\n\nRepository:\n{repository}" if pack else repository

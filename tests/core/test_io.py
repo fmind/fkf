@@ -41,6 +41,22 @@ def test_atomic_write_replaces_complete_bytes_and_tightens_mode(tmp_path: Path) 
     assert not list(path.parent.glob(".*.tmp"))
 
 
+def test_atomic_write_creates_every_missing_parent_owner_only(tmp_path: Path) -> None:
+    tmp_path.chmod(0o750)
+    root_mode = tmp_path.stat().st_mode & 0o777
+    target = tmp_path / "date" / "task" / "TASKS.md"
+    previous = os.umask(0o022)
+    try:
+        atomic_write(target, b"private trace")
+    finally:
+        os.umask(previous)
+    assert target.read_bytes() == b"private trace"
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert target.parent.stat().st_mode & 0o777 == 0o700
+    assert target.parent.parent.stat().st_mode & 0o777 == 0o700
+    assert tmp_path.stat().st_mode & 0o777 == root_mode
+
+
 def test_write_json_is_deterministic_and_newline_terminated(tmp_path: Path) -> None:
     path = tmp_path / "value.json"
     write_json({"z": 1, "value": "é", "n": 9_007_199_254_740_993}, path)

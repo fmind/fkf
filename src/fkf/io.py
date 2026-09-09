@@ -74,7 +74,14 @@ def atomic_write(path: str | os.PathLike[str], data: bytes, *, mode: int = BASE_
     """Durably replace a file with complete owner-controlled bytes."""
     target = Path(path)
     directory = target.parent
-    directory.mkdir(mode=BASE_DIR_MODE, parents=True, exist_ok=True)
+    # Path.mkdir(parents=True) applies its mode only to the final directory.
+    missing: list[Path] = []
+    parent = directory
+    while not parent.exists():
+        missing.append(parent)
+        parent = parent.parent
+    for parent in reversed(missing):
+        parent.mkdir(mode=BASE_DIR_MODE, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=directory)
     temporary = Path(temporary_name)
     try:

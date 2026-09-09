@@ -10,6 +10,12 @@ if [[ ! ${rules_revision} =~ ^[0-9a-f]{40}$ ]]; then
   exit 1
 fi
 
+# Hooks in linked worktrees export repository-local variables. This helper owns
+# a different Git checkout, so those variables must not redirect its commands.
+while IFS= read -r git_local_name; do
+  unset "${git_local_name}"
+done < <(git rev-parse --local-env-vars)
+
 # An empty or interrupted initialization must be repairable on the next run.
 if [[ ! -e "${rules_directory}/.git" ]]; then
   git init -q "${rules_directory}"

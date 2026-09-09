@@ -133,7 +133,8 @@ def test_session_hook_reports_timeouts_without_exposing_child_details(
         main.__globals__["sys"], "stdin", io.TextIOWrapper(io.BytesIO(json.dumps({"cwd": str(workspace)}).encode()))
     )
 
-    def timeout(_arguments: list[str], _environment: dict[str, str]) -> str:
+    def timeout(_arguments: list[str], _environment: dict[str, str], *, deadline: float) -> str:
+        assert deadline > 0
         raise TimeoutError("sensitive child diagnostic")
 
     monkeypatch.setitem(main.__globals__, "invoke", timeout)
@@ -143,7 +144,50 @@ def test_session_hook_reports_timeouts_without_exposing_child_details(
     assert captured.err == "fkf-hook.py: context delivery timed out; run fkf context explicitly\n"
 
 
-def test_session_hook_times_out_and_terminates_a_silent_child_group(helpers: HelperInstallation) -> None:
+def test_session_hook_children_share_one_total_deadline(
+    helpers: HelperInstallation, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import io
+
+    workspace = helpers.root / "workspace"
+    workspace.mkdir()
+    executable = helpers.fake("fkf", "exit 0\n")
+    namespace = runpy.run_path(os.fspath(helpers.bin / "fkf-hook.py"))
+    main = namespace["main"]
+    monkeypatch.setattr(
+        main.__globals__["sys"], "stdin", io.TextIOWrapper(io.BytesIO(json.dumps({"cwd": str(workspace)}).encode()))
+    )
+    deadlines: list[float] = []
+
+    def invoke(_arguments: list[str], _environment: dict[str, str], *, deadline: float) -> str:
+        deadlines.append(deadline)
+        return "fmind/fkf" if len(deadlines) == 1 else "synthetic evidence"
+
+    monkeypatch.setitem(main.__globals__, "invoke", invoke)
+    assert main(["codex", str(executable), str(workspace)]) == 0
+    assert len(deadlines) == 3
+    assert len(set(deadlines)) == 1
+    assert "Repository:" in capsys.readouterr().out
+
+
+def test_session_hook_expired_total_budget_starts_no_child(
+    helpers: HelperInstallation, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    namespace = runpy.run_path(os.fspath(helpers.bin / "fkf-hook.py"))
+    invoke = namespace["invoke"]
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("expired hook must not spawn another child")
+
+    monkeypatch.setattr(invoke.__globals__["subprocess"], "Popen", forbidden)
+    with pytest.raises(TimeoutError, match="hook child timed out"):
+        invoke(["git", "status"], helpers.environment(), deadline=time.monotonic() - 1)
+
+
+@pytest.mark.parametrize("total_budget", [False, True])
+def test_session_hook_times_out_and_terminates_a_silent_child_group(
+    helpers: HelperInstallation, total_budget: bool
+) -> None:
     marker = helpers.root / "timed-out-hook-provider-escaped"
     provider = helpers.fake(
         "git",
@@ -153,11 +197,15 @@ def test_session_hook_times_out_and_terminates_a_silent_child_group(helpers: Hel
     )
     module = runpy.run_path(os.fspath(helpers.bin / "fkf-hook.py"))
     invoke = module["invoke"]
-    invoke.__globals__["INVOKE_TIMEOUT_SECONDS"] = 0.1
+    invoke.__globals__["INVOKE_TIMEOUT_SECONDS"] = 10 if total_budget else 0.1
     environment = helpers.environment({"HOOK_ESCAPE_MARKER": os.fspath(marker)})
 
     with pytest.raises(TimeoutError, match="hook child timed out"):
-        invoke(["git", "config", "--get", "remote.origin.url"], environment)
+        invoke(
+            ["git", "config", "--get", "remote.origin.url"],
+            environment,
+            deadline=time.monotonic() + 0.1 if total_budget else None,
+        )
     time.sleep(0.5)
 
     assert provider.is_file()

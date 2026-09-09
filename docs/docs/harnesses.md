@@ -114,3 +114,5 @@ For a coding task, ask the selected MCP server for `context` with the repository
 Keep shared skills neutral about the selected base. If a retrieval miss is reported, the bundled `fkf-use` feedback reference turns its query and expected URI into a reviewed case in the existing evaluation file. Registration, a successful protocol call, retrieval acceptance, and improved agent decisions are separate checks.
 
 The passive hook runs with Python 3.9 or newer from the sanitized system PATH. Its syntax stays compatible with that interpreter independently of the FKF package’s Python requirement.
+
+Passive retrieval shares a fifteen-second deadline across Git, day, and repository context calls; each child is capped at ten seconds. A timed-out child group is terminated and the hook reports the bounded fallback without exposing child output.

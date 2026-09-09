@@ -14,8 +14,10 @@ INSTALLER = ROOT / "scripts/install-sast.sh"
 PIN = "f1d2b562b414783763fd02a6ed2736eaed622efa"
 
 
-def _run(*argv: str, home: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
-    environment = {"HOME": str(home), "PATH": os.environ["PATH"]}
+def _run(
+    *argv: str, home: Path, check: bool = True, extra: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
+    environment = {"HOME": str(home), "PATH": os.environ["PATH"], **(extra or {})}
     return subprocess.run(  # noqa: S603 - test argv is constructed only from temporary paths.
         argv,
         check=check,
@@ -72,6 +74,23 @@ def test_sast_rule_installer_is_idempotent_and_refuses_local_changes(tmp_path: P
     for _ in range(2):
         _run("bash", str(INSTALLER), revision, str(checkout), str(upstream), home=home)
         assert _run("git", "-C", str(checkout), "rev-parse", "HEAD", home=home).stdout.strip() == revision
+
+    (upstream / "foreign-change").write_text("preserve outer worktree\n", encoding="utf-8")
+    _run(
+        "bash",
+        str(INSTALLER),
+        revision,
+        str(checkout),
+        str(upstream),
+        home=home,
+        extra={
+            "GIT_DIR": str(upstream / ".git"),
+            "GIT_WORK_TREE": str(upstream),
+            "GIT_INDEX_FILE": str(upstream / ".git/index"),
+        },
+    )
+    assert (upstream / "foreign-change").read_text() == "preserve outer worktree\n"
+    assert _run("git", "-C", str(checkout), "status", "--porcelain", home=home).stdout == ""
 
     (checkout / "local-change").write_text("preserve\n", encoding="utf-8")
     refused = _run(
