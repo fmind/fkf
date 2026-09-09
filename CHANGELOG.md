@@ -2,6 +2,13 @@
 
 All notable changes to `fkf` are documented here. This project follows [Semantic Versioning](https://semver.org/) from its first public release.
 
+## [v6.0.1](https://github.com/fmind/fkf/releases/tag/v6.0.1) - 2026-09-09
+
+### Fixed
+
+- Keep passive hooks compatible with system Python 3.9 and newer, independently of the FKF package’s Python 3.14 environment. The formatter now preserves that syntax boundary and a regression test checks it.
+- Consolidate the hook’s validated direct-argv dispatch through the fixed system `env` executable.
+
 ## [v6.0.0](https://github.com/fmind/fkf/releases/tag/v6.0.0) - 2026-09-09
 
 ### Breaking changes
