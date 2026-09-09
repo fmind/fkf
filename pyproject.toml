@@ -97,6 +97,10 @@ ignore = [
   "E501", # Long CLI help and schema descriptions are clearer as one string.
 ]
 
+[tool.ruff.per-file-target-version]
+# Passive hooks resolve Python from a sanitized system PATH, outside the uv environment.
+"src/fkf/assets_data/presets/sources/fkf-hook.py" = "py39"
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [
   "S101", # pytest assertions are the test contract.

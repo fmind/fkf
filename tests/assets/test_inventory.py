@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import os
@@ -24,6 +25,12 @@ from fkf.source_runtime import Environment, build_run_command
 from fkf.timeutil import parse_duration
 
 from .conftest import REPOSITORY, SOURCE_FIXTURES, load_preset
+
+
+def test_passive_hook_parses_with_the_system_python_grammar() -> None:
+    # Hooks deliberately resolve python3 from the sanitized system PATH; the
+    # uv application's Python 3.14 interpreter is not on that path.
+    ast.parse(read_asset("presets/sources/fkf-hook.py"), feature_version=(3, 9))
 
 
 def test_resource_inventory_is_complete_confined_and_declared(tmp_path: Path) -> None:
@@ -206,6 +213,7 @@ def test_built_wheel_exposes_the_exact_resource_tree(tmp_path: Path, monkeypatch
             assert archive.read("fkf/assets_data/skills/" + relative) == content
 
     program = """
+import ast
 import hashlib
 import json
 import sys

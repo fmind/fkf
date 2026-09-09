@@ -112,14 +112,10 @@ def bounded_output(process: subprocess.Popen[bytes]) -> tuple[int, bytes]:
 
 
 def invoke(arguments: list[str], environment: dict[str, str]) -> str:
-    if arguments[:1] == ["git"]:
-        command = ["git", *arguments[1:]]
-    elif arguments and Path(arguments[0]).is_absolute():
-        command = ["/usr/bin/env", *arguments]
-    else:
+    if not arguments or (arguments[0] != "git" and not Path(arguments[0]).is_absolute()):
         raise ValueError("unexpected hook executable")
     process = subprocess.Popen(
-        command,
+        ["/usr/bin/env", *arguments],
         env=environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -217,7 +213,7 @@ def main(arguments: list[str]) -> int:
     except TimeoutError:
         sys.stderr.write("fkf-hook.py: context delivery timed out; run fkf context explicitly\n")
         return empty(harness)
-    except OSError, UnicodeError, ValueError, json.JSONDecodeError:
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
         return empty(harness)
 
     if harness in {"claude", "kiro"}:

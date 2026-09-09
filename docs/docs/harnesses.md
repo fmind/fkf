@@ -112,3 +112,5 @@ A nightly learning routine belongs to an owner-scheduled agent, not to FKF. That
 For a coding task, ask the selected MCP server for `context` with the repository identity and an 850-token budget, then `read` the cited project decisions when needed. Reuse a relevant startup pack; after compaction, start at 600 tokens. A successful lookup does not require a full configuration read, source sync, task trace, or learning proposal.
 
 Keep shared skills neutral about the selected base. If a retrieval miss is reported, the bundled `fkf-use` feedback reference turns its query and expected URI into a reviewed case in the existing evaluation file. Registration, a successful protocol call, retrieval acceptance, and improved agent decisions are separate checks.
+
+The passive hook runs with Python 3.9 or newer from the sanitized system PATH. Its syntax stays compatible with that interpreter independently of the FKF package’s Python requirement.
