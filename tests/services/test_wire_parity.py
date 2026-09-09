@@ -107,4 +107,5 @@ def test_context_expansion_digest_appends_new_candidates_in_go_order(tmp_path: P
         ),
     )
 
-    assert pack.receipt.input_digest == "dc6ebb92372bd692"
+    # Ranking v10 deliberately changes the receipt domain, not expansion order.
+    assert pack.receipt.input_digest == "70bfbb2f2536ff6a"

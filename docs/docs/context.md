@@ -11,6 +11,7 @@ description: "Deterministic lexical retrieval over open semantic fields, with an
 fkf context "retrieval boundary" --budget 4096 --explain
 fkf context "repo:github.com/fmind/fkf" --expand
 fkf context "collection" --pin wiki/explicit-sync-boundary.md
+fkf context "collection" --save-receipt
 fkf context "collection" --since-receipt 0123456789abcdef
 ```
 
@@ -22,7 +23,7 @@ Without explicit bounds, context starts at the oldest of the last 30 populated e
 
 A query may instead carry one closed temporal expression at its start or end: `today`, `yesterday`, `last week`, `this week`, `last <weekday>`, a weekday, `YYYY-MM`, `YYYY-MM-DD`, or `since YYYY-MM-DD`. The expression is removed before lexical ranking and its exact resolution is recorded in `receipt.window.derived_from`. A boundary `last` changes ordering to the newest matching evidence and may compose with explicit bounds. FKF rejects two temporal expressions or a bound-deriving expression combined with `--since` or `--until`; `--until` alone is bounded to 30 days rather than scanning all history.
 
-Records are projected through the `fields` map stored in their document. A manifest-verified cached body also contributes at weight 1; context never fetches a missing body. Pages contribute their slug, title, description, type, status, tags, body, and explicit relation values. Raw record JSON fields that the source did not map are preserved for `read`, but do not enter ranking. Field names and source names are not search text.
+Records are projected through the `fields` map stored in their document. A manifest-verified cached body also contributes at weight 1; context never fetches a missing body. Pages contribute their slug, title, description, type, status, tags, body, explicit relation values, and supported `next_action`, `blocker`, `reviewed`, and `due` metadata. Commitment wording is searchable and eligible for excerpts without duplicating it in prose. Raw record JSON fields that the source did not map are preserved for `read`, but do not enter ranking. Field names and source names are not search text.
 
 This is generic by design. FKF has no special repository, ticket, or person field. Every declared semantic field is searchable, and every entity URI can receive exact identifier weight.
 
@@ -56,7 +57,7 @@ FKF also removes this closed conversational-scaffolding vocabulary before retrie
 
 Only relations, entity aliases, ids, slugs, exact titles, and complete item URIs receive the identifier bonus. For an entity URI, both its identity and the suffix after its final slash are exact identifiers: `marc@x.test` identifies `person:email/marc@x.test`.
 
-Ranking first prefers an item's direct id, title, slug, URI, or page-owned alias, then related exact identities. Within identity matches, broader meaningful-term coverage wins. Purely lexical matches compare the strongest matching field's declared weight before coverage, so a page naming one requested topic stays ahead of a broad body mentioning several topics. The integer score then breaks ties. `last` considers dated evidence before timeless inventory, prefers term-level direct and related identities and the strongest matching field, then orders by chronology. The receipt's filtered `terms` and reason lines expose every input to those comparisons.
+For a single exact identity query, an active project with a `next_action` comes first and retains its commitment excerpt even in a small repository reminder. Read its URI for the complete decision and constraints. Other ranking first prefers a direct identifier-shaped match, a single-term identity lookup, or a plain-word direct identity corroborated by another meaningful query term. Multi-term matches then outrank isolated question words, and relevant authored wiki/project handoffs precede collected representations. Matching field weight and weighted score precede raw term-count ties, so incidental coverage of “make” in a long historical body does not beat a focused course decision. `last` considers dated evidence before timeless inventory, prefers direct and related identities and the strongest matching field, then orders by chronology. The receipt's filtered `terms` and reason lines expose every input to those comparisons.
 
 Records declaring `category: received` or `visibility: private` are excluded from default selection. A query that explicitly names the role value, such as `visibility:private`, or an exact record identity can recover them. FKF does not infer visibility from a source name or note type. `category: created` receives a small preference after it has already matched.
 
@@ -74,9 +75,9 @@ Identical non-empty title and source runs collapse to their newest representativ
 
 ## Delta packs
 
-Every successful CLI `fkf context` query saves a bounded semantic manifest under the machine-local FKF state directory, keyed by `receipt.input_digest`. It therefore takes the same fail-fast physical-base writer lock as other CLI mutations, even though it never changes the base. `--since-receipt <input_digest>` loads that manifest and keeps only current records or pages whose URI is new or whose retrieval-relevant content changed. Deletions are not emitted because there is no current URI to cite. The resulting receipt names the prior digest in `since_receipt`, reports the number of `changed` candidates, and carries the input digest for the new full snapshot so calls can be chained. MCP and direct service reads do not save snapshots, preserving their side-effect-free contract; use one CLI query to seed a delta chain.
+Ordinary CLI `fkf context` is lock-free and saves nothing. Explicit `--save-receipt` saves a bounded semantic manifest under the machine-local FKF state directory, keyed by `receipt.input_digest`, and takes the fail-fast physical-base writer lock. `--since-receipt <input_digest>` loads a saved manifest and keeps only current records or pages whose URI is new or whose retrieval-relevant content changed. Deletions are not emitted because there is no current URI to cite. Add `--save-receipt` to each call whose new digest should seed another delta. MCP and direct service reads remain side-effect-free.
 
-The cache contains URIs and SHA-256 digests, not evidence bodies. It is owner-only, compressed, and retains the 16 most recently used snapshots per physical base. It lives under `$XDG_STATE_HOME/fkf/receipts/` or `~/.local/state/fkf/receipts/`; it never changes the base or execution trust. A digest copied from another machine, pruned by retention, or removed with local state cannot be reconstructed from the digest alone, so FKF fails closed and asks the caller to run the original query once without `--since-receipt`. A snapshot is query-bound but not budget- or output-format-bound.
+The cache contains URIs and SHA-256 digests, not evidence bodies. It is owner-only, compressed, and retains the 16 most recently used snapshots per physical base. It lives under `$XDG_STATE_HOME/fkf/receipts/` or `~/.local/state/fkf/receipts/`; it never changes the base or execution trust. A missing snapshot cannot be reconstructed from its digest: run the original query with `--save-receipt` and without `--since-receipt` to seed it again. A snapshot is query-bound but not budget- or output-format-bound.
 
 ## Pins
 
@@ -86,7 +87,7 @@ Pins are explicit retrieval preference, not a graph or trust mechanism.
 
 ## Compact text and exact delivery bounds
 
-Terminal and session-hook output uses one line per item:
+Terminal and session-hook output uses one metadata line per item, followed by its answer-bearing excerpt when available. Excerpts prefer nearby coverage of multiple query terms over the first introductory mention:
 
 ```text
 125 record 2026-08-28 events/2026-08-28/git-commits.json#abc Fix retrieval · source=git-commits repository=repo:github.com/fmind/fkf
@@ -99,6 +100,20 @@ Selection first uses a reproducible per-item estimate. FKF then renders the comp
 `receipt.used_tokens` is the selection estimate for admitted items. `encoded_tokens` is the delivery contract.
 
 ## Receipt
+
+### Answer-bearing evaluation
+
+`fkf eval` can check more than URI recall. Each query may declare `expected_excerpts` and `expected_reads`, mapping an existing `expected_uris` entry to a non-empty list of case-insensitive text fragments. The URI must be delivered within `k`; excerpts must contain all requested fragments, and follow-up stored reads must contain their requested evidence. A high recall score with missing evidence still fails. Reads remain offline and never fetch bodies.
+
+```yaml
+expected_uris: [projects/course.md]
+expected_excerpts:
+  projects/course.md: [Python labs]
+expected_reads:
+  projects/course.md: [reuse the teaching stack]
+```
+
+Keep natural user questions and realistic distractors in the suite. These deterministic checks prove evidence delivery, not model answer quality; claims about usefulness still need a separately designed end-to-end trial.
 
 Every pack includes the inputs needed to explain and compare it:
 

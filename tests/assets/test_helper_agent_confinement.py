@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import runpy
@@ -12,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from .conftest import HelperInstallation
+from .conftest import HelperInstallation, prompt_body_arguments
 
 START = "2026-05-04T00:00:00Z"
 END = "2026-05-05T00:00:00Z"
@@ -47,19 +48,28 @@ def _transcript(helpers: HelperInstallation, helper: str) -> Path:
         path = helpers.home / ".claude" / "projects" / "project" / "session.jsonl"
         content = _claude_line()
     else:
-        path = helpers.home / ".agents" / "sessions" / "v1" / "codex" / "lineage" / "session" / "transcript.jsonl"
+        path = (
+            helpers.home
+            / ".agents"
+            / "sessions"
+            / "v1"
+            / "codex"
+            / hashlib.sha256(b"codex\0session-1\0").hexdigest()
+            / ("a" * 64)
+            / "transcript.jsonl"
+        )
         content = _prompt_line()
     path.parent.mkdir(parents=True)
     path.write_bytes(content)
     return path
 
 
-def _arguments(helper: str) -> list[str]:
+def _arguments(helpers: HelperInstallation, helper: str) -> list[str]:
     if helper == "agent-prompts.py":
         return [START, END, "0"]
     if helper == "agent-sessions.py":
         return [START, END]
-    return ["codex-session-1-20260504T000000Z"]
+    return prompt_body_arguments(helpers)
 
 
 def test_prompt_repository_accepts_only_explicit_github_remotes(
@@ -109,12 +119,21 @@ def test_agent_helpers_reject_symlinked_store_components(
         transcript.write_bytes(_claude_line())
         (helpers.home / ".claude").symlink_to(outside_home / ".claude", target_is_directory=True)
     else:
-        transcript = outside_home / ".agents" / "sessions" / "v1" / "codex" / "lineage" / "session" / "transcript.jsonl"
+        transcript = (
+            outside_home
+            / ".agents"
+            / "sessions"
+            / "v1"
+            / "codex"
+            / hashlib.sha256(b"codex\0session-1\0").hexdigest()
+            / ("a" * 64)
+            / "transcript.jsonl"
+        )
         transcript.parent.mkdir(parents=True)
         transcript.write_bytes(_prompt_line())
         (helpers.home / ".agents").symlink_to(outside_home / ".agents", target_is_directory=True)
 
-    result = helpers.run(helper, *_arguments(helper))
+    result = helpers.run(helper, *_arguments(helpers, helper))
     assert result.returncode == 1
     assert result.stdout == b""
     assert b"linked" in result.stderr
@@ -155,7 +174,7 @@ def test_agent_helpers_reject_transcript_replacement_at_open(
     monkeypatch.setenv("HOME", os.fspath(helpers.home))
     monkeypatch.setenv("PATH", helpers.environment()["PATH"])
 
-    assert main(_arguments(helper)) == 1
+    assert main(_arguments(helpers, helper)) == 1
     captured = capfd.readouterr()
     assert captured.out == ""
     assert "changed while it was being opened" in captured.err
@@ -223,7 +242,9 @@ def test_prompt_body_rejects_a_traversing_harness_identifier(helpers: HelperInst
     transcript.parent.mkdir(parents=True)
     transcript.write_bytes(_prompt_line())
 
-    result = helpers.run("agent-prompt-body.py", "..-session-1-20260504T000000Z")
+    result = helpers.run(
+        "agent-prompt-body.py", os.fspath(helpers.root), "agent-prompts", "..-session-1-20260504T000000Z"
+    )
     assert result.returncode == 2
     assert result.stdout == b""
     assert b"invalid harness" in result.stderr

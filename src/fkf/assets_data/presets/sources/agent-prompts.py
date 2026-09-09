@@ -9,6 +9,7 @@ import re
 import stat
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -16,6 +17,9 @@ from urllib.parse import urlsplit
 MAX_JSON_BYTES = 8 << 20
 MAX_GIT_BYTES = 1 << 20
 MAX_FILES = 8192
+MAX_ARCHIVE_FILES = 131072
+MAX_MANIFEST_BYTES = 64 << 10
+MAX_ARCHIVE_METADATA_BYTES = 64 << 20
 MAX_RECORDS = 8192
 MAX_OUTPUT_BYTES = 64 << 20
 GITHUB_PART = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -107,7 +111,7 @@ def directory_exists(home: Path, path: Path) -> bool:
         os.close(descriptor)
 
 
-def json_lines(home: Path, path: Path):
+def json_lines(home: Path, path: Path, *, document: bool = False):
     parent = open_chain(home, path.relative_to(home).parts[:-1])
     descriptor = -1
     try:
@@ -121,7 +125,14 @@ def json_lines(home: Path, path: Path):
         if fingerprint(inspected) != fingerprint(opened):
             raise RuntimeError("transcript changed while it was being opened")
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
-            while line := stream.readline(MAX_JSON_BYTES + 1):
+            if document:
+                value_bytes = stream.read(MAX_MANIFEST_BYTES + 1)
+                if len(value_bytes) > MAX_MANIFEST_BYTES:
+                    raise RuntimeError("archive manifest exceeds 64 KiB")
+                lines = iter((value_bytes,))
+            else:
+                lines = iter(lambda: stream.readline(MAX_JSON_BYTES + 1), b"")
+            for line in lines:
                 if len(line) > MAX_JSON_BYTES:
                     raise RuntimeError("JSON line exceeds 8 MiB")
                 value = json.loads(line)
@@ -182,11 +193,43 @@ def repository(cwd: str) -> str | None:
     return repo_name(output.decode(errors="replace").strip())
 
 
-def transcripts(home: Path, store: Path) -> list[Path]:
+def transcripts(home: Path, store: Path, start: str) -> list[Path]:
     if not directory_exists(home, store):
         return []
     paths: list[Path] = []
-    for path in store.glob("*/*/*/transcript.jsonl"):
+    metadata_bytes = 0
+    for examined, path in enumerate(store.glob("*/*/*/transcript.jsonl"), start=1):
+        if examined > MAX_ARCHIVE_FILES:
+            raise RuntimeError(f"archive enumeration exceeds {MAX_ARCHIVE_FILES} generations")
+        manifest = path.with_name("manifest.json")
+        try:
+            metadata = manifest.lstat()
+        except FileNotFoundError:
+            metadata = None
+        if metadata is not None:
+            metadata_bytes += metadata.st_size
+            if metadata_bytes > MAX_ARCHIVE_METADATA_BYTES:
+                raise RuntimeError("archive metadata exceeds 64 MiB")
+            values = tuple(json_lines(home, manifest, document=True))
+            value = values[0]
+            high_water = value.get("high_water_mark")
+            inspected = path.lstat()
+            if not stat.S_ISREG(inspected.st_mode):
+                raise RuntimeError("transcript file is missing or linked")
+            # The normalized archive publishes immutable generations, transcript
+            # first and manifest last. Missing or older metadata cannot prune.
+            if (
+                value.get("schema_version") == 1
+                and value.get("agent") == path.parts[-4]
+                and value.get("lineage_id") == path.parts[-3]
+                and isinstance(high_water, str)
+                and high_water
+                and inspected.st_mtime_ns <= metadata.st_mtime_ns
+                and inspected.st_ctime_ns <= metadata.st_ctime_ns
+            ):
+                boundary = datetime.fromisoformat(high_water)
+                if boundary.tzinfo is not None and boundary < datetime.fromisoformat(start):
+                    continue
         if len(paths) >= MAX_FILES:
             raise RuntimeError(f"more than {MAX_FILES} transcript files")
         paths.append(path)
@@ -197,7 +240,7 @@ def records(store: Path, start: str, end: str, preview: int, store_text: bool) -
     home = Path(os.environ.get("HOME", ""))
     projected: list[dict[str, Any]] = []
     retained_bytes = 3
-    for transcript in transcripts(home, store):
+    for transcript in transcripts(home, store, start):
         for turn, raw in enumerate(json_lines(home, transcript), start=1):
             if raw.get("role") != "user":
                 continue

@@ -31,7 +31,7 @@ from fkf.documents import Document, Record, fields_of, schema_of
 from fkf.io import FileTooLargeError
 from fkf.process import Command, CommandResult
 from fkf.source_runtime import Environment
-from fkf.store import MAX_CONFIG_BYTES, MAX_NARRATIVE_BYTES, Layer, UnsafePathError
+from fkf.store import MAX_NARRATIVE_BYTES, Layer, UnsafePathError
 
 CONFIG = """\
 fkf: 1
@@ -170,7 +170,7 @@ def test_manifest_capacity_and_encoding_limits_are_enforced(tmp_path: Path, monk
         decode_body_manifest(base, payload)
 
     monkeypatch.setattr(bodies, "MAX_BODY_CACHE_BYTES", 1)
-    monkeypatch.setattr(bodies, "MAX_CONFIG_BYTES", 1)
+    monkeypatch.setattr(bodies, "MAX_BODY_MANIFEST_BYTES", 1)
     with pytest.raises(BodyCacheError, match="manifest is"):
         encode_body_manifest(BodyManifest())
 
@@ -563,7 +563,7 @@ def test_only_unfiltered_prune_recovers_an_oversized_manifest(tmp_path: Path) ->
     base, _document, _record, _runner = make_base(tmp_path)
     manifest = base.root / "bodies" / "manifest.json"
     manifest.parent.mkdir(parents=True)
-    manifest.write_bytes(b"x" * (MAX_CONFIG_BYTES + 1))
+    manifest.write_bytes(b"x" * (bodies.MAX_BODY_MANIFEST_BYTES + 1))
 
     with pytest.raises(FileTooLargeError):
         prune_bodies(base, source="snapshot")

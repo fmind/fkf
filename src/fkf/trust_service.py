@@ -7,11 +7,12 @@ import os
 from dataclasses import dataclass, field
 
 from fkf.base import Base
+from fkf.config import Client
 from fkf.fields import FieldMap
 from fkf.output import register_text
 from fkf.process import DECLARED_COMMAND_DIRECTORY, DECLARED_COMMAND_ENVIRONMENT_POLICY, Cancellation, check_cancel
 from fkf.source_runtime import describe_policy
-from fkf.store import BASE_BIN_DIR, BASE_TESTS_DIR, LAYERS
+from fkf.store import BASE_CLIENTS_DIR, BASE_SOURCES_DIR, BASE_TESTS_DIR, LAYERS
 from fkf.timeutil import format_duration
 from fkf.trust import (
     ExecutionEntry,
@@ -57,6 +58,8 @@ class TrustReport:
     commands: tuple[TrustedSource, ...]
     scripts: tuple[ExecutionEntry, ...] = field(default=(), metadata={"json": "scripts,omitempty"})
     tests: tuple[ExecutionEntry, ...] = field(default=(), metadata={"json": "tests,omitempty"})
+    clients: tuple[ExecutionEntry, ...] = field(default=(), metadata={"json": "clients,omitempty"})
+    apps: dict[str, Client] = field(default_factory=dict, metadata={"json": "apps,omitempty"})
     state: TrustState
     all: bool = field(default=False, metadata={"json": "-"})
     recorded: bool
@@ -109,6 +112,8 @@ def trust(base: Base, *, record: bool, all_items: bool = False, cancel: Cancella
         commands=tuple(commands),
         scripts=snapshot.scripts,
         tests=snapshot.tests,
+        clients=snapshot.clients,
+        apps=base.config.clients,
         state=current,
         all=all_items,
         recorded=record,
@@ -150,7 +155,8 @@ def _script_tree_text(heading: str, scripts: tuple[ExecutionEntry, ...]) -> list
 
 def _summarizable_changes(changes: tuple[TrustChange, ...]) -> bool:
     return bool(changes) and all(
-        change.item in {TrustItemKind.SOURCE, TrustItemKind.SCRIPT, TrustItemKind.TEST} for change in changes
+        change.item in {TrustItemKind.SOURCE, TrustItemKind.SCRIPT, TrustItemKind.TEST, TrustItemKind.CLIENT}
+        for change in changes
     )
 
 
@@ -172,6 +178,7 @@ def _changes_text(report: TrustReport) -> str:
     scripts = {
         TrustItemKind.SCRIPT: {script.name: script for script in report.scripts},
         TrustItemKind.TEST: {script.name: script for script in report.tests},
+        TrustItemKind.CLIENT: {script.name: script for script in report.clients},
     }
     for change in report.state.changes:
         if change.item is TrustItemKind.CONFIG:
@@ -180,7 +187,9 @@ def _changes_text(report: TrustReport) -> str:
         if change.item is TrustItemKind.SOURCE and change.name in sources:
             lines.extend(_trusted_source_text(sources[change.name]))
         elif change.item in scripts and change.name in scripts[change.item]:
-            directory = BASE_TESTS_DIR if change.item is TrustItemKind.TEST else BASE_BIN_DIR
+            directory = {TrustItemKind.TEST: BASE_TESTS_DIR, TrustItemKind.CLIENT: BASE_CLIENTS_DIR}.get(
+                change.item, BASE_SOURCES_DIR
+            )
             lines.append(f"  {directory}/{change.name}  {scripts[change.item][change.name].digest[:12]}")
     if report.recorded:
         lines.extend(("", f"trusted {report.base} (digest {report.state.digest[:12]})"))
@@ -221,7 +230,10 @@ def render_trust_text(report: TrustReport) -> str:
     for source in report.commands:
         lines.append(source.name)
         lines.extend(_trusted_source_text(source))
-    lines.extend(_script_tree_text("bin/ (on PATH for every command; first for run: and body:)", report.scripts))
+    for name, client in sorted(report.apps.items()):
+        lines.extend(["", f"client {name}: {client.url}", f"  script: clients/{client.script} (uv run --script)"])
+    lines.extend(_script_tree_text("clients/ (explicit uv scripts; outside PATH)", report.clients))
+    lines.extend(_script_tree_text("sources/ (on PATH for every command; first for run: and body:)", report.scripts))
     lines.extend(_script_tree_text("tests/ (first on PATH for test: hooks only)", report.tests))
     if report.recorded:
         lines.extend(("", f"trusted {report.base} (digest {report.state.digest[:12]})"))

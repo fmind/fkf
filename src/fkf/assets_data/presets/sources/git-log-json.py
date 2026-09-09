@@ -213,6 +213,9 @@ def log_records(
             "repo_full": repo_full,
             "time": datetime.fromtimestamp(epoch, UTC).isoformat().replace("+00:00", "Z"),
             "uid": f"{repo_identity}@{commit_hash}",
+            # Exact public-provider identity permits cross-source deduplication;
+            # opaque/private remotes never gain a guessed URL.
+            "url": f"https://github.com/{repo_full}/commit/{commit_hash}" if repo_full is not None else None,
             "repository_uri": f"repo:github.com/{repo_full}" if repo_full is not None else None,
             "participant_uris": [participant(email)] if email else [],
         }

@@ -19,8 +19,9 @@ from fkf.jsoncodec import dumps, loads
 from fkf.locking import ensure_private_state_directory, private_state_directory
 from fkf.process import DECLARED_COMMAND_DIRECTORY, DECLARED_COMMAND_ENVIRONMENT_POLICY, Cancellation, check_cancel
 from fkf.store import (
-    BASE_BIN_DIR,
+    BASE_CLIENTS_DIR,
     BASE_FILE_MODE,
+    BASE_SOURCES_DIR,
     BASE_TESTS_DIR,
     LAYERS,
     MAX_CONTROL_FILE_BYTES,
@@ -46,6 +47,7 @@ class TrustItemKind(StrEnum):
     SOURCE = "source"
     SCRIPT = "script"
     TEST = "test"
+    CLIENT = "client"
 
 
 class TrustChangeKind(StrEnum):
@@ -118,6 +120,7 @@ class TrustSnapshot:
 
     base: str
     scripts: tuple[ExecutionEntry, ...]
+    clients: tuple[ExecutionEntry, ...]
     tests: tuple[ExecutionEntry, ...]
     items: tuple[TrustItem, ...]
     digest: str
@@ -188,9 +191,14 @@ def trust_record_path(root: str | os.PathLike[str]) -> Path:
     return private_state_directory(absolute, "trust", purpose="trust") / name
 
 
-def bin_scripts(root: str | os.PathLike[str], *, cancel: Cancellation | None = None) -> tuple[ExecutionEntry, ...]:
+def source_scripts(root: str | os.PathLike[str], *, cancel: Cancellation | None = None) -> tuple[ExecutionEntry, ...]:
     """Inventory every entry under the trusted collection helper tree."""
-    return _execution_tree(root, BASE_BIN_DIR, cancel)
+    return _execution_tree(root, BASE_SOURCES_DIR, cancel)
+
+
+def client_scripts(root: str | os.PathLike[str], *, cancel: Cancellation | None = None) -> tuple[ExecutionEntry, ...]:
+    """Inventory every entry under the trusted app-client tree."""
+    return _execution_tree(root, BASE_CLIENTS_DIR, cancel)
 
 
 def test_scripts(
@@ -289,6 +297,7 @@ def _trust_items(
     config: Config,
     scripts: tuple[ExecutionEntry, ...],
     tests: tuple[ExecutionEntry, ...],
+    clients: tuple[ExecutionEntry, ...],
     cancel: Cancellation | None,
 ) -> tuple[TrustItem, ...]:
     check_cancel(cancel)
@@ -300,6 +309,7 @@ def _trust_items(
     for kind, entries in (
         (TrustItemKind.SCRIPT, scripts),
         (TrustItemKind.TEST, tests),
+        (TrustItemKind.CLIENT, clients),
     ):
         check_cancel(cancel)
         items.extend(
@@ -313,12 +323,18 @@ def _trust_items(
 def capture_trust(config: Config, *, cancel: Cancellation | None = None) -> TrustSnapshot:
     """Capture the exact configuration and execution trees for one trust decision."""
     root = config.store().root
-    scripts = bin_scripts(root, cancel=cancel)
+    scripts = source_scripts(root, cancel=cancel)
     tests = test_scripts(root, cancel=cancel)
-    items = _trust_items(config, scripts, tests, cancel)
+    clients = client_scripts(root, cancel=cancel)
+    client_files = {entry.name for entry in clients if entry.kind == "script"}
+    for name, client in config.clients.items():
+        if client.script not in client_files:
+            raise UnsafePathError(f"client {name}: clients/{client.script} must be a regular non-symlink file")
+    items = _trust_items(config, scripts, tests, clients, cancel)
     return TrustSnapshot(
         base=os.fspath(root),
         scripts=scripts,
+        clients=clients,
         tests=tests,
         items=items,
         digest=_digest_trust_items(items, cancel),
@@ -355,6 +371,8 @@ def _script_trust_digest(script: ExecutionEntry) -> str:
 
 def _base_execution_digest(config: Config) -> str:
     digest = _FramedDigest(_BASE_DOMAIN)
+    digest.field("source-directory", BASE_SOURCES_DIR)
+    digest.field("client-directory", BASE_CLIENTS_DIR)
     digest.field("command-directory", os.fspath(DECLARED_COMMAND_DIRECTORY))
     digest.field("command-environment", DECLARED_COMMAND_ENVIRONMENT_POLICY)
     for layer in LAYERS:
@@ -364,6 +382,10 @@ def _base_execution_digest(config: Config) -> str:
     digest.integer("index-max-age-hours", config.sync.index_max_age_hours)
     digest.integer("timeout", int(config.sync.timeout))
     digest.integer("concurrency", config.sync.concurrency)
+    for name, client in sorted(config.clients.items()):
+        digest.field("client-name", name)
+        digest.field("client-url", client.url)
+        digest.field("client-script", client.script)
     for directory in config.bin:
         digest.field("bin", directory)
     return digest.hexdigest()
@@ -560,12 +582,13 @@ __all__ = [
     "TrustRecordError",
     "TrustSnapshot",
     "TrustState",
-    "bin_scripts",
     "capture_trust",
+    "client_scripts",
     "config_digest",
     "diff_trust_items",
     "read_trust",
     "require_trust",
+    "source_scripts",
     "test_scripts",
     "trust_check",
     "trust_items",

@@ -85,7 +85,7 @@ def test_trust_records_the_exact_execution_tree_it_disclosed(monkeypatch, tmp_pa
     root = tmp_path / "base"
     root.mkdir()
     base = _base(root)
-    helper = root / "bin" / "provider"
+    helper = root / "sources" / "provider"
     helper.parent.mkdir()
     reviewed = b"#!/bin/sh\nprintf reviewed\n"
     changed = b"#!/bin/sh\nprintf changed-after-review\n"

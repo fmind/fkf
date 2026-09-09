@@ -79,7 +79,7 @@ def test_session_hook_terminates_an_oversized_child_process_group(helpers: Helpe
     executable.chmod(0o700)
 
     marker = helpers.root / "hook-provider-escaped"
-    git = helpers.home / ".local" / "bin" / "git"
+    git = helpers.home / ".local" / "sources" / "git"
     git.parent.mkdir(parents=True)
     git.write_text(
         "#!/usr/bin/env python3\n"
@@ -117,6 +117,30 @@ def test_session_hook_accepts_the_exact_child_output_limit(helpers: HelperInstal
     helpers.fake("git", "printf 12345678\n")
 
     assert invoke(["git", "config", "--get", "remote.origin.url"], helpers.environment()) == "12345678"
+
+
+def test_session_hook_reports_timeouts_without_exposing_child_details(
+    helpers: HelperInstallation, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import io
+
+    workspace = helpers.root / "workspace"
+    workspace.mkdir()
+    executable = helpers.fake("fkf", "exit 0\n")
+    namespace = runpy.run_path(os.fspath(helpers.bin / "fkf-hook.py"))
+    main = namespace["main"]
+    monkeypatch.setattr(
+        main.__globals__["sys"], "stdin", io.TextIOWrapper(io.BytesIO(json.dumps({"cwd": str(workspace)}).encode()))
+    )
+
+    def timeout(_arguments: list[str], _environment: dict[str, str]) -> str:
+        raise TimeoutError("sensitive child diagnostic")
+
+    monkeypatch.setitem(main.__globals__, "invoke", timeout)
+    assert main(["codex", str(executable), str(workspace)]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "{}\n"
+    assert captured.err == "fkf-hook.py: context delivery timed out; run fkf context explicitly\n"
 
 
 def test_session_hook_times_out_and_terminates_a_silent_child_group(helpers: HelperInstallation) -> None:

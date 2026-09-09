@@ -7,6 +7,7 @@ from typing import Annotated
 import typer
 from typer import _click as click
 from typer._click.exceptions import UsageError
+from typer._completion_classes import completion_init
 from typer.core import TyperGroup
 
 from fkf import DISPLAY_VERSION
@@ -19,6 +20,8 @@ from fkf.cli_operate import register_operate_commands
 from fkf.cli_setup import register_setup_commands
 from fkf.cli_support import FKFGroup, initialize_state
 from fkf.cli_temporal import register_temporal_commands
+
+completion_init()
 
 app = typer.Typer(
     cls=FKFGroup,

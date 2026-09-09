@@ -15,7 +15,7 @@ from fkf.config import Config
 from fkf.errors import CanceledError
 from fkf.io import atomic_write, read_file_limited
 from fkf.process import Cancellation
-from fkf.store import BASE_BIN_DIR, MAX_CONTROL_FILE_BYTES, UnsafePathError, validate_within_root
+from fkf.store import BASE_SOURCES_DIR, MAX_CONTROL_FILE_BYTES, UnsafePathError, validate_within_root
 
 
 class HelperState(StrEnum):
@@ -71,8 +71,8 @@ def required_helper_names(config: Config | None, helpers: dict[str, bytes] | Non
 
 
 def _inspect_one(root: Path, name: str, content: bytes) -> HelperStatus:
-    relative = PurePosixPath(BASE_BIN_DIR, name).as_posix()
-    target = root / BASE_BIN_DIR / name
+    relative = PurePosixPath(BASE_SOURCES_DIR, name).as_posix()
+    target = root / BASE_SOURCES_DIR / name
     shipped_sha256 = _digest(content)
     status_item = HelperStatus(
         name=name,
@@ -106,7 +106,7 @@ def inspect_helpers(
     """Inspect required official helpers and optionally restore exact bundled bytes."""
     _check_cancel(cancel)
     helpers = shipped_helpers()
-    bin_directory = base.root / BASE_BIN_DIR
+    bin_directory = base.root / BASE_SOURCES_DIR
     validate_within_root(base.root, bin_directory)
     statuses: list[HelperStatus] = []
     for name in required_helper_names(base.config, helpers):
@@ -142,12 +142,12 @@ def install_missing_required_helpers(
 ) -> tuple[str, ...]:
     """Create missing required helpers without replacing any owner-controlled entry."""
     helpers = shipped_helpers()
-    validate_within_root(root, root / BASE_BIN_DIR)
+    validate_within_root(root, root / BASE_SOURCES_DIR)
     names = required_helper_names(config, helpers)
     missing: list[tuple[str, Path]] = []
     for name in names:
         _check_cancel(cancel)
-        target = root / BASE_BIN_DIR / name
+        target = root / BASE_SOURCES_DIR / name
         validate_within_root(root, target)
         try:
             target.lstat()

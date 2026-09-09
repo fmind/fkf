@@ -121,7 +121,7 @@ def test_init_and_helper_refresh_are_writers_but_helper_inspection_is_a_reader(t
     root = tmp_path / "brain"
     code, _, stderr = invoke("init", str(root), "--skip-git", "--format", "json")
     assert code == 0, stderr
-    hook = root / "bin" / "fkf-hook.py"
+    hook = root / "sources" / "fkf-hook.py"
     hook.write_text("#!/bin/sh\necho edited\n", encoding="utf-8")
 
     with WriterLock.acquire(root):
@@ -145,12 +145,12 @@ def test_helpers_output_is_exact_and_jsonl_keeps_the_envelope(tmp_path: Path) ->
     root = tmp_path / "brain"
     code, _, stderr = invoke("init", str(root), "--skip-git")
     assert code == 0, stderr
-    (root / "bin" / "fkf-hook.py").write_text("drifted\n", encoding="utf-8")
+    (root / "sources" / "fkf-hook.py").write_text("drifted\n", encoding="utf-8")
 
     code, stdout, stderr = invoke("config", "helpers", "--base", str(root), "--format", "text")
     assert code == 0
     assert stderr == ""
-    assert "bin/fkf-hook.py              drifted, required" in stdout
+    assert "sources/fkf-hook.py          drifted, required" in stdout
     assert "  current: " in stdout
     assert "  shipped: " in stdout
     assert stdout.endswith("\n0 current, 1 drifted, 0 missing, 0 refreshed\n")
@@ -233,14 +233,14 @@ def test_setup_text_renderers_match_the_public_go_layout() -> None:
         helpers=(
             HelperStatus(
                 "drifted.sh",
-                "bin/drifted.sh",
+                "sources/drifted.sh",
                 HelperState.DRIFTED,
                 True,
                 "b" * 64,
                 "c" * 64,
                 True,
             ),
-            HelperStatus("missing.sh", "bin/missing.sh", HelperState.MISSING, False, shipped_sha256="d" * 64),
+            HelperStatus("missing.sh", "sources/missing.sh", HelperState.MISSING, False, shipped_sha256="d" * 64),
         ),
         current=0,
         drifted=1,
@@ -248,10 +248,10 @@ def test_setup_text_renderers_match_the_public_go_layout() -> None:
         refreshed=1,
     )
     assert _helpers_text(helpers).splitlines() == [
-        "bin/drifted.sh               drifted, required, refreshed",
+        "sources/drifted.sh           drifted, required, refreshed",
         "  current: bbbbbbbbbbbb",
         "  shipped: cccccccccccc",
-        "bin/missing.sh               missing",
+        "sources/missing.sh           missing",
         "  current: -",
         "  shipped: dddddddddddd",
         "",

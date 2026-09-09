@@ -55,7 +55,7 @@ cp "$RSS_FIXTURE" "$output"
 
 
 def test_rss_xml_preserves_cdata_entities_namespaces_attributes_and_nested_text() -> None:
-    namespace = runpy.run_path("src/fkf/assets_data/presets/bin/rss-json.py")
+    namespace = runpy.run_path("src/fkf/assets_data/presets/sources/rss-json.py")
     feed_type = namespace["Feed"]
     normalize = namespace["normalize"]
     source = b"""<?xml version="1.0"?>
@@ -92,7 +92,7 @@ def test_rss_xml_preserves_cdata_entities_namespaces_attributes_and_nested_text(
 )
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
 def test_rss_xml_rejects_internal_and_external_dtds(declaration: str, encoding: str) -> None:
-    namespace = runpy.run_path("src/fkf/assets_data/presets/bin/rss-json.py")
+    namespace = runpy.run_path("src/fkf/assets_data/presets/sources/rss-json.py")
     secure_xml = namespace["secure_xml"]
     parse_error = namespace["XMLParseError"]
     document = (
@@ -112,7 +112,7 @@ def test_rss_xml_honors_encodings_standalone_declarations_and_comments(
     encoding: str,
     codec: str,
 ) -> None:
-    namespace = runpy.run_path("src/fkf/assets_data/presets/bin/rss-json.py")
+    namespace = runpy.run_path("src/fkf/assets_data/presets/sources/rss-json.py")
     secure_xml = namespace["secure_xml"]
     child = namespace["child"]
     element_text = namespace["element_text"]
@@ -127,12 +127,22 @@ def test_rss_xml_honors_encodings_standalone_declarations_and_comments(
 
 
 def test_rss_xml_rejects_processing_instructions() -> None:
-    namespace = runpy.run_path("src/fkf/assets_data/presets/bin/rss-json.py")
+    namespace = runpy.run_path("src/fkf/assets_data/presets/sources/rss-json.py")
     secure_xml = namespace["secure_xml"]
     parse_error = namespace["XMLParseError"]
 
     with pytest.raises(parse_error, match="processing instructions are forbidden"):
         secure_xml(b"<?feed refresh?><rss></rss>")
+
+
+def test_rss_xml_discards_stylesheet_metadata_without_fetching() -> None:
+    namespace = runpy.run_path("src/fkf/assets_data/presets/sources/rss-json.py")
+    normalize = namespace["normalize"]
+    feed = namespace["Feed"](1, "public", "https://example.test/feed.xml", "https://example.test/feed.xml", "")
+    expected = normalize(feed, _feed_bytes())
+    # A stylesheet is presentation metadata, never an input to this data parser.
+    document = b'<?xml-stylesheet type="text/xsl" href="file:///nonexistent/private"?>' + _feed_bytes()
+    assert normalize(feed, document) == expected
 
 
 @pytest.mark.parametrize(
@@ -147,7 +157,7 @@ def test_rss_xml_rejects_processing_instructions() -> None:
     ids=["malformed", "multiple-roots", "undeclared-entity", "unknown-encoding", "unsupported-encoding"],
 )
 def test_rss_xml_rejects_invalid_documents(source: bytes) -> None:
-    namespace = runpy.run_path("src/fkf/assets_data/presets/bin/rss-json.py")
+    namespace = runpy.run_path("src/fkf/assets_data/presets/sources/rss-json.py")
     secure_xml = namespace["secure_xml"]
     parse_error = namespace["XMLParseError"]
 
@@ -233,7 +243,7 @@ def test_rss_rejects_symlinked_opml_before_curl(helpers: HelperInstallation) -> 
 
 
 def test_rss_caps_admitted_feed_count() -> None:
-    namespace = runpy.run_path("src/fkf/assets_data/presets/bin/rss-json.py")
+    namespace = runpy.run_path("src/fkf/assets_data/presets/sources/rss-json.py")
     inputs = namespace["inputs"]
     exact = [f"https://example.test/{number}.xml" for number in range(256)]
 
@@ -249,7 +259,7 @@ def test_rss_rejects_download_replacement_or_growth(
     monkeypatch: pytest.MonkeyPatch,
     mutation: str,
 ) -> None:
-    namespace = runpy.run_path("src/fkf/assets_data/presets/bin/rss-json.py")
+    namespace = runpy.run_path("src/fkf/assets_data/presets/sources/rss-json.py")
     read_regular = namespace["read_regular"]
     fingerprint = namespace["file_fingerprint"]
     target = tmp_path / "feed.xml"
@@ -312,7 +322,7 @@ def test_rss_reads_only_a_bounded_curl_error_tail(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    namespace = runpy.run_path("src/fkf/assets_data/presets/bin/rss-json.py")
+    namespace = runpy.run_path("src/fkf/assets_data/presets/sources/rss-json.py")
     fetch = namespace["fetch"]
     feed_type = namespace["Feed"]
 
@@ -368,7 +378,7 @@ def test_rss_aggregate_output_limit_is_all_or_nothing(
 def test_rss_incremental_retention_deduplicates_then_stops_at_exact_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    namespace = runpy.run_path("src/fkf/assets_data/presets/bin/rss-json.py")
+    namespace = runpy.run_path("src/fkf/assets_data/presets/sources/rss-json.py")
     retain_unique = namespace.get("retain_unique")
 
     assert retain_unique is not None, "RSS records need bounded incremental retention"

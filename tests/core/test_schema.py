@@ -19,7 +19,7 @@ def test_config_schema_matches_the_closed_loader_surface() -> None:
 
     assert schema["$id"] == SCHEMA_URL
     assert schema["additionalProperties"] is False
-    assert set(properties) == {"fkf", "name", "schema", "layers", "identities", "sources", "sync", "bin"}
+    assert set(properties) == {"fkf", "name", "schema", "layers", "identities", "sources", "sync", "bin", "clients"}
     sources = _object(properties["sources"])
     sync = _object(_object(properties["sync"])["properties"])
     assert _object(sources["propertyNames"])["maxLength"] == MAX_SOURCE_NAME_LENGTH

@@ -36,3 +36,19 @@ def test_scale_corpus_exercises_the_supported_operations(tmp_path: Path) -> None
 
     graph = neighbours(base, GraphQuery(corpus.first_record_uri, Direction.OUT, limit=100))
     assert len(graph.edges) == 5
+
+
+def test_mixed_scale_corpus_includes_long_answer_bearing_pages(tmp_path: Path) -> None:
+    from scripts.benchmark_scale import _operations
+
+    corpus = create_scale_corpus(tmp_path, records=10, relations_per_record=1, mixed=True)
+    pages = tuple((corpus.root / "projects").glob("*.md"))
+    assert len(pages) == 10
+    assert all(page.stat().st_size > 30_000 for page in pages)
+    assert "Use Python for scale migration" in pages[0].read_text()
+    assert {operation.name for operation in _operations(corpus)} >= {
+        "context-mixed",
+        "build-index",
+        "context-mixed-indexed",
+        "brief-mixed",
+    }

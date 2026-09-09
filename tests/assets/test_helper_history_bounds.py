@@ -29,6 +29,19 @@ def _record() -> dict[str, object]:
     }
 
 
+@pytest.mark.parametrize("repository", ["acme/project", None])
+def test_git_commits_expose_only_verified_github_commit_urls(
+    helpers: HelperInstallation, monkeypatch: pytest.MonkeyPatch, repository: str | None
+) -> None:
+    function = _module(helpers)["log_records"]
+    raw = ("a" * 40 + "\0" + "1777852800\0author@example.test\0A change\0").encode()
+    monkeypatch.setitem(function.__globals__, "invoke", lambda *_args, **_kwargs: raw)
+    records = list(
+        function(helpers.home, [], "2026-05-04", "2026-05-05", repository, repository or "opaque:abc", 0, 2_000_000_000)
+    )
+    assert records[0]["url"] == (f"https://github.com/{repository}/commit/{'a' * 40}" if repository else None)
+
+
 def test_git_marker_discovery_propagates_scandir_errors(
     helpers: HelperInstallation,
     monkeypatch: pytest.MonkeyPatch,

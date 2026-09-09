@@ -102,7 +102,7 @@ def test_store_admits_only_published_grammar(tmp_path: Path) -> None:
         LOCAL_CONFIG_NAME,
         "credentials.json",
         ".agents/skills/fkf-use/SKILL.md",
-        "bin/git-log-json.py",
+        "sources/git-log-json.py",
         "README.md",
         "events/.env",
         "events/2026-05-04/SUMMARY.md",

@@ -108,14 +108,14 @@ Mapped event times accept a date, a Unix epoch, or a timestamp with an explicit 
 Use the smallest clear integration form:
 
 1. Use direct provider argv in `run:` when no composition is needed.
-1. Put pipelines, glob expansion, or provider-specific projection in a helper under `<base>/bin/`, where trust covers its bytes and executable bit.
+1. Put pipelines, glob expansion, or provider-specific projection in a helper under `<base>/sources/`, where trust covers its bytes and executable bit.
 1. Use another executable when it improves clarity. Python is a good choice for structured or stateful transformations; framework code belongs in FKF only when the product must own the behavior.
 
 Presets provide curated helpers for provider boundaries where pagination, privacy projection, or completeness checks are easy to get wrong. `fkf init` copies only the helpers required by enabled sources. Later, `fkf config helpers` shows the current or drifted state of installed official helpers plus any missing official helper required by the configuration; `fkf config helpers --refresh` is the only explicit refresh and never touches an unknown custom executable.
 
 This is the middle ground: FKF remains one small core and a set of helpers, while users can compose any executable without writing a new framework adapter.
 
-Declared commands run with `/` as their working directory, never the base root. Use `{{base}}` when a command needs an explicit data path. Collection and body support belongs under trust-digested `bin/`; source verification hooks belong under trust-digested `tests/`. Both are invoked by bare PATH names. A relative argument such as `wiki/helper.py` therefore cannot turn mutable authored content into code.
+Declared commands run with `/` as their working directory, never the base root. Use `{{base}}` when a command needs an explicit data path. Collection and body support belongs under trust-digested `sources/`; source verification hooks belong under trust-digested `tests/`. Both are invoked by bare PATH names. A relative argument such as `wiki/helper.py` therefore cannot turn mutable authored content into code.
 
 Shell helpers use `.sh`; Python helpers use `.py`. The extension makes the interpreter contract visible without executing the file. `fkf new helper` requires one of those extensions, creates an owner-only fail-closed template, and prints its `run:` and `requires:` entries:
 
@@ -124,7 +124,7 @@ fkf new helper collect-prs.sh
 fkf new helper collect-prs.py
 ```
 
-The generated scaffold is deliberately portable and does not select a runtime with environment-dependent startup loaders. You can still author any reviewed executable under `bin/`; its shebang selects the interpreter, and every non-standard interpreter belongs in `requires:`.
+The generated scaffold is deliberately portable and does not select a runtime with environment-dependent startup loaders. You can still author any reviewed executable under `sources/`; its shebang selects the interpreter, and every non-standard interpreter belongs in `requires:`.
 
 ## Placeholder boundary
 
@@ -218,7 +218,7 @@ A source may set `bodies: none`, `cache`, or `sync`; the default is `none`:
 - `cache` stores a body only after an explicit `read --body`.
 - `sync` prefetches new or provider-modified bodies after the evidence document is safely written. A fresh current index snapshot repairs missing cache entries. A failed new event document gets one later retry; after a complete cache prune, the newest selected event document for each opted-in source gets the same bounded retry cycle. An attempt marker prevents a vanished historical resource from becoming perpetual hourly work. Use an explicit `read --body` for any other historical miss or `sync --force` to re-collect and prefetch its document. Meeting notes and local harness memory files opt in.
 
-Cached text lives under ignored `bodies/<source>/` and is bound by `bodies/manifest.json` to its record URI, provider modification time, byte count, SHA-256, and the cache-local event restore markers. It is bounded to 4,096 entries, 512 MiB total, a 1 MiB manifest, and 4 MiB per body. FKF refuses growth before publishing a body that the manifest cannot name. The cache is UTF-8, machine-local, rebuildable data—not evidence and never mirrored by FKF. `read --body` uses a valid cached copy before executing. `find --bodies` and `context` consult valid cached text offline; neither fetches a miss. `fkf build bodies --prune` explicitly empties the cache (or selectively prunes by `--older-than` and `--source`) and re-arms the one-time newest-event restoration for the next sync.
+Cached text lives under ignored `bodies/<source>/` and is bound by `bodies/manifest.json` to its record URI, provider modification time, byte count, SHA-256, and the cache-local event restore markers. It is bounded to 4,096 entries, 512 MiB total, a 1 MiB manifest, and 4 MiB per body. FKF refuses growth before publishing a body that the manifest cannot name. The cache is UTF-8, machine-local, rebuildable data—not evidence and never mirrored by FKF. `read --body` uses a valid cached copy before executing. `find --bodies` and `context` consult valid cached text offline; neither fetches a miss. `fkf build bodies --prune` explicitly empties the cache (or selectively prunes by `--older-than` and `--source`) and re-arms the one-time newest-event restoration for the next sync. Its manifest has a separate 8 MiB bound so ordinary record URIs can fill the declared entry capacity without hitting the smaller configuration-file limit.
 
 Entity URIs remain graph nodes assembled from record relations or authored Markdown relations; they do not execute an on-demand resolver. Body execution is never available over MCP. `fkf validate records` warns when one title is shared by more than half of a source's records; `--strict` promotes that warning.
 
@@ -228,14 +228,37 @@ Entity URIs remain graph nodes assembled from record relations or authored Markd
 
 When a declared `run:` exits unsuccessfully, the diagnostic names the source, date or window, safely rendered argv, neutral working directory, timeout, and process status. The substituted command is also repeated in the failed unit summary. Provider stderr remains private: it may contain response bodies, account identifiers, or credentials, so FKF uses it only as an in-memory retry oracle. A `body:` argv is never logged because it may contain a value copied from collected evidence.
 
-`fkf trust` prints the commands and their execution policy. Its canonical digest changes only when execution changes: command, body-bound path, enabled state, timeout, retry, pacing, extra path, or `bin/`/`tests/` content and mode. Editing `requires:`, a description, example, YAML comment, retrieval-only mapping, or the inherited process environment does not demand approval for an unchanged executable plan.
+`fkf trust` prints the commands and their execution policy. Its canonical digest changes only when execution changes: command, body-bound path, enabled state, timeout, retry, pacing, extra path, or `sources/`/`tests/` content and mode. Editing `requires:`, a description, example, YAML comment, retrieval-only mapping, or the inherited process environment does not demand approval for an unchanged executable plan.
 
 ## Presets and custom sources
 
 `personal` enables only git activity and local agent metadata. Its disabled, opt-in examples cover agent prompts, Chromium history and bookmarks, RSS, authored documents, mise tools, GitHub activity and Actions, Google Workspace, Google Cloud, Kaggle, and Hugging Face. `google-calendar-agenda` is a refreshable index snapshot for today's brief; `google-calendar-events` remains the permanent completed-day history. The `meeting-notes` source joins Google Docs to calendar records by attachment ID, then selects the nearest start time among attachment-less events with the exact title prefix. Enable and sync `google-calendar-events` with it: the notes helper refuses to emit a matched calendar record URI until that owning document is durable, keeping `read` and `timeline` addressable. Its reviewed body helper emits Docs text without storing it in the evidence record. Remote collectors remain disabled until the owner reviews their metadata projection and authentication probe. Explicit sentinels such as `REPLACE_WITH_OWNER`, `REPLACE_WITH_MEETING_PREFIX`, or `REPLACE_WITH_WRITING_DOCUMENT.md` must be edited before enabling that source; FKF does not guess an account or filesystem corpus. `team` declares disabled, repository-scoped GitHub issue and pull-request sources, one organization repository inventory, and one project-scoped Jira snapshot. The helpers reject returned records outside those declared scopes and stop at finite completeness ceilings. The team preset enables no source, browser history, email, whole-account inventory, or personal session source. Network collection is always opt-in. `minimal` starts with no sources. `--demo N` writes synthetic data without running a source. FKF has no plugin manager: presets are examples plus maintained helpers, while a base may run any reviewed command or script.
 
+The optional `agent-prompts` source selects recent archive generations using bounded manifests. Its body helper takes the base, source name, and stored ID, then resolves the exact lineage, generation, and turn already retained in the evidence. This avoids ambiguous timestamp matches across immutable transcript generations; historical evidence and archives remain intact.
+
 Both non-minimal presets also include a disabled `repository-facts` example. It enumerates only immediate Git repositories below explicitly named roots, reads a small allowlist of manifests, Git remote configuration, and instruction-file names, and emits declarations rather than execution proof. It never runs repository code. The standard-library helper bounds roots, repositories, input, and output; strips URL credentials and query data; and fails the complete snapshot on unsafe symlink traversal, malformed metadata, or excessive input. A declared `origin` determines a fork's identity before other remotes. Instruction bridges such as `CLAUDE.md -> AGENTS.md` are allowed only when the resolved file stays inside the same repository; repository directories and manifest files cannot be symlinks.
 
-The Chromium helper never copies a live database file directly. SQLite's online backup API creates one consistent snapshot and includes committed rows still present only in the browser's live WAL; URL credentials, queries, and fragments are removed before JSON reaches FKF.
+The Chromium helpers open each existing browser root and profile through retained no-follow directory descriptors; linked path components and unreadable roots fail the complete snapshot. The history helper never copies a live database file directly. SQLite's online backup API creates one consistent snapshot and includes committed rows still present only in the browser's live WAL; URL credentials, queries, and fragments are removed before JSON reaches FKF.
 
 Before enabling a source, run `fkf sync --dry-run`, read the rendered command and field mappings, then run `fkf sync <source> --preview`. A contributed preset source also needs a synthetic fixture under `tests/assets/fixtures/sources/`; CI sends that fixture through the real decode, projection, cardinality, relation, and addressability path without a credential or network.
+
+## App clients
+
+Declare app clients under root `clients:` with an HTTPS `url` and one `script` filename under `clients/`. Use a single Python script with inline uv dependency metadata for each app. Sources call it with explicit `uv run --script` argv and declare `uv` in `requires:`. App clients own provider access; source helpers under `sources/` own collection and projection. `clients/` stays outside PATH and published reads. Its complete tree and the app declarations are trust-covered; changes require renewed execution trust. Keep credentials out of configuration and scripts.
+
+```yaml
+clients:
+  example-app:
+    url: https://app.example
+    script: example-app.py
+
+sources:
+  example-app-records:
+    enabled: false
+    layer: index
+    requires: [uv]
+    run: [uv, run, --script, "{{base}}/clients/example-app.py", records]
+    fields: { id: .id, title: .title }
+```
+
+The example assumes `schema.id` and `schema.title` are already declared and the client emits one complete JSON array. Create `clients/example-app.py` with `uv init --script clients/example-app.py`, implement the app's API commands there, and keep output bounded and all-or-nothing. No ExampleApp client or credentials are bundled. Inline script metadata isolates dependencies from the base; see [uv scripts](https://docs.astral.sh/uv/guides/scripts/).

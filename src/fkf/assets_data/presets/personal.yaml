@@ -9,7 +9,7 @@ sources:
     # each commit's own committer time, gives an identical result for a fraction of the wall
     # clock; `git-log-json.py` already accepts an arbitrary range, so nothing about it changes.
     window: true
-    # The script is written into <base>/bin by init and is yours after that. The third argument
+    # The script is written into <base>/sources by init and is yours after that. The third argument
     # is where your clones live. It defaults to your home directory because that is the one
     # root that exists on every machine — `{{home}}/repositories` was a guess, and on a machine
     # without that directory the very first `fkf sync` a reader runs failed every day of it.
@@ -30,6 +30,7 @@ sources:
       id: .uid # field paths are a jq subset: .a.b[0]; anything richer goes in the command
       time: .time
       title: .message
+      url: .url
       repo: .repo_full
       repository: .repository_uri
       participant: [".participant_uris[]"]
@@ -60,7 +61,7 @@ sources:
     # nothing, and what an agent did in a repository is the half of your work no
     # provider can see. Metadata only — id, time, harness, cwd, branch, the clone's repository,
     # the harness's own title line — never a prompt or a response; subagent threads are skipped.
-    # Add a reader to bin/agent-sessions.py for another harness.
+    # Add a reader to sources/agent-sessions.py for another harness.
     enabled: true
     layer: events
     requires: [agent-sessions.py, python3, git]
@@ -70,7 +71,7 @@ sources:
       agent-sessions.py,
       "{{start}}",
       "{{end}}",
-    ] # script written into bin/ by init; Python plus git
+    ] # script written into sources/ by init; Python plus git
     fields:
       id: .id
       time: .time
@@ -110,7 +111,7 @@ sources:
       time: .time
       title: .title
       repo: .repo
-    body: [agent-prompt-body.py, "{{id}}"]
+    body: [agent-prompt-body.py, "{{base}}", agent-prompts, "{{id}}"]
     install: mise use -g python@latest
 
   agent-session-traces: # bounded transcript evidence from the shared harness-independent store

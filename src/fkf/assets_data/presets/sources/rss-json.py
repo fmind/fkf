@@ -108,8 +108,12 @@ class XMLTreeParser:
             raise XMLParseError("text outside the XML root")
 
     @staticmethod
-    def reject_processing_instruction(target: str, data: str) -> None:
-        del target, data
+    def processing_instruction(target: str, data: str) -> None:
+        del data
+        # Blogger feeds include presentation metadata. Discard it without
+        # resolving the URI or handing it to a renderer; DTDs remain forbidden.
+        if target == "xml-stylesheet":
+            return
         raise XMLParseError("processing instructions are forbidden")
 
     @staticmethod
@@ -153,7 +157,7 @@ class XMLTreeParser:
         parser.StartElementHandler = self.start_element
         parser.EndElementHandler = self.end_element
         parser.CharacterDataHandler = self.character_data
-        parser.ProcessingInstructionHandler = self.reject_processing_instruction
+        parser.ProcessingInstructionHandler = self.processing_instruction
         parser.StartDoctypeDeclHandler = self.reject_doctype
         parser.EntityDeclHandler = self.reject_entity
         parser.ExternalEntityRefHandler = self.reject_external_entity

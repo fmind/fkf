@@ -29,7 +29,7 @@ Keep the affected contracts together:
 - A CLI change includes focused tests, help output, and the matching README or Zensical documentation.
 - A loader change includes `mise run generate:schema`; never edit the published schema by hand.
 - A runtime dependency change updates `uv.lock` and `THIRD_PARTY_NOTICES.md`; the invariant test rejects missing or extra distributed packages.
-- A preset source includes one small, synthetic fixture under `tests/assets/fixtures/sources/` that matches the provider CLI's real JSON shape and exercises its open `fields:` map. Keep a short command inline; put longer glue in a `.sh` or `.py` helper under the base `bin/` template.
+- A preset source includes one small, synthetic fixture under `tests/assets/fixtures/sources/` that matches the provider CLI's real JSON shape and exercises its open `fields:` map. Keep a short command inline; put longer glue in a `.sh` or `.py` helper under the base `sources/` template.
 - A URI, retrieval, learning, or brief change keeps the affected bundled skill under `src/fkf/assets_data/skills/` — `fkf-use`, `fkf-learn`, or `daily-brief` — aligned with the command behavior.
 
 Tests must be hermetic: temporary homes, no real base discovery, no provider call, and every provider-backed declared command replaced through the runner seam. The relative-base CLI regression may execute only its deterministic helper created inside the temporary base; AGENTS.md records the other narrow local-tool exceptions.

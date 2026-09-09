@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 from threading import Event
 
@@ -185,3 +186,31 @@ def test_integration_text_reports_name_current_changes_and_execution() -> None:
 
 def test_harness_list_dataclass_preserves_closed_tuple() -> None:
     assert HarnessList(("codex",)).harnesses == ("codex",)
+
+
+@pytest.mark.parametrize("command", ["print", "install"])
+def test_harness_explicit_launcher_wins_over_an_incompatible_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    base = seeded_base(tmp_path)
+    selected = tmp_path / "selected" / "fkf"
+    other = tmp_path / "other" / "fkf"
+    for launcher in (selected, other):
+        launcher.parent.mkdir()
+        launcher.write_text("#!/bin/sh\nexit 99\n")
+        launcher.chmod(0o700)
+    monkeypatch.setenv("PATH", str(other.parent))
+    extra = ("--dry-run",) if command == "install" else ()
+    code, stdout, stderr = invoke(
+        "harness", command, "codex", "--executable", str(selected), "--base", str(base.root), *extra
+    )
+    assert code == 0, stderr
+    report = json.loads(stdout)
+    if command == "print":
+        content = report["fragments"][0]["content"]
+        assert str(selected) in content
+        assert str(other) not in content
+    else:
+        assert report["mode"] == "dry-run"
+        assert report["changes"]
+        assert not (Path.home() / ".codex/config.toml").exists()

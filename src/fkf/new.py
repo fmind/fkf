@@ -14,7 +14,7 @@ from fkf.base import Base
 from fkf.io import atomic_write
 from fkf.markdown import Severity, markdown_literal_text, parse_page, validate_pages
 from fkf.process import Cancellation, check_cancel
-from fkf.source_runtime import ensure_bin_dir
+from fkf.source_runtime import ensure_sources_dir
 from fkf.store import BASE_FILE_MODE, Layer, validate_within_root
 
 _SLUG_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -183,17 +183,17 @@ def create_new(base: Base, request: NewRequest, *, cancel: Cancellation | None =
             raise ValueError("helper name is required (e.g. `fkf new helper collect-prs.sh`)")
         content, requirements = _helper_template(slug)
         check_cancel(cancel)
-        directory = ensure_bin_dir(base.root)
+        directory = ensure_sources_dir(base.root)
         path = directory / slug
         validate_within_root(base.root, path)
-        _ensure_new(path, f"helper bin/{slug}")
+        _ensure_new(path, f"helper sources/{slug}")
         check_cancel(cancel)
         atomic_write(path, content, mode=0o700)
         return NewResult(
             request.kind,
             path,
             True,
-            f"created helper at bin/{slug}",
+            f"created helper at sources/{slug}",
             run=(slug, "{{start}}", "{{end}}"),
             requires=requirements,
         )

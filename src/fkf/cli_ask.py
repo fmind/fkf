@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import nullcontext
 from typing import Annotated
 
 import typer
@@ -258,6 +259,9 @@ def register_ask_commands(app: typer.Typer) -> None:
         expand: Annotated[bool, typer.Option("--expand")] = False,
         explain: Annotated[bool, typer.Option("--explain")] = False,
         since_receipt: Annotated[str, typer.Option("--since-receipt")] = "",
+        save_receipt: Annotated[
+            bool, typer.Option("--save-receipt", help="Save a snapshot for later --since-receipt queries.")
+        ] = False,
     ) -> None:
         if not terms:
             raise InvalidUsageError("fkf context takes the terms to brief an agent on")
@@ -266,7 +270,7 @@ def register_ask_commands(app: typer.Typer) -> None:
         invocation = state(ctx)
         delivery = invocation.output_format.value
         base = invocation.base()
-        with WriterLock.acquire(base.root):
+        with WriterLock.acquire(base.root) if save_receipt else nullcontext():
             invocation.emit(
                 build_context(
                     base,
@@ -278,7 +282,7 @@ def register_ask_commands(app: typer.Typer) -> None:
                         expand=expand,
                         explain=explain,
                         since_receipt=since_receipt,
-                        save_snapshot=True,
+                        save_snapshot=save_receipt,
                         delivery_format=delivery,
                     ),
                     cancel=invocation.cancel,
@@ -346,7 +350,7 @@ def register_ask_commands(app: typer.Typer) -> None:
         else:
             invocation.emit(read(base, uri, options, cancel=invocation.cancel))
 
-    @app.command("eval", help="Measure retrieval recall at k against evals/queries.yaml.")
+    @app.command("eval", help="Measure retrieval recall at k against checks/queries.yaml.")
     def eval_command(ctx: typer.Context) -> None:
         invocation = state(ctx)
         report = evaluate(invocation.base(), cancel=invocation.cancel)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -103,7 +105,7 @@ def helpers(tmp_path: Path) -> HelperInstallation:
     """Materialize exact package bytes without relying on a source checkout path."""
     root = tmp_path / "installation"
     home = root / "home"
-    bin_directory = root / "bin"
+    bin_directory = root / "sources"
     temporary = root / "tmp"
     home.mkdir(parents=True)
     bin_directory.mkdir()
@@ -162,3 +164,30 @@ def validate_helper_output(config: Config, source_name: str, output: bytes) -> D
         window=window,
         collected_at=datetime(2026, 5, 10, 12, tzinfo=UTC),
     )
+
+
+def prompt_body_arguments(helpers: HelperInstallation, *, turn: int = 1) -> list[str]:
+    """Address the exact synthetic generation through its durable source record."""
+    base = helpers.root / "base"
+    path = base / "events" / "2026-05-04" / "agent-prompts.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    identifier = "codex-session-1-20260504T000000Z"
+    path.write_text(
+        json.dumps(
+            {
+                "fkf": 1,
+                "source": "agent-prompts",
+                "layer": "events",
+                "date": "2026-05-04",
+                "records": [
+                    {
+                        "id": identifier,
+                        "lineage": hashlib.sha256(b"codex\0session-1\0").hexdigest(),
+                        "session": "a" * 64,
+                        "turn": turn,
+                    }
+                ],
+            }
+        )
+    )
+    return [os.fspath(base), "agent-prompts", identifier]

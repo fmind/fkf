@@ -44,7 +44,7 @@ from fkf.graph import (
 )
 from fkf.io import atomic_write, read_file_limited
 from fkf.jsoncodec import JsonNumber, dumps, loads
-from fkf.learned import list_learned
+from fkf.learned import cited_task_traces, learned_bullets
 from fkf.lexical import (
     LEXICAL_INDEX_FALLBACK_CORRUPT,
     LEXICAL_INDEX_FALLBACK_STALE,
@@ -67,12 +67,14 @@ from fkf.lexical import (
 )
 from fkf.listings import list_tasks
 from fkf.locking import ensure_private_state_directory, private_state_directory
-from fkf.markdown import Page
+from fkf.markdown import Page, page_commitments
 from fkf.output import block, inline, register_text
 from fkf.pages import load_markdown_layer, read_page, require_known
 from fkf.process import Cancellation, CommandCanceledError
 from fkf.query import Window, parse_temporal_query, parse_window
 from fkf.store import BASE_FILE_MODE, Layer, resolve_physical_path
+from fkf.text import lower as _lower
+from fkf.text import terms as _terms
 from fkf.timeutil import parse_record_time
 from fkf.uri import Scheme, URIError, parse_uri, resolve_link
 
@@ -209,6 +211,7 @@ class ContextItem:
     count: int = field(default=0, metadata={"json": "count,omitempty"})
 
     body: str = field(default="", repr=False, compare=False, metadata={"json": "-"})
+    handoff: bool = field(default=False, repr=False, compare=False, metadata={"json": "-"})
     segments: tuple[tuple[str, str, int], ...] = field(default=(), repr=False, compare=False, metadata={"json": "-"})
     identity_terms: frozenset[str] = field(default_factory=frozenset, repr=False, compare=False, metadata={"json": "-"})
     identifier_keys: frozenset[str] = field(
@@ -228,6 +231,9 @@ class ContextItem:
     semantic_digest: str = field(default="", repr=False, compare=False, metadata={"json": "-"})
     body_available: bool = field(default=False, repr=False, compare=False, metadata={"json": "-"})
     term_analysis: dict[str, LexicalTermAnalysis] = field(
+        default_factory=dict, repr=False, compare=False, metadata={"json": "-"}
+    )
+    segment_analysis: dict[str, tuple[str, frozenset[str], int]] = field(
         default_factory=dict, repr=False, compare=False, metadata={"json": "-"}
     )
     indexed_phrases: frozenset[str] = field(
@@ -360,30 +366,8 @@ def _check_cancel(cancel: Cancellation | None) -> None:
         raise CommandCanceledError("command canceled")
 
 
-def _lower(value: str) -> str:
-    lowered: list[str] = []
-    for character in value:
-        mapped = character.lower()
-        lowered.append(mapped if len(mapped) == 1 else character)
-    return "".join(lowered)
-
-
 def _term_character(character: str) -> bool:
     return character in "-_.@/:#%" or character.isalpha() or character.isnumeric()
-
-
-def _terms(value: str) -> tuple[str, ...]:
-    tokens: list[str] = []
-    current: list[str] = []
-    for character in _lower(value):
-        if _term_character(character):
-            current.append(character)
-        elif current:
-            tokens.append("".join(current))
-            current.clear()
-    if current:
-        tokens.append("".join(current))
-    return tuple(tokens)
 
 
 def _trim_query_scaffolding(query: str) -> str:
@@ -581,6 +565,8 @@ def _page_candidate(page: Page, kind: Layer, schema: FieldSchema) -> ContextItem
     add_segment("type", page.type, DEFAULT_FIELD_WEIGHT)
     add_segment("tags", " ".join(page.tags), DEFAULT_FIELD_WEIGHT)
     add_segment("body", page.body, DEFAULT_FIELD_WEIGHT)
+    for name, value in page_commitments(page):
+        add_segment(name, value, DEFAULT_FIELD_WEIGHT)
     for name in sorted(page.relations):
         values = tuple(page.relations[name])
         add_segment(name, " ".join(values), schema.weight(name))
@@ -1063,19 +1049,25 @@ def _scan_candidates(
                 _record_candidate(document, record, _source_schema(base, document.source))
                 for record in document.records
             )
+    cited: set[str] = set()
     for layer in (Layer.PROJECTS, Layer.WIKI):
         if not base.store.enabled(layer):
             continue
         pages, _nested = load_markdown_layer(base, layer, cancel=cancel)
         for page in pages:
             _check_cancel(cancel)
+            cited.update(cited_task_traces(page, cancel=cancel))
             if page.valid_at(request.as_of):
                 candidates.append(_page_candidate(page, layer, base.config.schema))
+    backlog = 0
     if base.store.enabled(Layer.TASKS):
-        for trace in list_tasks(base, request.window, cancel=cancel).traces:
+        # The receipt counts all lessons; reuse this same parse for in-window candidates.
+        for trace in list_tasks(base, cancel=cancel).traces:
             _check_cancel(cancel)
             page = replace(cast(Page, trace.page), date=trace.date)
-            if page.valid_at(request.as_of):
+            if trace.uri not in cited:
+                backlog += len(learned_bullets(page, cancel=cancel))
+            if request.window.contains(trace.date) and page.valid_at(request.as_of):
                 candidates.append(_page_candidate(page, Layer.TASKS, base.config.schema))
     _apply_supersedes(candidates)
     manifest = load_body_manifest(base)
@@ -1094,9 +1086,6 @@ def _scan_candidates(
         else:
             omitted.append(candidate.uri)
     relevant = _collapse_resources(relevant, terms)
-    backlog = (
-        list_learned(base, only_unharvested=True, cancel=cancel).unharvested if base.store.enabled(Layer.TASKS) else 0
-    )
     return _CandidateSet(
         candidates=tuple(relevant),
         omitted=tuple(omitted),
@@ -1163,15 +1152,20 @@ def _prepare_candidates(
     return _scan_candidates(base, request, terms, resolver, use, cancel)
 
 
-def _analyze_segment(text: str, term: str) -> tuple[bool, int]:
-    lowered_text = _lower(text)
+def _analyze_segment(candidate: ContextItem, text: str, term: str) -> tuple[bool, int]:
+    cached = candidate.segment_analysis.get(text)
+    if cached is None:
+        lowered_text = _lower(text)
+        tokens = _terms(lowered_text)
+        cached = lowered_text, frozenset(tokens), max(1, len(tokens).bit_length())
+        candidate.segment_analysis[text] = cached
+    lowered_text, tokens, normalizer = cached
     lowered_term = _lower(term)
     if identifier_shaped(lowered_term) and lowered_term not in lowered_text:
         return False, 0
-    tokens = _terms(lowered_text)
     if not identifier_shaped(lowered_term) and lowered_term not in tokens:
         return False, 0
-    return True, max(1, max(1, len(tokens)).bit_length())
+    return True, normalizer
 
 
 def _identifier_priority(candidate: ContextItem, term: str) -> int:
@@ -1191,7 +1185,7 @@ def _analyze_term(candidate: ContextItem, term: str) -> LexicalTermAnalysis:
     maximum_weight = 0
     segments: list[LexicalTermSegment] = []
     for name, text, weight in candidate.segments:
-        found, normalizer = _analyze_segment(text, term)
+        found, normalizer = _analyze_segment(candidate, text, term)
         if not found:
             continue
         matched = True
@@ -1251,16 +1245,24 @@ def _weighted_points(term: str, rarity: int, analysis: LexicalTermAnalysis) -> t
 
 def _body_excerpt(body: str, terms: Sequence[str]) -> str:
     lowered = _lower(body)
+    best: tuple[int, int, int] | None = None
     for term in terms:
-        index = lowered.find(_lower(term))
-        if index < 0:
-            continue
-        radius = 90
-        start = max(0, index - radius)
-        end = min(len(body), index + len(term) + radius)
-        excerpt = " ".join(body[start:end].split())
-        return f"{'…' if start else ''}{excerpt}{'…' if end < len(body) else ''}"
-    return ""
+        position = 0
+        while (index := lowered.find(_lower(term), position)) >= 0:
+            start = max(0, index - 90)
+            end = min(len(body), index + len(term) + 90)
+            window = lowered[start:end]
+            coverage = sum(_lower(value) in window for value in terms)
+            choice = (coverage, -start, end)
+            if best is None or choice > best:
+                best = choice
+            position = index + max(1, len(term))
+    if best is None:
+        return ""
+    _, negative_start, end = best
+    start = -negative_start
+    excerpt = " ".join(body[start:end].split())
+    return f"{'…' if start else ''}{excerpt}{'…' if end < len(body) else ''}"
 
 
 def _add_reason(candidate: ContextItem, name: str, points: int, detail: str = "") -> None:
@@ -1296,10 +1298,23 @@ def _score_candidate(
     total: int,
     now: datetime,
     base: Base,
+    ambiguous_identities: frozenset[str],
 ) -> None:
     candidate.explicit_policy = _policy_explicit(candidate, terms)
-    if candidate.body:
-        candidate.excerpt = _body_excerpt(candidate.body, terms)
+    excerpt_sources = (
+        candidate.body,
+        *(
+            f"{name}: {value}"
+            for name, value, _ in candidate.segments
+            if name in {"next_action", "blocker", "reviewed", "due"}
+        ),
+    )
+    if any(excerpt_sources):
+        # Metadata can answer a query, but must not shift a body passage's window.
+        candidate.excerpt = max(
+            (_body_excerpt(value, terms) for value in excerpt_sources),
+            key=lambda value: sum(_lower(term) in _lower(value) for term in terms),
+        )
     if len(terms) > 1 and phrase and _lower(candidate.title.strip()) == phrase:
         _add_reason(candidate, "exact-identifier", POINTS_IDENTIFIER, phrase)
         candidate.explicit_identity = True
@@ -1311,9 +1326,15 @@ def _score_candidate(
             candidate.matched_terms += 1
             candidate.match_weight = max(candidate.match_weight, analysis.max_weight)
             _add_reason(candidate, "exact-identifier", POINTS_IDENTIFIER, term)
-            candidate.explicit_identity = True
-            candidate.matched_identity = True
-            candidate.direct_identity = candidate.direct_identity or analysis.identifier_priority == 2
+            identity = (
+                (analysis.identifier_priority == 1 and term not in ambiguous_identities)
+                or _is_pinnable(candidate)
+                or identifier_shaped(term)
+                or len(terms) == 1
+            )
+            candidate.explicit_identity = candidate.explicit_identity or identity
+            candidate.matched_identity = candidate.matched_identity or identity
+            candidate.direct_identity = candidate.direct_identity or (identity and analysis.identifier_priority == 2)
             continue
         rarity = _rarity(total, frequencies.get(term, 0))
         if rarity == 0:
@@ -1325,7 +1346,20 @@ def _score_candidate(
             _add_reason(candidate, "term", points, detail)
     if len(terms) > 1 and _phrase_matches(candidate, phrase):
         _add_reason(candidate, "exact-phrase", POINTS_PHRASE, phrase)
+    # A plain record ID or title needs corroboration in a question ("make"
+    # can be a verb). Authored identities and declared relations stay exact.
+    if candidate.matched_terms > 1 and any(_analyze_term(candidate, term).identifier_priority == 2 for term in terms):
+        candidate.explicit_identity = True
+        candidate.matched_identity = True
+        candidate.direct_identity = True
     if candidate.score > 0:
+        candidate.handoff = len(terms) == 1 and _active_handoff(candidate)
+        if candidate.handoff:
+            candidate.excerpt = _truncate(
+                "; ".join(
+                    f"{name}: {value}" for name, value, _ in candidate.segments if name in {"next_action", "blocker"}
+                )
+            )
         if candidate.created_evidence:
             _add_reason(candidate, "created-evidence", POINTS_TERM, "category: created")
         source = base.config.sources.get(candidate.source)
@@ -1346,8 +1380,28 @@ def _score_candidates(
 ) -> None:
     frequencies = {term: sum(_analyze_term(candidate, term).matched for candidate in candidates) for term in terms}
     phrase = _lower(query.strip())
+    ambiguous = _ambiguous_relation_names(candidates, terms)
     for candidate in candidates:
-        _score_candidate(candidate, phrase, terms, frequencies, total, now, base)
+        _score_candidate(candidate, phrase, terms, frequencies, total, now, base, ambiguous)
+
+
+def _ambiguous_relation_names(candidates: Sequence[ContextItem], terms: Sequence[str]) -> frozenset[str]:
+    # Distinct repositories can share a leaf such as "Python". A short name
+    # is not an exact identity when the evidence maps it to several targets.
+    targets: dict[str, set[str]] = {term: set() for term in terms if not identifier_shaped(term)}
+    for candidate in candidates:
+        for name, values in (candidate.fields or {}).items():
+            if name not in candidate.relation_fields:
+                continue
+            for value in values:
+                with suppress(URIError):
+                    parsed = parse_uri(value)
+                    if not parsed.is_entity():
+                        continue
+                    key = _lower(parsed.value.rsplit("/", maxsplit=1)[-1])
+                    if key in targets and len(targets[key]) < 2:
+                        targets[key].add(value)
+    return frozenset(term for term, values in targets.items() if len(values) > 1)
 
 
 def _is_pinnable(item: ContextItem) -> bool:
@@ -1384,6 +1438,15 @@ def _matches_term(text: str, term: str) -> bool:
     return lowered_term in _terms(text)
 
 
+def _active_handoff(item: ContextItem) -> bool:
+    return (
+        item.kind == str(Layer.PROJECTS)
+        and item.status == "active"
+        and item.matched_identity
+        and any(name == "next_action" for name, _, _ in item.segments)
+    )
+
+
 def _candidate_cmp(left: ContextItem, right: ContextItem, *, newest: bool) -> int:
     def descending(left_value: Any, right_value: Any) -> int:
         return -1 if left_value > right_value else 1 if left_value < right_value else 0
@@ -1410,13 +1473,31 @@ def _candidate_cmp(left: ContextItem, right: ContextItem, *, newest: bool) -> in
             return result
     else:
         for left_value, right_value in (
+            # An exact project identity should resume its current commitment
+            # before spending a small delivery budget on historical evidence.
+            (left.handoff, right.handoff),
+            (
+                -sum(len(values) for values in (left.fields or {}).values()) if left.handoff else 0,
+                -sum(len(values) for values in (right.fields or {}).values()) if right.handoff else 0,
+            ),
             (left.direct_identity, right.direct_identity),
             (left.matched_identity, right.matched_identity),
+            (left.matched_terms > 1, right.matched_terms > 1),
+            # Multi-term knowledge lookups route through authored handoffs;
+            # exact identity and explicit newest requests retain their priority.
+            (
+                _is_pinnable(left) and left.matched_terms > 1 and not left.matched_identity,
+                _is_pinnable(right) and right.matched_terms > 1 and not right.matched_identity,
+            ),
+            # Once the identity is exact, rank its evidence by coverage and
+            # score, not incidental differences in relation-field weights.
+            (0 if left.matched_identity else left.match_weight, 0 if right.matched_identity else right.match_weight),
+            # Field-weighted relevance beats incidental coverage of another
+            # question word in a long historical body.
+            (left.score, right.score),
         ):
             if result := descending(left_value, right_value):
                 return result
-        if not left.matched_identity and left.match_weight != right.match_weight:
-            return descending(left.match_weight, right.match_weight)
         if result := descending(left.matched_terms, right.matched_terms):
             return result
     if result := descending(left.score, right.score):
@@ -2030,7 +2111,9 @@ def _render_text_item(base_name: str, item: ContextItem) -> str:
     )
     if fields := _compact_text_fields(item):
         rendered += f" · {' '.join(fields)}"
-    return f"{rendered}\n"
+    if item.excerpt:
+        rendered += f"\n    {inline(item.excerpt)}"
+    return block(f"{rendered}\n")
 
 
 def render_context_text(pack: ContextPack | None) -> str:
@@ -2038,11 +2121,16 @@ def render_context_text(pack: ContextPack | None) -> str:
 
     if pack is None:
         return ""
+    return _render_context_text(pack, tuple(_render_text_item(pack.receipt.base, item) for item in pack.items))
+
+
+def _render_context_text(pack: ContextPack, rendered_items: Sequence[str]) -> str:
     receipt = pack.receipt
     lines = [f"notice {receipt.notice}\n"]
     if not pack.items:
         lines.append(f"warning {receipt.warning}\n")
-    lines.extend(_render_text_item(receipt.base, item) for item in pack.items)
+    prefix = "".join(block(line) for line in lines)
+    lines = []
     lines.append(
         f'receipt pack for "{pack.query}" · {receipt.selected}/{receipt.candidates} selected · '
         f"{receipt.encoded_tokens}/{receipt.budget} {_text_or_dash(receipt.format)} tokens · "
@@ -2066,7 +2154,7 @@ def render_context_text(pack: ContextPack | None) -> str:
         lines.append(
             f"learn {receipt.unharvested_bullets} unharvested bullet(s) · fkf list tasks learned --unharvested\n"
         )
-    return block("".join(lines))
+    return prefix + "".join(rendered_items) + block("".join(lines))
 
 
 def render_context_bytes(pack: ContextPack, delivery: str | None = None) -> bytes:
@@ -2082,10 +2170,16 @@ def render_context_bytes(pack: ContextPack, delivery: str | None = None) -> byte
     raise ValueError(f"context delivery format {selected!r} is not json, jsonl, or text")
 
 
-def _stabilize_text_tokens(pack: ContextPack) -> int:
+def _stabilize_text_tokens(pack: ContextPack, rendered: dict[str, str] | None = None) -> int:
+    if rendered is None:
+        rendered = {}
+    for item in pack.items:
+        if item.uri not in rendered:
+            rendered[item.uri] = _render_text_item(pack.receipt.base, item)
+    items = tuple(rendered[item.uri] for item in pack.items)
     pack.receipt.encoded_tokens = 0
     while True:
-        measured = (len(render_context_bytes(pack, CONTEXT_DELIVERY_TEXT)) + 3) // 4
+        measured = (len(_render_context_text(pack, items).encode()) + 3) // 4
         if measured == pack.receipt.encoded_tokens:
             return measured
         pack.receipt.encoded_tokens = measured
@@ -2123,7 +2217,9 @@ def _fit_text_budget(
     requested = budget
     full_dropped = _context_dropped_count(pack.receipt)
     items = list(pack.items)
-    while _stabilize_text_tokens(pack) > budget and items:
+    # Selected item bytes do not change during packing; only the receipt does.
+    rendered: dict[str, str] = {}
+    while _stabilize_text_tokens(pack, rendered) > budget and items:
         item = items.pop()
         pack.items = tuple(items)
         pack.receipt.used_tokens = max(0, pack.receipt.used_tokens - item.tokens)
@@ -2138,18 +2234,19 @@ def _fit_text_budget(
         _set_dropped_count(pack.receipt, full_dropped)
     if not items and pack.receipt.candidates:
         pack.receipt.warning = _empty_warning(pack.receipt.candidates, pack.receipt.dropped, budget)
-    minimum = _stabilize_text_tokens(pack)
+    minimum = _stabilize_text_tokens(pack, rendered)
     if minimum > budget:
         while True:
             pack.receipt.budget = minimum
             if not pack.items and pack.receipt.candidates:
                 pack.receipt.warning = _empty_warning(pack.receipt.candidates, pack.receipt.dropped, minimum)
-            required = _stabilize_text_tokens(pack)
+            required = _stabilize_text_tokens(pack, rendered)
             if required <= minimum:
                 raise ContextBudgetError(requested, minimum)
             minimum = required
 
     selected = {item.uri for item in pack.items}
+    current_bytes = len(_render_context_text(pack, tuple(rendered[item.uri] for item in pack.items)).encode())
     for candidate in _ranked(candidates, request.newest):
         if candidate.uri in selected:
             continue
@@ -2164,6 +2261,12 @@ def _fit_text_budget(
             continue
         if pack.receipt.used_tokens + candidate.tokens > budget:
             continue
+        if candidate.uri not in rendered:
+            rendered[candidate.uri] = _render_text_item(pack.receipt.base, candidate)
+        # Adding a nonempty item cannot shorten the item list. Only receipt
+        # integer widths can shrink; allow three bytes before exact measurement.
+        if pack.items and current_bytes + len(rendered[candidate.uri].encode()) - 3 > budget * 4:
+            continue
         previous_items = pack.items
         previous_selected = pack.receipt.selected
         previous_used = pack.receipt.used_tokens
@@ -2177,9 +2280,10 @@ def _fit_text_budget(
         _remove_drop(pack.receipt, candidate.uri)
         pack.receipt.rejected_pins = tuple(uri for uri in pack.receipt.rejected_pins if uri != candidate.uri)
         pack.receipt.warning = ""
-        if _stabilize_text_tokens(pack) <= budget:
+        if _stabilize_text_tokens(pack, rendered) <= budget:
             selected.add(candidate.uri)
             full_dropped = max(0, full_dropped - 1)
+            current_bytes = len(_render_context_text(pack, tuple(rendered[item.uri] for item in pack.items)).encode())
             continue
         pack.items = previous_items
         pack.receipt.selected = previous_selected
@@ -2191,7 +2295,7 @@ def _fit_text_budget(
     details = sorted(pack.receipt.dropped, key=_drop_priority)[: _dropped_cap(budget)]
     pack.receipt.dropped = tuple(details)
     _set_dropped_count(pack.receipt, full_dropped)
-    _stabilize_text_tokens(pack)
+    _stabilize_text_tokens(pack, rendered)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2358,7 +2462,7 @@ def _load_snapshot(base: Base, digest: str) -> _Snapshot:
     except FileNotFoundError as error:
         raise ValueError(
             f"receipt snapshot {digest} is not available on this machine; "
-            "run the original context query once without --since-receipt to seed it"
+            "run the original context query with --save-receipt and without --since-receipt to seed it"
         ) from error
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
         raise ValueError(f"read receipt snapshot {digest}: state entry is not a regular file")

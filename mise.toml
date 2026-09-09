@@ -173,7 +173,7 @@ description = "Lint application, tests, and shipped Python helpers (Ruff)"
 # isolated pass applies Ruff's correctness rules without rewriting that published surface.
 run = [
   "uv run ruff check",
-  "uv run ruff check --isolated --no-cache src/fkf/assets_data/presets/bin",
+  "uv run ruff check --isolated --no-cache src/fkf/assets_data/presets/sources",
 ]
 
 [tasks."check:outdated"]
@@ -202,7 +202,7 @@ diff -u docs/fkf.schema.json "$schema"
 
 [tasks."check:shell"]
 description = "Lint every shipped and release shell helper"
-run = "find src/fkf/assets_data/presets/bin -type f -name '*.sh' -print0 | xargs -0 shellcheck -S warning scripts/release-notes scripts/verify-release-assets scripts/verify-release-tag"
+run = "find src/fkf/assets_data/presets/sources -type f -name '*.sh' -print0 | xargs -0 shellcheck -S warning scripts/release-notes scripts/verify-release-assets scripts/verify-release-tag"
 
 [tasks."check:types"]
 alias = "ct"

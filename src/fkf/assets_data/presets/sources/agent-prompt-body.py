@@ -3,18 +3,23 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import stat
 import sys
 from collections.abc import Iterator
+from datetime import date, timedelta
 from pathlib import Path
 
 MAX_JSON_BYTES = 8 << 20
 MAX_BODY_BYTES = 64 << 20
-MAX_FILES = 8192
+MAX_DOCUMENT_BYTES = 64 << 20
+MAX_TRANSCRIPT_BYTES = 64 << 20
 AGENT = re.compile(r"^[A-Za-z0-9._]+$")
+SOURCE = re.compile(r"^[a-z0-9][a-z0-9-]{0,127}$")
+GENERATION = re.compile(r"^[a-f0-9]{64}$")
 INJECTED_PREFIXES = (
     "# AGENTS.md instructions for",
     "Are you still working on",
@@ -108,7 +113,7 @@ def directory_exists(home: Path, path: Path) -> bool:
         os.close(descriptor)
 
 
-def json_lines(home: Path, path: Path, contains: bytes | None = None) -> Iterator[dict[str, object]]:
+def json_lines(home: Path, path: Path, *, document: bool = False) -> Iterator[dict[str, object]]:
     parent = open_chain(home, path.relative_to(home).parts[:-1])
     descriptor = -1
     try:
@@ -121,12 +126,23 @@ def json_lines(home: Path, path: Path, contains: bytes | None = None) -> Iterato
         opened = os.fstat(descriptor)
         if fingerprint(inspected) != fingerprint(opened):
             raise RuntimeError("transcript changed while it was being opened")
+        if not document and opened.st_size > MAX_TRANSCRIPT_BYTES:
+            raise RuntimeError("transcript exceeds 64 MiB")
         with os.fdopen(descriptor, "rb", closefd=False) as stream:
-            while line := stream.readline(MAX_JSON_BYTES + 1):
-                if len(line) > MAX_JSON_BYTES:
+            if document:
+                encoded = stream.read(MAX_DOCUMENT_BYTES + 1)
+                if len(encoded) > MAX_DOCUMENT_BYTES:
+                    raise RuntimeError("stored source document exceeds 64 MiB")
+                lines = iter((encoded,))
+            else:
+                lines = iter(lambda: stream.readline(MAX_JSON_BYTES + 1), b"")
+            consumed = 0
+            for line in lines:
+                consumed += len(line)
+                if not document and consumed > MAX_TRANSCRIPT_BYTES:
+                    raise RuntimeError("transcript exceeds 64 MiB")
+                if not document and len(line) > MAX_JSON_BYTES:
                     raise RuntimeError("JSON line exceeds 8 MiB")
-                if contains is not None and contains not in line:
-                    continue
                 value = json.loads(line)
                 if not isinstance(value, dict):
                     raise TypeError("transcript contains a non-object JSON line")
@@ -141,14 +157,63 @@ def json_lines(home: Path, path: Path, contains: bytes | None = None) -> Iterato
         os.close(parent)
 
 
+def recorded_turn(base: Path, source: str, identifier: str, instant: str, lineage: str) -> tuple[str, int]:
+    """Use collection-time provenance; a timestamp can name distinct archived bodies."""
+    selected: tuple[str, int] | None = None
+    # Every civil collection date is within one day of the record's UTC date,
+    # including evidence collected before a timezone configuration changed.
+    utc_day = date.fromisoformat(instant[:10])
+    for offset in (-1, 0, 1):
+        day = (utc_day + timedelta(days=offset)).isoformat()
+        path = base / "events" / day / f"{source}.json"
+        try:
+            documents = tuple(json_lines(base, path, document=True))
+        except FileNotFoundError:
+            continue
+        envelope = documents[0]
+        if (
+            envelope.get("fkf") != 1
+            or envelope.get("source") != source
+            or envelope.get("date") != day
+            or envelope.get("layer") != "events"
+        ):
+            raise ValueError("stored source document does not match its address")
+        records = envelope.get("records")
+        if not isinstance(records, list):
+            raise TypeError("stored source document has no record list")
+        for record in records:
+            if not isinstance(record, dict) or record.get("id") != identifier:
+                continue
+            generation, turn = record.get("session"), record.get("turn")
+            if (
+                record.get("lineage") != lineage
+                or not isinstance(generation, str)
+                or GENERATION.fullmatch(generation) is None
+                or not isinstance(turn, int)
+                or isinstance(turn, bool)
+                or turn < 1
+            ):
+                raise ValueError("stored prompt has invalid archive provenance")
+            candidate = (generation, turn)
+            if selected is not None and selected != candidate:
+                raise ValueError("stored prompt has conflicting archive provenance")
+            selected = candidate
+    if selected is None:
+        raise ValueError("prompt has no stored archive provenance")
+    return selected
+
+
 def main(arguments: list[str]) -> int:
     if arguments[:1] in (["--version"], ["-v"]):
         sys.stdout.write("agent-prompt-body.py (fkf preset helper)\n")
         return 0
-    if len(arguments) != 1:
-        sys.stderr.write("usage: agent-prompt-body.py <agent>-<sid>-<compact-ts>\n")
+    if len(arguments) != 3:
+        sys.stderr.write("usage: agent-prompt-body.py <base> <source> <agent>-<sid>-<compact-ts>\n")
         return 2
-    identifier = arguments[0]
+    base_value, source, identifier = arguments
+    if not Path(base_value).is_absolute() or SOURCE.fullmatch(source) is None:
+        sys.stderr.write("agent-prompt-body.py: expected an absolute base and a source name\n")
+        return 2
     agent, separator, remainder = identifier.partition("-")
     sid, separator_two, stamp = remainder.rpartition("-")
     if not separator or not separator_two or not agent or not sid:
@@ -165,33 +230,30 @@ def main(arguments: list[str]) -> int:
         )
         return 2
     home = Path(os.environ.get("HOME", ""))
-    store = home / ".agents" / "sessions" / "v1" / agent
+    # The normalized store addresses a lineage by these exact NUL-framed bytes.
+    # The stored generation and turn resolve the exact body without scanning history.
+    lineage = hashlib.sha256(f"{agent}\0{sid}\0".encode()).hexdigest()
+    store = home / ".agents" / "sessions" / "v1" / agent / lineage
     try:
+        generation, selected_turn = recorded_turn(
+            Path(base_value).resolve(strict=True), source, identifier, instant, lineage
+        )
         if not directory_exists(home, store):
             raise RuntimeError(f"no transcripts for harness '{agent}'")
         body: bytes | None = None
-        transcripts: list[Path] = []
-        for transcript in store.rglob("transcript.jsonl"):
-            if len(transcripts) >= MAX_FILES:
-                raise RuntimeError(f"more than {MAX_FILES} transcript files")
-            transcripts.append(transcript)
-        for transcript in sorted(transcripts):
-            for raw in json_lines(home, transcript, instant.encode()):
-                if raw.get("role") != "user" or raw.get("ts") != instant or raw.get("sid") != sid:
-                    continue
-                normalized = normalize_prompt(raw.get("content"))
-                if normalized is None:
-                    continue
-                candidate = normalized.encode()
-                if len(candidate) > MAX_BODY_BYTES:
-                    raise RuntimeError(f"body is {len(candidate)} bytes; fkf read allows at most {MAX_BODY_BYTES}")
-                if body is None:
-                    body = candidate
-                elif body != candidate:
-                    raise RuntimeError(
-                        f"2 distinct bodies match harness '{agent}', session '{sid}', "
-                        f"timestamp '{instant}'; refusing an ambiguous body"
-                    )
+        for turn, raw in enumerate(json_lines(home, store / generation / "transcript.jsonl"), start=1):
+            if turn != selected_turn:
+                continue
+            if raw.get("role") != "user" or raw.get("ts") != instant or raw.get("sid") != sid:
+                continue
+            normalized = normalize_prompt(raw.get("content"))
+            if normalized is None:
+                continue
+            candidate = normalized.encode()
+            if len(candidate) > MAX_BODY_BYTES:
+                raise RuntimeError(f"body is {len(candidate)} bytes; fkf read allows at most {MAX_BODY_BYTES}")
+            if body is None:
+                body = candidate
         if body is None:
             raise RuntimeError(f"no turn for harness '{agent}', session '{sid}', timestamp '{instant}'")
     except (OSError, UnicodeError, TypeError, ValueError, json.JSONDecodeError, RuntimeError) as error:

@@ -50,7 +50,7 @@ def test_create_refresh_preserves_owned_and_owner_files(tmp_path: Path) -> None:
     assert created.preset == "minimal"
     assert created.trusted is True
     assert load_config(root).name == "my-brain"
-    assert (root / "bin" / "fkf-hook.py").stat().st_mode & 0o777 == 0o700
+    assert (root / "sources" / "fkf-hook.py").stat().st_mode & 0o777 == 0o700
     assert (root / "CLAUDE.md").read_text(encoding="utf-8") == "@AGENTS.md\n"
     assert (root / ".claude" / "skills").readlink() == Path("../.agents/skills")
     assert {path.name for path in (root / ".agents" / "skills").iterdir()} == set(BUNDLED_SKILLS)
@@ -59,7 +59,7 @@ def test_create_refresh_preserves_owned_and_owner_files(tmp_path: Path) -> None:
 
     config = (root / "fkf.yaml").read_bytes()
     agents = (root / "AGENTS.md").read_bytes()
-    helper = root / "bin" / "fkf-hook.py"
+    helper = root / "sources" / "fkf-hook.py"
     helper.write_text("owner helper\n", encoding="utf-8")
     (root / "CLAUDE.md").write_text("owner instructions\n", encoding="utf-8")
     skill = root / ".agents" / "skills" / "fkf-use" / "SKILL.md"
@@ -91,13 +91,13 @@ def test_every_preset_loads_and_only_materializes_enabled_helpers(tmp_path: Path
     expected = {"fkf-hook.py"}
     for source in config.enabled_sources():
         expected.update(name for name in source.requires if name in official)
-    assert {path.name for path in (root / "bin").iterdir()} == expected
+    assert {path.name for path in (root / "sources").iterdir()} == expected
 
 
 def test_preexisting_execution_inputs_prevent_automatic_trust(tmp_path: Path) -> None:
     root = tmp_path / "brain"
-    (root / "bin").mkdir(parents=True)
-    (root / "bin" / "owner").write_text("owner\n", encoding="utf-8")
+    (root / "sources").mkdir(parents=True)
+    (root / "sources" / "owner").write_text("owner\n", encoding="utf-8")
 
     report = init_base(InitRequest(path=root, skip_git=True), now=lambda: NOW)
 
@@ -173,19 +173,19 @@ def test_failed_demo_init_is_retryable_and_removes_created_executables(tmp_path:
 
     assert owner.read_text(encoding="utf-8") == "keep\n"
     assert not (root / "fkf.yaml").exists()
-    assert not (root / "bin" / "fkf-hook.py").exists()
-    assert not (root / "bin" / "fkf-demo-json.sh").exists()
+    assert not (root / "sources" / "fkf-hook.py").exists()
+    assert not (root / "sources" / "fkf-demo-json.sh").exists()
     assert tuple((root / "events").iterdir()) == ()
 
 
 def test_init_git_uses_host_path_not_preexisting_base_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "brain"
-    (root / "bin").mkdir(parents=True)
+    (root / "sources").mkdir(parents=True)
     marker = tmp_path / "base-git-ran"
-    malicious = root / "bin" / "git"
+    malicious = root / "sources" / "git"
     malicious.write_text(f"#!/bin/sh\ntouch '{marker}'\n", encoding="utf-8")
     malicious.chmod(0o700)
-    monkeypatch.setenv("PATH", os.pathsep.join((os.fspath(root / "bin"), "/usr/bin", "/bin")))
+    monkeypatch.setenv("PATH", os.pathsep.join((os.fspath(root / "sources"), "/usr/bin", "/bin")))
 
     report = init_base(InitRequest(path=root), now=lambda: NOW)
 
@@ -199,7 +199,7 @@ def test_init_rejects_unsafe_targets_and_cancellation(tmp_path: Path) -> None:
     outside.mkdir()
     root = tmp_path / "brain"
     root.mkdir()
-    (root / "bin").symlink_to(outside, target_is_directory=True)
+    (root / "sources").symlink_to(outside, target_is_directory=True)
     with pytest.raises(Exception, match="symlink"):
         init_base(InitRequest(path=root, skip_git=True), now=lambda: NOW)
     assert not (root / "fkf.yaml").exists()
@@ -236,7 +236,7 @@ def test_init_forwards_one_event_through_scaffold_build_and_initial_trust(
 
     cancel_event = cancel
     root = tmp_path / "brain"
-    monkeypatch.setattr(init_module, "bin_scripts", execution_tree)
+    monkeypatch.setattr(init_module, "source_scripts", execution_tree)
     monkeypatch.setattr(init_module, "test_scripts", execution_tree)
     monkeypatch.setattr(init_module, "build", build)
     monkeypatch.setattr(init_module, "write_trust", write_trust)

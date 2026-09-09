@@ -28,7 +28,7 @@ from fkf.lexical import (
     lexical_inputs_match,
     query_find_lexical_index,
 )
-from fkf.markdown import Page
+from fkf.markdown import Page, page_commitments
 from fkf.pages import normalize_terms, read_page, require_known
 from fkf.process import Cancellation, CommandCanceledError
 from fkf.query import Window
@@ -360,7 +360,8 @@ def _excerpt_around(body: str, term: str) -> str:
 def _score_page(page: Page, layer: Layer, terms: tuple[str, ...]) -> PageHit | None:
     title = " ".join((page.title, page.slug, page.description, *page.aliases)).lower()
     tags = " ".join(page.tags).lower()
-    body = page.body.lower()
+    searchable = "\n".join((*(f"{name}: {value}" for name, value in page_commitments(page)), page.body))
+    body = searchable.lower()
     score = 0
     excerpt = ""
     for term in terms:
@@ -374,7 +375,7 @@ def _score_page(page: Page, layer: Layer, terms: tuple[str, ...]) -> PageHit | N
             return None
         score += points
         if not excerpt:
-            excerpt = _excerpt_around(page.body, term)
+            excerpt = _excerpt_around(searchable, term)
     return PageHit(
         uri=page.uri,
         layer=layer,

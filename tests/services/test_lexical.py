@@ -71,13 +71,12 @@ def _write_page(base: Base, uri: str, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def test_versions_and_term_extraction_match_the_go_contract() -> None:
-    assert (LEXICAL_INDEX_SCHEMA_VERSION, LEXICAL_INDEX_EXTRACTOR_VERSION, RANKING_VERSION) == (4, 12, 7)
+def test_versions_and_term_extraction_preserve_unicode_with_current_ranking() -> None:
+    assert (LEXICAL_INDEX_SCHEMA_VERSION, LEXICAL_INDEX_EXTRACTOR_VERSION, RANKING_VERSION) == (4, 14, 10)
     assert normalize_query_terms("Take my last Retrieval boundary FK-412 and fmind/fkf") == (
         "retrieval",
         "boundary",
         "fk-412",
-        "and",
         "fmind/fkf",
     )
     assert lexical_trigrams("AbcA") == ("abc", "bca")
@@ -125,8 +124,8 @@ def test_build_is_deterministic_owner_only_and_classifies_fallbacks(tmp_path: Pa
     assert (first.entries, first.context_entries, first.mode) == (1, 1, "full")
     # This exact fixture pins semantics JSON, digest framing, TSV rows,
     # delta-varints, and all 4,096 lookup-shard descriptors.
-    assert first.meta.semantics_sha256 == "b59a81609bc6c57c31963079df8e037d0026b87552484646c089627e7416d380"
-    assert first.meta.inputs_sha256 == "7c834fcf35eaaa32d85b5cf32bd28979f1de3b1ac3896faf250ad2f8cb3e21ba"
+    assert first.meta.semantics_sha256 == "981c72660159c214ba8141350ef0c22403e93250455546e772eda313334105a1"
+    assert first.meta.inputs_sha256 == "fb3b0f7ec3b2b3b7b51b8807bb9f83eb7341b07e0fc04e78f9a4441787555fad"
     assert first.meta.output_sha256 == "f5ca147ed7f8b9e79fbf3db51f81de91fcfdb53c6fd4d8c2b5a9c40ff77b43bf"
     assert second.meta.output_sha256 == hashlib.sha256(rows).hexdigest()
     assert (base.root / LEXICAL_INDEX_PATH).read_bytes() == rows
@@ -319,8 +318,9 @@ def test_build_forwards_one_cancellation_event_through_nested_inventory_reads(
     monkeypatch.setattr(lexical_module.IdentityResolver, "load", classmethod(observe_identity_load))
     monkeypatch.setattr(lexical_module, "load_markdown_layer", observe_pages)
     monkeypatch.setattr(lexical_module, "list_tasks", observe_tasks)
+    monkeypatch.setattr("fkf.learned.list_tasks", observe_tasks)
 
-    with pytest.raises(CanceledError, match="operation canceled"):
+    with pytest.raises(CanceledError, match="canceled"):
         build_lexical_index(base, cancel=cancel)
 
     assert observed.count("graph-inputs") == 1

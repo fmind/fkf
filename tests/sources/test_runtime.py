@@ -34,7 +34,7 @@ from fkf.source_runtime import (
     build_run_command,
     build_test_command,
     describe_policy,
-    ensure_bin_dir,
+    ensure_sources_dir,
     normalize_github_noreply_actor,
 )
 from fkf.store import Layer, UnsafePathError
@@ -90,9 +90,9 @@ def test_environment_and_command_builders_share_the_process_path_boundary(tmp_pa
     root = tmp_path / "brain"
     external = tmp_path / "tools"
     tests = root / "tests"
-    for directory in (root / "bin", external, tests):
+    for directory in (root / "sources", external, tests):
         directory.mkdir(parents=True, exist_ok=True)
-    for path in (root / "bin" / "provider", external / "provider-check", tests / "provider-check"):
+    for path in (root / "sources" / "provider", external / "provider-check", tests / "provider-check"):
         path.write_text("#!/bin/sh\n", encoding="utf-8")
         path.chmod(0o700)
 
@@ -118,7 +118,7 @@ def test_environment_and_command_builders_share_the_process_path_boundary(tmp_pa
     assert run.disclosure is Disclosure.DECLARED
     assert run.diagnostic is not None
     assert run.diagnostic.source == "github-events"
-    assert environment.look_path("provider") == root / "bin" / "provider"
+    assert environment.look_path("provider") == root / "sources" / "provider"
 
     check = build_test_command(declared, environment, parse_duration("1m"))
     assert check.argv == ("provider-check", os.fspath(root), os.environ["HOME"])
@@ -305,23 +305,23 @@ def test_policy_description_and_github_noreply_normalization_are_deterministic()
     assert normalize_github_noreply_actor("fmind@example.com") is None
 
 
-def test_ensure_bin_dir_refuses_a_symlink_leaf(tmp_path: Path) -> None:
+def test_ensure_sources_dir_refuses_a_symlink_leaf(tmp_path: Path) -> None:
     root = tmp_path / "brain"
     outside = tmp_path / "outside"
     root.mkdir()
     outside.mkdir()
-    (root / "bin").symlink_to(outside, target_is_directory=True)
+    (root / "sources").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(UnsafePathError):
-        ensure_bin_dir(root)
+        ensure_sources_dir(root)
 
 
-def test_ensure_bin_dir_creates_a_private_helper_directory(tmp_path: Path) -> None:
+def test_ensure_sources_dir_creates_a_private_helper_directory(tmp_path: Path) -> None:
     root = tmp_path / "brain"
     root.mkdir()
 
-    directory = ensure_bin_dir(root)
+    directory = ensure_sources_dir(root)
 
-    assert directory == root / "bin"
+    assert directory == root / "sources"
     assert directory.is_dir()
     assert stat.S_IMODE(directory.stat().st_mode) == 0o700

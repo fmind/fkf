@@ -5,11 +5,38 @@
   "description": "The committed definition of one fkf base. It holds no secret.",
   "properties": {
     "bin": {
-      "description": "Absolute or ~-relative machine-local directories outside the base, prepended to PATH for every declared command. Put base-controlled executables in \u003cbase\u003e/bin so trust hashes them.",
+      "description": "Absolute or ~-relative machine-local directories outside the base, prepended to PATH for every declared command. Put base-controlled executables in \u003cbase\u003e/sources so trust hashes them.",
       "items": {
         "type": "string"
       },
       "type": "array"
+    },
+    "clients": {
+      "additionalProperties": {
+        "additionalProperties": false,
+        "properties": {
+          "script": {
+            "maxLength": 255,
+            "pattern": "^[a-z0-9][a-z0-9_-]*\\.py$",
+            "type": "string"
+          },
+          "url": {
+            "pattern": "^https://[^\\s?#@]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "script"
+        ],
+        "type": "object"
+      },
+      "description": "Online apps with one uv Python script each under clients/; called through explicit uv argv.",
+      "propertyNames": {
+        "maxLength": 63,
+        "pattern": "^[a-z0-9][a-z0-9-]*$"
+      },
+      "type": "object"
     },
     "fkf": {
       "const": 1,

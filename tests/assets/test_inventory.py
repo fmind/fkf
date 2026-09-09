@@ -96,7 +96,7 @@ def test_shipped_collectors_have_no_nominally_unbounded_pagination() -> None:
             code = line.partition("#")[0]
             assert "--paginate" not in code, f"{relative}:{number} delegates an unbounded provider loop"
             assert "4294967295" not in code, f"{relative}:{number} uses a nominal page ceiling"
-            if relative.startswith("bin/") and "--page-all" in code:
+            if relative.startswith("sources/") and "--page-all" in code:
                 assert page_all.search(code), f"{relative}:{number} lacks the adjacent --page-limit 100 contract"
 
 
@@ -164,10 +164,10 @@ def test_built_wheel_exposes_the_exact_resource_tree(tmp_path: Path, monkeypatch
         source_assets,
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
     )
-    cache = source_assets / "presets/bin/__pycache__"
+    cache = source_assets / "presets/sources/__pycache__"
     cache.mkdir()
     (cache / "gmail-body.cpython-314.pyc").write_bytes(b"ignored bytecode")
-    (source_assets / "presets/bin/helper.pyc").write_bytes(b"ignored bytecode")
+    (source_assets / "presets/sources/helper.pyc").write_bytes(b"ignored bytecode")
     (source_assets / "skills/fkf-use/references/helper.pyo").write_bytes(b"ignored bytecode")
     monkeypatch.setattr(assets_module, "asset_root", lambda: source_assets)
 

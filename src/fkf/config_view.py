@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fkf.config import Config, Identity, RecencyPolicy, RetryPolicy, Source, SyncConfig
+from fkf.config import Client, Config, Identity, RecencyPolicy, RetryPolicy, Source, SyncConfig
 from fkf.fields import FieldDefinition, FieldMap, FieldSchema
 from fkf.timeutil import DurationNS
 
@@ -83,6 +83,7 @@ class PublicConfig:
     path: Path = Path()
     local_path: Path | None = field(default=None, metadata={"json": "local_path,omitempty"})
     origins: dict[str, Path] | None = field(default=None, metadata={"json": "origins,omitempty"})
+    clients: dict[str, Client] = field(default_factory=dict, metadata={"json": "clients,omitempty"})
 
 
 def _field_definition(value: FieldDefinition) -> PublicFieldDefinition:
@@ -165,6 +166,7 @@ def public_config(value: Config) -> PublicConfig:
         value.path,
         value.local_path,
         value.origins or None,
+        value.clients,
     )
 
 

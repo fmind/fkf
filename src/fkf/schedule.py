@@ -234,7 +234,7 @@ def _launchd_agent(base: Path, home: Path, path: str, executable: Path, name: st
 
 def _manager_command(plan: SchedulePlan, argv: tuple[str, ...]) -> Command:
     # PATH is already stripped of relative/base-resolving entries. ``base=None`` prevents the
-    # generic provider runner from prepending <base>/bin ahead of systemctl or launchctl.
+    # generic provider runner from prepending <base>/sources ahead of systemctl or launchctl.
     return Command(
         argv,
         _MANAGER_TIMEOUT,

@@ -88,15 +88,15 @@ Root `schema:` is the semantic dictionary shared by every source. The dedicated 
 
 The ignored `fkf.local.yaml` contains execution facts that differ by machine. It may add external `bin:` directories and override `enabled`, `run`, or `timeout` for a source already declared in `fkf.yaml`. It cannot introduce a source, redefine the schema, or declare environment values.
 
-Extra `bin:` entries must be absolute or `~`-relative directories outside the base. Provider accounts and credentials remain process environment owned by the provider CLI; export a selector such as `GH_CONFIG_DIR` before launching FKF, or use a reviewed executable wrapper under `bin/`. FKF reads no env file, expands no `$VAR`, and owns no credential.
+Extra `bin:` entries must be absolute or `~`-relative directories outside the base. Provider accounts and credentials remain process environment owned by the provider CLI; export a selector such as `GH_CONFIG_DIR` before launching FKF, or use a reviewed executable wrapper under `sources/`. FKF reads no env file, expands no `$VAR`, and owns no credential.
 
-The ordinary child command path is composed from `<base>/bin/`, declared external `bin:` directories, and safe inherited absolute entries. Relative entries and inherited entries resolving inside the base are removed. Source tests prepend the separately trust-digested `<base>/tests/` tree to that path; collection and body commands never search it.
+The ordinary child command path is composed from `<base>/sources/`, declared external `bin:` directories, and safe inherited absolute entries. Relative entries and inherited entries resolving inside the base are removed. Source tests prepend the separately trust-digested `<base>/tests/` tree to that path; collection and body commands never search it.
 
 `fkf config` prints the merged result and the origin of every local override.
 
 ## Trust follows execution
 
-`fkf trust` hashes a canonical execution plan, not YAML bytes. Changes to `auth:`, `run:`, `test:`, `body:`, enabled state, body-bound paths, timeouts, retries, pacing, extra executable directories, or files and executable bits under `bin/` or `tests/` re-arm trust. Comments, YAML key order, schema descriptions and examples, `requires:`, retrieval-only field-path changes, and the inherited process environment do not.
+`fkf trust` hashes a canonical execution plan, not YAML bytes. Changes to `auth:`, `run:`, `test:`, `body:`, enabled state, body-bound paths, timeouts, retries, pacing, extra executable directories, or files and executable bits under `sources/` or `tests/` re-arm trust. Comments, YAML key order, schema descriptions and examples, `requires:`, retrieval-only field-path changes, and the inherited process environment do not.
 
 The disclosure printed before trust remains the authority. Trust is local change detection, never a shell sandbox.
 
@@ -106,4 +106,4 @@ Mutating CLI paths share one fail-fast cross-process lock keyed by the physical 
 
 `fkf init` refreshes marked blocks in `.gitignore` and `.gitattributes` without touching surrounding content. The ignore block covers local configuration, common secret-bearing files, all five root graph artifacts, and optional collected data according to the choice made at initialization. The attributes block prevents line-merging complete JSON documents. The graph files need no merge rule because they are rebuilt from source files.
 
-Use `fkf init` again to refresh FKF-owned skills and managed blocks. It does not overwrite base-specific `AGENTS.md`, custom skills, existing helpers under `bin/`, or source hooks under `tests/`. Use `fkf config helpers` to inspect installed official helpers and missing required ones, then `fkf config helpers --refresh` for an explicit refresh whose individual file replacements are atomic; unknown scripts remain user-owned.
+Use `fkf init` again to refresh FKF-owned skills and managed blocks. It does not overwrite base-specific `AGENTS.md`, custom skills, existing helpers under `sources/`, or source hooks under `tests/`. Use `fkf config helpers` to inspect installed official helpers and missing required ones, then `fkf config helpers --refresh` for an explicit refresh whose individual file replacements are atomic; unknown scripts remain user-owned.

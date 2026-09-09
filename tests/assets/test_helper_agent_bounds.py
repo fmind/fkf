@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import runpy
@@ -10,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from .conftest import HelperInstallation
+from .conftest import HelperInstallation, prompt_body_arguments
 
 START = "2026-05-04T00:00:00Z"
 END = "2026-05-05T00:00:00Z"
@@ -21,7 +22,8 @@ def _module(helpers: HelperInstallation, name: str) -> dict[str, Any]:
 
 
 def _normalized_transcript(helpers: HelperInstallation) -> Path:
-    path = helpers.home / ".agents" / "sessions" / "v1" / "codex" / "lineage" / "session" / "transcript.jsonl"
+    lineage = hashlib.sha256(b"codex\0session-1\0").hexdigest()
+    path = helpers.home / ".agents" / "sessions" / "v1" / "codex" / lineage / ("a" * 64) / "transcript.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -72,7 +74,7 @@ def test_normalized_prompt_helpers_accept_exact_jsonl_lines_and_reject_one_byte_
     transcript = _normalized_transcript(helpers)
     line = _prompt_line()
     transcript.write_bytes(line)
-    arguments = [START, END, "0"] if helper == "agent-prompts.py" else ["codex-session-1-20260504T000000Z"]
+    arguments = [START, END, "0"] if helper == "agent-prompts.py" else prompt_body_arguments(helpers)
 
     assert _run_direct(helpers, monkeypatch, helper, arguments, MAX_JSON_BYTES=len(line)) == 0
     exact = capfd.readouterr()
@@ -85,15 +87,14 @@ def test_normalized_prompt_helpers_accept_exact_jsonl_lines_and_reject_one_byte_
     assert "JSON line exceeds 8 MiB" in oversized.err
 
 
-def test_prompt_body_retains_only_one_unique_match(helpers: HelperInstallation) -> None:
+def test_prompt_body_resolves_the_recorded_turn_among_identical_timestamps(helpers: HelperInstallation) -> None:
     transcript = _normalized_transcript(helpers)
     transcript.write_bytes(_prompt_line(content="First.") + _prompt_line(content="Second."))
 
-    result = helpers.run("agent-prompt-body.py", "codex-session-1-20260504T000000Z")
+    result = helpers.run("agent-prompt-body.py", *prompt_body_arguments(helpers, turn=2))
 
-    assert result.returncode == 1
-    assert result.stdout == b""
-    assert b"2 distinct bodies match" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == b"Second."
 
 
 def test_agent_sessions_accepts_exact_jsonl_lines_and_rejects_one_byte_over(
@@ -174,7 +175,7 @@ def test_agent_collectors_bound_retained_candidate_paths(
     if helper == "agent-prompts.py":
         root = helpers.home / ".agents" / "sessions" / "v1" / "codex"
         for name in ("one", "two"):
-            transcript = root / name / "session" / "transcript.jsonl"
+            transcript = root / name / ("a" * 64) / "transcript.jsonl"
             transcript.parent.mkdir(parents=True)
             transcript.write_bytes(_prompt_line().replace(START.encode(), b"2026-05-03T00:00:00Z"))
         arguments = [START, END, "0"]
@@ -192,6 +193,45 @@ def test_agent_collectors_bound_retained_candidate_paths(
     captured = capfd.readouterr()
     assert captured.out == ""
     assert expected in captured.err
+
+
+def test_prompt_window_prunes_old_manifests_before_retaining_transcripts(
+    helpers: HelperInstallation, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    current = _normalized_transcript(helpers)
+    current.write_bytes(_prompt_line())
+    root = current.parents[2]
+    for name in ("old-one", "old-two"):
+        transcript = root / name / "generation" / "transcript.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text("This historical transcript must not be opened.\n")
+        transcript.with_name("manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "agent": "codex",
+                    "lineage_id": name,
+                    "high_water_mark": "2026-04-01T12:00:00Z",
+                },
+                indent=2,
+            )
+        )
+    assert _run_direct(helpers, monkeypatch, "agent-prompts.py", [START, END, "0"], MAX_FILES=1) == 0
+    assert len(json.loads(capfd.readouterr().out)) == 1
+    assert _run_direct(helpers, monkeypatch, "agent-prompts.py", [START, END, "0"], MAX_ARCHIVE_FILES=2) == 1
+    assert "archive enumeration" in capfd.readouterr().err
+
+
+def test_prompt_body_uses_the_exact_session_lineage(
+    helpers: HelperInstallation, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    current = _normalized_transcript(helpers)
+    current.write_bytes(_prompt_line())
+    unrelated = current.parents[2] / "another-lineage" / "generation" / "transcript.jsonl"
+    unrelated.parent.mkdir(parents=True)
+    unrelated.write_text("Must not be opened.\n")
+    assert _run_direct(helpers, monkeypatch, "agent-prompt-body.py", prompt_body_arguments(helpers)) == 0
+    assert capfd.readouterr().out == "Bound the prompt."
 
 
 def test_agent_prompts_bounds_retained_records_and_final_output(

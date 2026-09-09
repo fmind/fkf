@@ -147,14 +147,18 @@ def test_path_policy_admits_only_trusted_base_trees_and_external_absolute_dirs(t
     ordinary = command_path(base=base, inherited=inherited)
     source_test = command_path(base=base, inherited=inherited, source_test=True)
 
-    assert ordinary.split(os.pathsep) == [os.fspath(base / "bin"), os.fspath(external)]
-    assert source_test.split(os.pathsep) == [os.fspath(base / "tests"), os.fspath(base / "bin"), os.fspath(external)]
+    assert ordinary.split(os.pathsep) == [os.fspath(base / "sources"), os.fspath(external)]
+    assert source_test.split(os.pathsep) == [
+        os.fspath(base / "tests"),
+        os.fspath(base / "sources"),
+        os.fspath(external),
+    ]
     assert sanitize_path(inherited, base) == os.fspath(external)
 
 
 def test_source_tests_can_shadow_base_bin_but_ordinary_commands_cannot(tmp_path: Path) -> None:
     base = tmp_path / "base"
-    bin_directory = base / "bin"
+    bin_directory = base / "sources"
     tests_directory = base / "tests"
     bin_directory.mkdir(parents=True)
     tests_directory.mkdir()

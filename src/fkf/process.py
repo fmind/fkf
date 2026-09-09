@@ -261,7 +261,7 @@ def command_path(
     if base is not None:
         if source_test:
             entries.append(os.fspath(base / "tests"))
-        entries.append(os.fspath(base / "bin"))
+        entries.append(os.fspath(base / "sources"))
     if safe_external:
         entries.extend(safe_external.split(os.pathsep))
     # Base paths are deliberately admitted above; the generic sanitizer must reject every

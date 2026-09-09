@@ -14,8 +14,6 @@ from datetime import UTC, date, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Final, Protocol, cast
 
-from markdown_it import MarkdownIt
-
 from fkf.assets import BUNDLED_SKILLS, HOOK_SCRIPT, shipped_helpers, skill_digest
 from fkf.auth import probe_source_auth
 from fkf.base import Base
@@ -29,10 +27,10 @@ from fkf.documents import (
     verify_document,
 )
 from fkf.errors import CanceledError
-from fkf.fields import scalar_string
 from fkf.graph import DerivedGraphMissingError, GraphSummary, summarize_graph
 from fkf.harness import HarnessRegistration, inspect_harnesses
 from fkf.io import read_file_limited
+from fkf.learned import cited_task_traces, learned_bullets
 from fkf.lexical import (
     LEXICAL_INDEX_FALLBACK_CORRUPT,
     LEXICAL_INDEX_FALLBACK_MISSING,
@@ -48,10 +46,11 @@ from fkf.pages import PageFilter, list_pages
 from fkf.process import Cancellation, Command, SubprocessRunner, check_cancel, sanitize_path
 from fkf.source_runtime import Environment
 from fkf.store import (
-    BASE_BIN_DIR,
+    BASE_CLIENTS_DIR,
     BASE_DIR_MODE,
     BASE_FILE_MODE,
     BASE_SKILLS_DIR,
+    BASE_SOURCES_DIR,
     BASE_TESTS_DIR,
     GRAPH_DST_FILE,
     GRAPH_FILE,
@@ -61,14 +60,13 @@ from fkf.store import (
     LOCAL_CONFIG_NAME,
     MAX_CONTROL_FILE_BYTES,
     MAX_SOURCE_DOCUMENT_BYTES,
-    TASK_TRACE_FILE,
     Layer,
     UnsafePathError,
     validate_within_root,
 )
+from fkf.sync import previous_completed_days
 from fkf.timeutil import DurationNS, Instant, format_rfc3339, parse_rfc3339
 from fkf.trust import TrustState, read_trust
-from fkf.uri import resolve_link
 
 if TYPE_CHECKING:
     from fkf.scan import ScanGuard
@@ -199,6 +197,7 @@ class SourceStatus:
     last_collected_at: str = field(default="", metadata={"json": "last_collected_at,omitempty"})
     lag_hours: int = field(default=0, metadata={"json": "lag_hours,omitempty"})
     stale: bool = field(default=False, metadata={"json": "stale,omitempty"})
+    missing_dates: tuple[str, ...] = field(default=(), metadata={"json": "missing_dates,omitempty"})
     last_count: int = field(default=0, metadata={"json": "last_count,omitempty"})
     median: int = field(default=0, metadata={"json": "median,omitempty"})
     days: int = field(default=0, metadata={"json": "days,omitempty"})
@@ -266,6 +265,9 @@ class Status:
     stale_days: int = field(default=0, metadata={"json": "stale_days,omitempty"})
     max_age_hours: int = field(default=0, metadata={"json": "max_age_hours,omitempty"})
     next: tuple[str, ...] = ()
+    # Reuse the verified narrative inventory in composed offline views. Never serialize page bodies here.
+    task_pages: tuple[Page, ...] = field(default=(), repr=False, compare=False, metadata={"json": "-"})
+    project_pages: tuple[Page, ...] = field(default=(), repr=False, compare=False, metadata={"json": "-"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -570,6 +572,7 @@ def _source_statuses(
     enabled = 0
     missing_tests = 0
     now_instant = _instant(now)
+    expected_dates = tuple(day.date().isoformat() for day in previous_completed_days(now, base.config.sync.days))
 
     for name in base.config.source_names():
         check_cancel(cancel)
@@ -603,6 +606,10 @@ def _source_statuses(
         if max_age == 0 and source.layer is Layer.INDEX:
             max_age = source.effective_max_age_hours(base.config.sync.index_max_age_hours)
         entry = _observe_freshness(entry, now_instant, max_age)
+        if source.enabled and source.layer is Layer.EVENTS and base.store.enabled(Layer.EVENTS):
+            collected_dates = {day.date for day in history.get(name, ())}
+            missing_dates = tuple(day for day in expected_dates if day not in collected_dates)
+            entry = replace(entry, missing_dates=missing_dates, stale=entry.stale or bool(missing_dates))
         if source.enabled:
             enabled += 1
             if test is not None and not test.on_path:
@@ -873,7 +880,7 @@ def _helper_findings(base: Base, cancel: Cancellation | None) -> list[Finding]:
     drifted: list[str] = []
     for name in sorted(required):
         check_cancel(cancel)
-        relative = f"{BASE_BIN_DIR}/{name}"
+        relative = f"{BASE_SOURCES_DIR}/{name}"
         target = base.root / relative
         validate_within_root(base.root, target)
         try:
@@ -913,8 +920,9 @@ def _helper_findings(base: Base, cancel: Cancellation | None) -> list[Finding]:
 def _permission_repair_command(root: Path) -> str:
     quoted_root = _shell_arg(root)
     quoted_git = _shell_arg(root / ".git")
-    quoted_bin = _shell_arg(root / BASE_BIN_DIR)
+    quoted_bin = _shell_arg(root / BASE_SOURCES_DIR)
     quoted_tests = _shell_arg(root / BASE_TESTS_DIR)
+    quoted_clients = _shell_arg(root / BASE_CLIENTS_DIR)
     preserve = (
         ' -type f -exec sh -c \'for file do if [ -x "$file" ]; then chmod 700 "$file"; '
         'else chmod 600 "$file"; fi; done\' sh {} +; fi'
@@ -923,9 +931,10 @@ def _permission_repair_command(root: Path) -> str:
         f"chmod 700 {quoted_root}"
         f" && find {quoted_root} -path {quoted_git} -prune -o -type d -exec chmod 700 {{}} +"
         f" && find {quoted_root} -path {quoted_git} -prune -o -path {quoted_bin} -prune -o -path {quoted_tests}"
-        " -prune -o -type f -exec chmod 600 {} +"
+        f" -prune -o -path {quoted_clients} -prune -o -type f -exec chmod 600 {{}} +"
         f" && if [ -d {quoted_bin} ]; then find {quoted_bin}{preserve}"
         f" && if [ -d {quoted_tests} ]; then find {quoted_tests}{preserve}"
+        f" && if [ -d {quoted_clients} ]; then find {quoted_clients}{preserve}"
     )
 
 
@@ -944,7 +953,7 @@ def _permission_finding(base: Base, cancel: Cancellation | None) -> Finding | No
         if (
             not is_directory
             and len(parts) > 1
-            and parts[0] in {BASE_BIN_DIR, BASE_TESTS_DIR}
+            and parts[0] in {BASE_SOURCES_DIR, BASE_TESTS_DIR, BASE_CLIENTS_DIR}
             and stat.S_IMODE(info.st_mode) & 0o111
         ):
             desired = 0o700
@@ -1056,54 +1065,11 @@ def _derived_findings(
     return findings
 
 
-def _learned_bullet_count(page: Page, cancel: Cancellation | None) -> int:
-    tokens = MarkdownIt("commonmark").parse(page.body)
-    active_level = 0
-    lists: list[bool] = []
-    count = 0
-    index = 0
-    while index < len(tokens):
-        check_cancel(cancel)
-        token = tokens[index]
-        if token.type == "heading_open":
-            level = int(token.tag.removeprefix("h"))
-            heading = tokens[index + 1].content.strip() if index + 1 < len(tokens) else ""
-            if heading == "Learned":
-                active_level = level
-            elif active_level and level <= active_level:
-                active_level = 0
-        elif token.type == "bullet_list_open":
-            lists.append(True)
-        elif token.type == "ordered_list_open":
-            lists.append(False)
-        elif token.type in {"bullet_list_close", "ordered_list_close"}:
-            if lists:
-                lists.pop()
-        elif token.type == "list_item_open" and active_level and lists and lists[-1]:
-            count += 1
-        index += 1
-    return count
-
-
 def _cited_traces(knowledge: _KnowledgeInventory, cancel: Cancellation | None) -> set[str]:
     cited: set[str] = set()
     for page in (*knowledge.wiki, *knowledge.projects):
         check_cancel(cancel)
-        raw = page.frontmatter.get("sources")
-        if not isinstance(raw, list):
-            continue
-        for item in raw:
-            check_cancel(cancel)
-            candidate = scalar_string(item)
-            if candidate is None:
-                continue
-            try:
-                resolved = resolve_link(page.uri, candidate)
-            except ValueError:
-                continue
-            target = resolved.node_uri().partition("#")[0]
-            if target.endswith(f"/{TASK_TRACE_FILE}"):
-                cited.add(target)
+        cited.update(cited_task_traces(page, cancel=cancel))
     return cited
 
 
@@ -1116,7 +1082,7 @@ def _unharvested(knowledge: _KnowledgeInventory, cancel: Cancellation | None) ->
         if uri in cited:
             continue
         page = cast(Page, trace.page)
-        total += _learned_bullet_count(page, cancel)
+        total += len(learned_bullets(page, cancel=cancel))
     return total
 
 
@@ -1139,7 +1105,8 @@ def _suggest_next(status: Status) -> tuple[str, ...]:
         items.append(command("build graph") + "  derive the edge list the graph and --expand read")
     if status.unharvested:
         items.append(
-            command("list tasks learned --unharvested") + f"  {status.unharvested} bullet(s) no page has promoted yet"
+            command("list tasks learned --unharvested")
+            + f"  {status.unharvested} bullet(s) from uncited traces; review only durable findings"
         )
     items.extend(
         (
@@ -1270,7 +1237,7 @@ def report(
             Finding(
                 "learned",
                 Severity.WARNING,
-                f'{unharvested} "## Learned" bullet(s) across your task traces have not been promoted into a wiki or projects page yet',
+                f'{unharvested} "## Learned" bullet(s) belong to traces not cited by wiki or project pages; citation counts are not lesson validation',
                 fix=_base_command(base, "list tasks learned --unharvested"),
             )
         )
@@ -1316,6 +1283,8 @@ def report(
         last_sync=last_sync,
         stale_days=_collection_stale_days(base, now),
         max_age_hours=request.max_age_hours,
+        task_pages=tuple(cast(Page, trace.page) for trace in knowledge.tasks),
+        project_pages=knowledge.projects,
     )
     return replace(status, next=_suggest_next(status))
 

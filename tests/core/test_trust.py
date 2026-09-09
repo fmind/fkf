@@ -27,11 +27,11 @@ from fkf.trust import (
     TrustRecord,
     TrustRecordError,
     TrustState,
-    bin_scripts,
     config_digest,
     diff_trust_items,
     read_trust,
     require_trust,
+    source_scripts,
     trust_check,
     trust_items,
     trust_record_path,
@@ -77,7 +77,7 @@ def test_typed_json_models_keep_go_field_order_and_omissions() -> None:
     assert dumps(change) == b'{"kind":"armed","item":"script","name":"helper"}'
 
 
-def test_config_digest_matches_the_current_go_oracle(tmp_path: Path) -> None:
+def test_config_digest_binds_the_current_execution_layout(tmp_path: Path) -> None:
     root = _write_base(
         tmp_path,
         """\
@@ -108,12 +108,12 @@ sources:
     config = load_config(root)
     items = trust_items(config)
 
-    # Constants preserve the released trust-digest contract across implementations.
+    # Golden framing includes the sources/ and clients/ execution-directory policy.
     assert [(item.kind, item.name, item.digest, item.executable) for item in items] == [
-        (TrustItemKind.CONFIG, "base", "ebf2c9406be92805f23b9fdaf9b1685e9f85698e47aef9bbd75d47f32df11b25", False),
+        (TrustItemKind.CONFIG, "base", "0aef57d225a7c3e3dd113c285228fafb169e3d2657bd0343f682de40a15c9e5a", False),
         (TrustItemKind.SOURCE, "github", "60923b76bc804432267f091113cb638dba30e5e226931e6e3c4b8e66ca616600", False),
     ]
-    assert config_digest(config) == "0ccd32750b9c1547a7c7f573d12a1eae0f0488c61d95f94f64e722be08e896bf"
+    assert config_digest(config) == "d9dfff16e44a6f4ca957689baf13e5027792e7d3534b749bbe59ea6a96f01cac"
 
 
 def test_digest_tracks_execution_changes_but_not_retrieval_metadata(tmp_path: Path) -> None:
@@ -139,17 +139,17 @@ sources:
 
 def test_execution_tree_inventory_is_recursive_deterministic_and_complete(tmp_path: Path) -> None:
     root = _write_base(tmp_path)
-    nested = root / "bin" / "lib"
+    nested = root / "sources" / "lib"
     nested.mkdir(parents=True)
     helper = nested / "helper.sh"
     helper.write_bytes(b"#!/bin/sh\nprintf helper\n")
     helper.chmod(0o700)
-    plain = root / "bin" / "README"
+    plain = root / "sources" / "README"
     plain.write_text("support\n", encoding="utf-8")
-    fifo = root / "bin" / "events.pipe"
+    fifo = root / "sources" / "events.pipe"
     os.mkfifo(fifo)
 
-    inventory = bin_scripts(root)
+    inventory = source_scripts(root)
     assert inventory == (
         ExecutionEntry(
             name="README", kind="script", digest="c05b56ab6d3d07ccca6778ebd799bf98dfa2b7f10dd43601f0938f04e5070878"
@@ -165,10 +165,10 @@ def test_execution_tree_inventory_is_recursive_deterministic_and_complete(tmp_pa
     )
     assert inventory_test_scripts(root) == ()
 
-    # This complete item list and aggregate are from the same Go oracle as the entry kinds.
+    # Complete golden item list includes the execution-directory policy.
     config = load_config(root)
     assert [(item.kind, item.name, item.digest, item.executable) for item in trust_items(config)] == [
-        (TrustItemKind.CONFIG, "base", "c284f84913af007d617a9fac39111283842b76f9b41a462f5aecdb3cd2546316", False),
+        (TrustItemKind.CONFIG, "base", "5bd7a0b5db136b6fcf28ee4054c9c2a7928e363ab5ef2619ac03477d4cd21346", False),
         (TrustItemKind.SCRIPT, "README", "ef368410ab8e4e16d994084e0bc431be5ec232b76af69245a38d1f7c2c431d7e", False),
         (
             TrustItemKind.SCRIPT,
@@ -184,10 +184,10 @@ def test_execution_tree_inventory_is_recursive_deterministic_and_complete(tmp_pa
             True,
         ),
     ]
-    assert config_digest(config) == "7191b9da98e81c4125aad4330f16f47224ef19f063e51fcfb1fa685e2d06fdf3"
+    assert config_digest(config) == "02b4b3081ae32a1fd550bde1e7ec41e8188c1e21030137ba77d5fc54046d82e7"
 
 
-@pytest.mark.parametrize("tree", ["bin", "tests"])
+@pytest.mark.parametrize("tree", ["sources", "tests"])
 @pytest.mark.parametrize("location", ["root", "nested-file", "nested-directory"])
 def test_execution_trees_refuse_every_symlink(tmp_path: Path, tree: str, location: str) -> None:
     root = _write_base(tmp_path)
@@ -202,17 +202,17 @@ def test_execution_trees_refuse_every_symlink(tmp_path: Path, tree: str, locatio
         target = outside / "helper" if location == "nested-file" else outside
         (directory / "link").symlink_to(target, target_is_directory=location == "nested-directory")
 
-    inventory = bin_scripts if tree == "bin" else inventory_test_scripts
+    inventory = source_scripts if tree == "sources" else inventory_test_scripts
     with pytest.raises(UnsafePathError, match="symlink"):
         inventory(root)
 
 
-@pytest.mark.parametrize("tree", ["bin", "tests"])
+@pytest.mark.parametrize("tree", ["sources", "tests"])
 def test_execution_tree_refuses_a_non_directory_root(tmp_path: Path, tree: str) -> None:
     root = _write_base(tmp_path)
     (root / tree).write_text("not a directory", encoding="utf-8")
 
-    inventory = bin_scripts if tree == "bin" else inventory_test_scripts
+    inventory = source_scripts if tree == "sources" else inventory_test_scripts
     with pytest.raises(UnsafePathError, match="real directory"):
         inventory(root)
 
@@ -221,12 +221,12 @@ def test_execution_tree_fails_closed_on_oversize_and_mid_walk_disappearance(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     root = _write_base(tmp_path)
-    directory = root / "bin"
+    directory = root / "sources"
     directory.mkdir()
     script = directory / "helper"
     script.write_bytes(b"x" * (MAX_CONTROL_FILE_BYTES + 1))
     with pytest.raises(FileTooLargeError):
-        bin_scripts(root)
+        source_scripts(root)
 
     script.write_text("stable", encoding="utf-8")
     from fkf import trust
@@ -239,14 +239,14 @@ def test_execution_tree_fails_closed_on_oversize_and_mid_walk_disappearance(
 
     monkeypatch.setattr(trust, "read_file_limited", vanish)
     with pytest.raises(OSError, match="read the base script"):
-        bin_scripts(root)
+        source_scripts(root)
 
 
 def test_execution_tree_inventory_cancels_between_hashed_entries(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     root = _write_base(tmp_path)
-    directory = root / "bin"
+    directory = root / "sources"
     directory.mkdir()
     (directory / "a").write_text("first", encoding="utf-8")
     (directory / "b").write_text("second", encoding="utf-8")
@@ -330,7 +330,7 @@ def test_write_read_require_and_change_review_are_atomic_owner_only_and_outside_
     )
     require_trust(config)
 
-    helper = root / "bin" / "helper"
+    helper = root / "sources" / "helper"
     helper.parent.mkdir()
     helper.write_text("one", encoding="utf-8")
     changed = read_trust(config)
@@ -354,7 +354,7 @@ def test_read_trust_binds_the_callers_decoded_snapshot_not_a_disk_reload(tmp_pat
 def test_trust_callback_rechecks_immediately_before_process_start(tmp_path: Path) -> None:
     root = _write_base(tmp_path)
     config = load_config(root)
-    helper = root / "bin" / "helper"
+    helper = root / "sources" / "helper"
     helper.parent.mkdir()
     marker = tmp_path / "started"
     helper.write_text(f"#!/bin/sh\nprintf started > {marker}\n", encoding="utf-8")

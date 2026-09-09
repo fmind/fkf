@@ -21,7 +21,7 @@ from fkf.io import FileTooLargeError, atomic_write, read_file_limited
 from fkf.jsoncodec import JsonNumber, JsonValue, dumps, loads
 from fkf.process import Cancellation, check_cancel
 from fkf.source_runtime import build_body_command
-from fkf.store import BASE_FILE_MODE, MAX_CONFIG_BYTES, MAX_NARRATIVE_BYTES, validate_within_root
+from fkf.store import BASE_FILE_MODE, MAX_NARRATIVE_BYTES, validate_within_root
 from fkf.timeutil import Instant, format_rfc3339, parse_rfc3339
 from fkf.trust import require_trust
 
@@ -30,6 +30,8 @@ BODY_MANIFEST_FILE: Final = "manifest.json"
 BODY_MANIFEST_SCHEMA: Final = 1
 MAX_BODY_CACHE_ENTRIES: Final = 4096
 MAX_BODY_CACHE_BYTES: Final = 512 << 20
+# Cache metadata repeats record URIs and must accommodate the declared entry capacity.
+MAX_BODY_MANIFEST_BYTES: Final = 8 << 20
 
 _ENTRY_KEYS: Final = frozenset({"uri", "source", "path", "sha256", "bytes", "provider_modified_at", "fetched_at"})
 _MANIFEST_KEYS: Final = frozenset({"schema_version", "entries", "event_attempts"})
@@ -390,9 +392,9 @@ def decode_body_manifest(base: Base, data: bytes) -> BodyManifest:
 def encode_body_manifest(manifest: BodyManifest) -> bytes:
     _validate_capacity(manifest)
     encoded = dumps(manifest, indent=True, newline=True)
-    if len(encoded) > MAX_CONFIG_BYTES:
+    if len(encoded) > MAX_BODY_MANIFEST_BYTES:
         raise BodyCacheError(
-            f"body cache manifest is {len(encoded)} bytes; limit {MAX_CONFIG_BYTES}; run `fkf build bodies --prune`"
+            f"body cache manifest is {len(encoded)} bytes; limit {MAX_BODY_MANIFEST_BYTES}; run `fkf build bodies --prune`"
         )
     return encoded
 
@@ -405,9 +407,9 @@ def load_body_manifest(base: Base | _BodyCacheHandle) -> BodyManifest:
         if isinstance(base, _BodyCacheHandle):
             if base.descriptor is None:
                 return BodyManifest()
-            data = _read_at_limited(base.descriptor, BODY_MANIFEST_FILE, path, MAX_CONFIG_BYTES)
+            data = _read_at_limited(base.descriptor, BODY_MANIFEST_FILE, path, MAX_BODY_MANIFEST_BYTES)
         else:
-            data = read_file_limited(path, MAX_CONFIG_BYTES)
+            data = read_file_limited(path, MAX_BODY_MANIFEST_BYTES)
     except OSError as error:
         if _missing(error):
             return BodyManifest()

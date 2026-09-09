@@ -146,8 +146,8 @@ def collect(start: int, end: int, budget: Budget | None = None) -> list[dict[str
         records = [validate(record) for record in value]
     except (TypeError, ValueError) as error:
         raise RuntimeError("every result must carry a URL, SHA, and author time") from error
-    exclusive_end = stamp(end)
-    if any(not range_start <= record["commit"]["author"]["date"] < exclusive_end for record in records):
+    # GitHub preserves author offsets; lexical RFC3339 order is not instant order.
+    if any(not start <= instant(record["commit"]["author"]["date"]).timestamp() < end for record in records):
         raise RuntimeError(f"GitHub returned a commit outside the requested range [{range_start}, {range_end}]")
     if len(records) > MAX_RECORDS:
         raise RuntimeError(f"commit record bound exceeds {MAX_RECORDS}")

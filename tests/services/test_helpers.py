@@ -41,11 +41,11 @@ sources:
 
 def test_helpers_report_refresh_and_ignore_custom_files(tmp_path: Path) -> None:
     base = make_base(tmp_path)
-    (base.root / "bin").mkdir()
-    hook = base.root / "bin" / "fkf-hook.py"
+    (base.root / "sources").mkdir()
+    hook = base.root / "sources" / "fkf-hook.py"
     hook.write_text("#!/bin/sh\necho edited\n", encoding="utf-8")
     hook.chmod(0o700)
-    custom = base.root / "bin" / "owner-helper"
+    custom = base.root / "sources" / "owner-helper"
     custom.write_text("owner\n", encoding="utf-8")
 
     before = inspect_helpers(base)
@@ -58,14 +58,14 @@ def test_helpers_report_refresh_and_ignore_custom_files(tmp_path: Path) -> None:
     after = inspect_helpers(base, refresh=True)
     assert (after.current, after.drifted, after.missing, after.refreshed) == (2, 0, 0, 2)
     assert all(item.refreshed for item in after.helpers)
-    assert (base.root / "bin" / "git-log-json.py").stat().st_mode & 0o777 == 0o700
+    assert (base.root / "sources" / "git-log-json.py").stat().st_mode & 0o777 == 0o700
     assert custom.read_text(encoding="utf-8") == "owner\n"
 
 
 def test_helper_mode_is_not_content_drift(tmp_path: Path) -> None:
     base = make_base(tmp_path)
     inspect_helpers(base, refresh=True)
-    hook = base.root / "bin" / "fkf-hook.py"
+    hook = base.root / "sources" / "fkf-hook.py"
     hook.chmod(0o600)
 
     report = inspect_helpers(base)
@@ -77,11 +77,11 @@ def test_helper_mode_is_not_content_drift(tmp_path: Path) -> None:
 
 def test_helpers_preflight_all_targets_before_refresh(tmp_path: Path) -> None:
     base = make_base(tmp_path)
-    (base.root / "bin").mkdir()
-    hook = base.root / "bin" / "fkf-hook.py"
+    (base.root / "sources").mkdir()
+    hook = base.root / "sources" / "fkf-hook.py"
     hook.write_text("edited\n", encoding="utf-8")
     outside = tmp_path / "outside"
-    (base.root / "bin" / "git-log-json.py").symlink_to(outside)
+    (base.root / "sources" / "git-log-json.py").symlink_to(outside)
 
     with pytest.raises(Exception, match="symlink"):
         inspect_helpers(base, refresh=True)
@@ -93,11 +93,11 @@ def test_helpers_fail_closed_on_bin_symlink_and_cancellation(tmp_path: Path) -> 
     base = make_base(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
-    (base.root / "bin").symlink_to(outside, target_is_directory=True)
+    (base.root / "sources").symlink_to(outside, target_is_directory=True)
     with pytest.raises(Exception, match="symlink"):
         inspect_helpers(base)
 
-    (base.root / "bin").unlink()
+    (base.root / "sources").unlink()
     canceled = Event()
     canceled.set()
     with pytest.raises(CanceledError):

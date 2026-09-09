@@ -32,10 +32,11 @@ from fkf.schema import SCHEMA_URL
 from fkf.source_runtime import Environment
 from fkf.store import (
     BASE_AGENTS_FILE,
-    BASE_BIN_DIR,
+    BASE_CLIENTS_DIR,
     BASE_DIR_MODE,
     BASE_FILE_MODE,
     BASE_SKILLS_DIR,
+    BASE_SOURCES_DIR,
     BASE_TESTS_DIR,
     CONFIG_FILE_NAME,
     GRAPH_DST_FILE,
@@ -57,13 +58,13 @@ from fkf.store import (
 )
 from fkf.sync import previous_completed_days
 from fkf.timeutil import parse_duration
-from fkf.trust import bin_scripts, read_trust, test_scripts, write_trust
+from fkf.trust import client_scripts, read_trust, source_scripts, test_scripts, write_trust
 
 PRESET_MINIMAL: Final = "minimal"
 PRESET_PERSONAL: Final = "personal"
 PRESET_TEAM: Final = "team"
 
-_EVAL_DIRECTORY = "evals"
+_EVAL_DIRECTORY = "checks"
 _EVAL_QUERIES_FILE = "queries.yaml"
 _MANAGED_BEGIN = "# >>> fkf managed block — do not edit between the markers"
 _MANAGED_BEGIN_PREFIX = "# >>> fkf managed block"
@@ -466,7 +467,8 @@ This directory is the **{name}** fkf base.
 - Use [fkf-learn](.agents/skills/fkf-learn/SKILL.md) for task traces and durable knowledge.
 - Use [daily-brief](.agents/skills/daily-brief/SKILL.md) to narrate `fkf brief` without rebuilding it from ad hoc searches.
 - `fkf.yaml` is the shared configuration and disclosure boundary; review changed execution definitions with `fkf trust`.
-- Keep collection and body helpers under `bin/`; keep source `test:` hooks under `tests/`. Both trees are trust-digested, but only tests prepend the latter to PATH.
+- Declare online apps in `clients:` with `url` and one Python `script` filename under `clients/`; call them through explicit `uv run --script` argv. The complete clients tree is trust-covered and stays outside PATH.
+- Keep collection and body helpers under `sources/`; keep source `test:` hooks under `tests/`. All three execution trees are trust-digested, but only tests prepend the latter to PATH.
 - `fkf init` refreshes bundled skills but never this file. Put shared base-specific workflows in another skill and prefix machine-local skills with `local-`.
 
 ## Base-specific instructions
@@ -478,7 +480,8 @@ Add only instructions unique to this base; keep fkf reference material in the co
 _CONFIG_HEADER: Final = """\
 # yaml-language-server: $schema=%s
 # %s — this base's definition. Committed. No secrets, ever.
-# Sources stay open: put collection helpers in bin/ and source verification hooks in tests/.
+# Sources stay open: collection helpers in sources/, app uv scripts in clients/, source hooks in tests/.
+clients: {} # app name: {url: https://app.example, script: app.py}
 fkf: 1 # configuration contract; v1 accepts exactly this marker
 name: %s # MCP server name and resource URI authority; informational elsewhere
 
@@ -589,7 +592,8 @@ def _validate_scaffold_targets(root: Path, cancel: Cancellation | None) -> None:
     directories = [
         root / ".agents",
         root / Path(BASE_SKILLS_DIR),
-        root / BASE_BIN_DIR,
+        root / BASE_SOURCES_DIR,
+        root / BASE_CLIENTS_DIR,
         root / BASE_TESTS_DIR,
         root / _EVAL_DIRECTORY,
         root / ".claude",
@@ -616,7 +620,8 @@ def _validate_scaffold_targets(root: Path, cancel: Cancellation | None) -> None:
         f"{_EVAL_DIRECTORY}/{_EVAL_QUERIES_FILE}",
     ):
         validate_path_confinement(root / Path(relative))
-    bin_scripts(root, cancel=cancel)
+    source_scripts(root, cancel=cancel)
+    client_scripts(root, cancel=cancel)
     test_scripts(root, cancel=cancel)
 
 
@@ -627,7 +632,9 @@ def _has_preexisting_execution_inputs(root: Path, cancel: Cancellation | None) -
         pass
     else:
         return True
-    return bool(bin_scripts(root, cancel=cancel) or test_scripts(root, cancel=cancel))
+    return bool(
+        source_scripts(root, cancel=cancel) or client_scripts(root, cancel=cancel) or test_scripts(root, cancel=cancel)
+    )
 
 
 def _write_managed_blocks(root: Path, track: bool, report: InitReport) -> None:
@@ -683,12 +690,12 @@ def _write_skills_and_helpers(
 ) -> None:
     states = install_skills(root, cancel=cancel)
     report.step(f"{BASE_SKILLS_DIR}/", ", ".join(BUNDLED_SKILLS), any(state.written for state in states))
-    (root / BASE_BIN_DIR).mkdir(mode=BASE_DIR_MODE, parents=True, exist_ok=True)
+    (root / BASE_SOURCES_DIR).mkdir(mode=BASE_DIR_MODE, parents=True, exist_ok=True)
     written = install_missing_required_helpers(root, config, cancel=cancel)
     if written:
-        report.step(f"{BASE_BIN_DIR}/", ", ".join(written), True)
+        report.step(f"{BASE_SOURCES_DIR}/", ", ".join(written), True)
     if created is not None:
-        created.extend(_created_file(root / BASE_BIN_DIR / name) for name in written)
+        created.extend(_created_file(root / BASE_SOURCES_DIR / name) for name in written)
 
 
 def _write_agent_bridges(root: Path, report: InitReport) -> None:
@@ -751,13 +758,13 @@ def _record_initial_trust(
     if preexisting:
         report.step(
             "trust",
-            "review required: fkf.local.yaml, bin/, or tests/ existed before init; run `fkf trust --all`",
+            "review required: fkf.local.yaml, sources/, clients/, or tests/ existed before init; run `fkf trust --all`",
             False,
         )
         return
     write_trust(config, now(), cancel=cancel)
     report.trusted = True
-    report.step("trusted", "execution plan plus bin/ and tests/ digests recorded for this machine", True)
+    report.step("trusted", "execution plan plus sources/, clients/, and tests/ digests recorded for this machine", True)
 
 
 def _rollback_created(files: list[_CreatedFile]) -> None:
@@ -835,8 +842,8 @@ def _scaffold_created_base(
         return
     changed = _install_demo_helper(root)
     if changed:
-        created.append(_created_file(root / BASE_BIN_DIR / DEMO_HELPER))
-    report.step(f"{BASE_BIN_DIR}/{DEMO_HELPER}", "deterministic local demo collector", changed)
+        created.append(_created_file(root / BASE_SOURCES_DIR / DEMO_HELPER))
+    report.step(f"{BASE_SOURCES_DIR}/{DEMO_HELPER}", "deterministic local demo collector", changed)
     demo, artifacts = _write_demo_with_created(base, request.demo, cancel=cancel)
     created.extend(artifacts)
     report.demo = demo
@@ -1262,7 +1269,7 @@ def _first_demo_layer_entry(base: Base) -> str:
 
 
 def _install_demo_helper(root: Path) -> bool:
-    target = root / BASE_BIN_DIR / DEMO_HELPER
+    target = root / BASE_SOURCES_DIR / DEMO_HELPER
     try:
         target.lstat()
     except FileNotFoundError:

@@ -24,15 +24,17 @@ from fkf.context import (
     render_context_bytes,
 )
 from fkf.io import read_file_limited
+from fkf.jsoncodec import dumps
 from fkf.lexical import RANKING_VERSION, LexicalIndexUse
 from fkf.output import register_text
 from fkf.process import Cancellation
 from fkf.query import Window
+from fkf.read import read
 from fkf.store import MAX_CONFIG_BYTES, MAX_NARRATIVE_BYTES, validate_within_root
 from fkf.uri import URIError, parse_uri
 
 EVAL_SCHEMA_VERSION: Final = 1
-EVAL_PATH: Final = "evals/queries.yaml"
+EVAL_PATH: Final = "checks/queries.yaml"
 MAX_EVAL_K: Final = 100
 MAX_EVAL_BUDGET: Final = MAX_NARRATIVE_BYTES // 4
 _DELIVERIES: Final = frozenset({CONTEXT_DELIVERY_JSON, CONTEXT_DELIVERY_JSONL, CONTEXT_DELIVERY_TEXT})
@@ -57,6 +59,8 @@ class _QueryModel(_Boundary):
     expect_empty: bool = False
     expected_uris: list[str] = PydanticField(default_factory=list)
     forbidden_uris: list[str] = PydanticField(default_factory=list)
+    expected_excerpts: dict[str, list[str]] = PydanticField(default_factory=dict)
+    expected_reads: dict[str, list[str]] = PydanticField(default_factory=dict)
 
 
 class _SuiteModel(_Boundary):
@@ -97,6 +101,7 @@ class EvalQueryResult:
     ranking_version: int = RANKING_VERSION
     recall_threshold: float = 0.0
     passed: bool = False
+    missing_evidence: tuple[str, ...] = field(default=(), metadata={"json": "missing_evidence,omitempty"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +129,8 @@ class _EvalQuery:
     expect_empty: bool
     expected_uris: tuple[str, ...]
     forbidden_uris: tuple[str, ...]
+    expected_excerpts: dict[str, tuple[str, ...]]
+    expected_reads: dict[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +203,12 @@ def _query(value: _QueryModel, index: int, names: set[str]) -> _EvalQuery:
     overlap = next((uri for uri in forbidden if uri in expected), "")
     if overlap:
         raise _invalid(f"{EVAL_PATH}: queries[{index}] URI {overlap!r} is both expected and forbidden")
+    for kind, evidence in (("expected_excerpts", value.expected_excerpts), ("expected_reads", value.expected_reads)):
+        for uri, snippets in evidence.items():
+            if uri not in expected or not snippets or any(not snippet.strip() for snippet in snippets):
+                raise _invalid(
+                    f"{EVAL_PATH}: queries[{index}].{kind} requires expected URI keys and non-empty text lists"
+                )
     return _EvalQuery(
         name,
         question,
@@ -206,11 +219,13 @@ def _query(value: _QueryModel, index: int, names: set[str]) -> _EvalQuery:
         value.expect_empty,
         expected,
         forbidden,
+        {uri: tuple(snippets) for uri, snippets in value.expected_excerpts.items()},
+        {uri: tuple(snippets) for uri, snippets in value.expected_reads.items()},
     )
 
 
 def _load_suite(base: Base) -> _EvalSuite:
-    absolute = base.root / "evals" / "queries.yaml"
+    absolute = base.root / "checks" / "queries.yaml"
     validate_within_root(base.root, absolute)
     try:
         data = read_file_limited(absolute, MAX_CONFIG_BYTES)
@@ -258,7 +273,9 @@ def _context_request(suite: _EvalSuite, query: _EvalQuery, evaluation_time: date
     )
 
 
-def _evaluate_query(suite: _EvalSuite, query: _EvalQuery, pack: ContextPack) -> EvalQueryResult:
+def _evaluate_query(
+    base: Base, suite: _EvalSuite, query: _EvalQuery, pack: ContextPack, cancel: Cancellation | None
+) -> EvalQueryResult:
     budget = query.budget if query.budget is not None else suite.budget
     k = query.k if query.k is not None else suite.k
     delivery = query.delivery or suite.delivery
@@ -269,12 +286,22 @@ def _evaluate_query(suite: _EvalSuite, query: _EvalQuery, pack: ContextPack) -> 
     found = len(expected_ranks) - len(missing)
     forbidden = tuple(uri for uri in query.forbidden_uris if uri in ranks)
     encoded = render_context_bytes(pack, delivery)
+    missing_evidence: list[str] = []
+    for kind, evidence in (("excerpt", query.expected_excerpts), ("read", query.expected_reads)):
+        for uri, snippets in evidence.items():
+            item = next((item for item in pack.items[:k] if item.uri == uri), None)
+            content = item.excerpt if item is not None else ""
+            if item is not None and kind == "read":
+                result = read(base, uri, cancel=cancel)
+                content = result.text or (dumps(result.record).decode() if result.record is not None else "")
+            if any(snippet.casefold() not in content.casefold() for snippet in snippets):
+                missing_evidence.append(f"{kind}: {uri}")
     if query.expect_empty:
         recall = 0.0 if delivered or pack.matched_but_omitted else 1.0
         passed = not delivered and not pack.matched_but_omitted
     else:
         recall = found / len(query.expected_uris)
-        passed = recall >= suite.recall_threshold and not forbidden
+        passed = recall >= suite.recall_threshold and not forbidden and not missing_evidence
     return EvalQueryResult(
         query.name,
         query.question,
@@ -297,6 +324,7 @@ def _evaluate_query(suite: _EvalSuite, query: _EvalQuery, pack: ContextPack) -> 
         pack.receipt.ranking_version,
         suite.recall_threshold,
         passed,
+        tuple(missing_evidence),
     )
 
 
@@ -310,7 +338,7 @@ def evaluate(base: Base, *, cancel: Cancellation | None = None) -> EvalReport:
         results = _map_contexts(
             base,
             requests,
-            lambda index, pack: _evaluate_query(suite, suite.queries[index], pack),
+            lambda index, pack: _evaluate_query(base, suite, suite.queries[index], pack, cancel),
             cancel=cancel,
         )
     except _ContextBatchError as failure:
@@ -357,6 +385,8 @@ def _text(report: EvalReport) -> str:
             lines.append(f"  missing: [{' '.join(query.missing_expected)}]")
         if query.forbidden_found:
             lines.append(f"  forbidden: [{' '.join(query.forbidden_found)}]")
+        if query.missing_evidence:
+            lines.append(f"  missing evidence: [{', '.join(query.missing_evidence)}]")
     lines.append(
         f"{report.passed_queries} passed, {report.failed} failed · threshold {report.recall_threshold:.3f} · "
         f"default k {report.k} · default budget {report.budget} · "

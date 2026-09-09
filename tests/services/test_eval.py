@@ -23,6 +23,29 @@ def write_suite(base_root: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+@pytest.mark.parametrize("field", ["expected_excerpts", "expected_reads"])
+def test_eval_requires_answer_evidence_not_just_the_right_uri(tmp_path: Path, field: str) -> None:
+    base = seeded_base(tmp_path)
+    template = """fkf: 1
+k: 3
+budget: 2000
+recall_threshold: 1
+queries:
+  - name: decision
+    question: retrieval boundary
+    expected_uris: [wiki/retrieval-boundary.md]
+    FIELD:
+      wiki/retrieval-boundary.md: [TEXT]
+""".replace("FIELD", field)
+    write_suite(base.root, template.replace("TEXT", "A durable retrieval boundary."))
+    assert evaluate(base).passed
+    write_suite(base.root, template.replace("TEXT", "A decision that does not exist"))
+    report = evaluate(base)
+    assert not report.passed
+    assert report.queries[0].recall == 1
+    assert report.queries[0].missing_evidence
+
+
 def test_eval_measures_the_exact_final_delivery_and_one_clock(tmp_path: Path) -> None:
     base = seeded_base(tmp_path)
     reads = 0
@@ -73,7 +96,7 @@ queries:
         assert query.delivered_tokens == (query.delivered_bytes + 3) // 4
         assert query.delivered_tokens <= query.budget
         assert query.input_digest
-        assert query.ranking_version == 7
+        assert query.ranking_version == 10
     assert isinstance(base.runner, ExplodingRunner)
     assert base.runner.calls == 0
 
@@ -301,7 +324,7 @@ queries:
     with pytest.raises(CanceledError):
         evaluate(base, cancel=canceled)
 
-    evals = base.root / "evals"
+    evals = base.root / "checks"
     suite = evals / "queries.yaml"
     suite.unlink()
     evals.rmdir()

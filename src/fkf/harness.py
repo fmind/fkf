@@ -389,7 +389,7 @@ def _build_plan(
     workspace: Path | None,
 ) -> HarnessPlan:
     key = _registration_key(base_name)
-    hook_command = _guarded_hook(base, key, workspace, base / "bin" / "fkf-hook.py", name, executable)
+    hook_command = _guarded_hook(base, key, workspace, base / "sources" / "fkf-hook.py", name, executable)
     stdio = _mcp(executable, base)
     fragments: list[HarnessFragment] = []
     notes: list[str] = []
@@ -575,7 +575,7 @@ def _select(request: HarnessInstallRequest) -> tuple[str, ...]:
 def _validate_assets(base: Path, needs_hook: bool) -> None:
     if not needs_hook:
         return
-    hook = base / "bin" / "fkf-hook.py"
+    hook = base / "sources" / "fkf-hook.py"
     try:
         info = hook.lstat()
     except OSError as error:

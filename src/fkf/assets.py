@@ -96,7 +96,7 @@ def skill_digest(name: str) -> str:
 
 def shipped_helpers() -> dict[str, bytes]:
     """Load every official helper by basename in deterministic order."""
-    helpers = dict(asset_files("presets/bin"))
+    helpers = dict(asset_files("presets/sources"))
     if HOOK_SCRIPT not in helpers:
         raise FileNotFoundError(f"bundled helper {HOOK_SCRIPT!r} is missing")
     return helpers

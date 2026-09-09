@@ -16,8 +16,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from markdown_it import MarkdownIt
-
 from fkf.bodies import (
     BODIES_DIRECTORY,
     BODY_MANIFEST_FILE,
@@ -41,8 +39,9 @@ from fkf.fields import (
 from fkf.graph import IdentityResolver, ResolvedIdentity, graph_input_uris
 from fkf.io import FileTooLargeError, atomic_write, open_regular_file, read_file_limited
 from fkf.jsoncodec import JsonNumber, dumps, loads
+from fkf.learned import list_learned
 from fkf.listings import list_tasks
-from fkf.markdown import Page
+from fkf.markdown import Page, page_commitments
 from fkf.pages import load_markdown_layer
 from fkf.process import Cancellation, check_cancel
 from fkf.query import Window
@@ -50,12 +49,13 @@ from fkf.store import (
     BASE_FILE_MODE,
     LAYERS,
     MAX_SOURCE_DOCUMENT_BYTES,
-    TASK_TRACE_FILE,
     Layer,
     clean_relative,
     validate_date,
     validate_within_root,
 )
+from fkf.text import lower as _lower
+from fkf.text import terms as _term_tokens
 from fkf.timeutil import parse_record_time
 from fkf.uri import URIError, parse_uri, resolve_link
 
@@ -72,8 +72,8 @@ LEXICAL_INDEX_FALLBACK_CORRUPT: Final = "corrupt"
 LEXICAL_INDEX_FALLBACK_QUERY_TOO_SHORT: Final = "query-too-short"
 
 LEXICAL_INDEX_SCHEMA_VERSION: Final = 4
-LEXICAL_INDEX_EXTRACTOR_VERSION: Final = 12
-RANKING_VERSION: Final = 7
+LEXICAL_INDEX_EXTRACTOR_VERSION: Final = 14
+RANKING_VERSION: Final = 10
 LEXICAL_INDEX_FORMAT: Final = "postings-varint-v3"
 LEXICAL_LOOKUP_SHARD_COUNT: Final = 4096
 
@@ -103,6 +103,7 @@ _SOURCE_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9-]*\Z")
 _TERM_SCAFFOLDING = frozenset(
     {
         "about",
+        "and",
         "can",
         "could",
         "did",
@@ -462,33 +463,6 @@ class _LexicalIndexEncoding:
     lookup_shards: tuple[LexicalLookupShard, ...]
 
 
-def _lower(value: str) -> str:
-    # Go applies unicode.ToLower one rune at a time and therefore never expands a rune.
-    lowered: list[str] = []
-    for character in value:
-        mapped = character.lower()
-        lowered.append(mapped if len(mapped) == 1 else character)
-    return "".join(lowered)
-
-
-def _is_term_character(character: str) -> bool:
-    return character in "-_.@/:#%" or character.isalpha() or character.isnumeric()
-
-
-def _term_tokens(value: str) -> tuple[str, ...]:
-    tokens: list[str] = []
-    current: list[str] = []
-    for character in _lower(value):
-        if _is_term_character(character):
-            current.append(character)
-        elif current:
-            tokens.append("".join(current))
-            current.clear()
-    if current:
-        tokens.append("".join(current))
-    return tuple(tokens)
-
-
 def identifier_shaped(term: str) -> bool:
     return any(separator in term for separator in "-/:@.")
 
@@ -683,6 +657,8 @@ def _page_candidate(page: Page, kind: Layer, schema: FieldSchema) -> LexicalCand
     candidate.add_segment("type", page.type, DEFAULT_FIELD_WEIGHT)
     candidate.add_segment("tags", " ".join(page.tags), DEFAULT_FIELD_WEIGHT)
     candidate.add_segment("body", page.body, DEFAULT_FIELD_WEIGHT)
+    for name, value in page_commitments(page):
+        candidate.add_segment(name, value, DEFAULT_FIELD_WEIGHT)
     for name in sorted(raw_relations):
         values = raw_relations[name]
         candidate.add_segment(name, " ".join(values), schema.weight(name))
@@ -843,6 +819,7 @@ def _collect_lexical_corpus(base: Base, cancel: Cancellation | None) -> _Lexical
                 " ".join(page.aliases),
                 " ".join(page.tags),
                 page.body,
+                *(value for _, value in page_commitments(page)),
             )
             _append_entry(
                 corpus,
@@ -901,6 +878,7 @@ def _collect_lexical_corpus(base: Base, cancel: Cancellation | None) -> _Lexical
                         " ".join(page.aliases),
                         " ".join(page.tags),
                         page.body,
+                        *(value for _, value in page_commitments(page)),
                     ),
                 ),
             )
@@ -1962,76 +1940,11 @@ def lexical_inputs_match(
     return lexical_inputs(base, prior, cancel=cancel)[2] == expected
 
 
-def _learned_bullets(body: str) -> tuple[str, ...]:
-    """Extract unordered items under literal Markdown headings named ``Learned``."""
-
-    tokens = MarkdownIt("commonmark").parse(body)
-    active_level = 0
-    unordered_depth = 0
-    item_depth = 0
-    item_parts: list[str] = []
-    bullets: list[str] = []
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if token.type == "heading_open":
-            level = int(token.tag.removeprefix("h"))
-            title = tokens[index + 1].content.strip() if index + 1 < len(tokens) else ""
-            if title == "Learned":
-                active_level = level
-            elif active_level and level <= active_level:
-                active_level = 0
-        elif active_level:
-            if token.type == "bullet_list_open":
-                unordered_depth += 1
-            elif token.type == "bullet_list_close":
-                unordered_depth -= 1
-            elif token.type == "list_item_open" and unordered_depth:
-                item_depth += 1
-                if item_depth == 1:
-                    item_parts = []
-            elif token.type == "list_item_close" and item_depth:
-                if item_depth == 1:
-                    text = " ".join(" ".join(item_parts).split())
-                    if text:
-                        bullets.append(text)
-                item_depth -= 1
-            elif item_depth == 1 and token.type == "inline" and token.content:
-                item_parts.append(token.content)
-        index += 1
-    return tuple(bullets)
-
-
 def _unharvested_bullets(base: Base, cancel: Cancellation | None) -> int:
     check_cancel(cancel)
     if not base.store.enabled(Layer.TASKS):
         return 0
-    cited: set[str] = set()
-    for layer in (Layer.WIKI, Layer.PROJECTS):
-        if not base.store.enabled(layer):
-            continue
-        pages, _ = load_markdown_layer(base, layer, cancel=cancel)
-        for page in pages:
-            check_cancel(cancel)
-            raw = page.frontmatter.get("sources")
-            values = raw if isinstance(raw, list) else (() if raw is None else (raw,))
-            for value in values:
-                check_cancel(cancel)
-                if not isinstance(value, str):
-                    continue
-                try:
-                    resolved = resolve_link(page.uri, value)
-                except ValueError:
-                    continue
-                resolved_value = str(resolved)
-                if resolved_value.startswith("tasks/") and resolved_value.endswith(f"/{TASK_TRACE_FILE}"):
-                    cited.add(resolved_value)
-    count = 0
-    for trace in list_tasks(base, cancel=cancel).traces:
-        check_cancel(cancel)
-        if trace.uri not in cited:
-            count += len(_learned_bullets(cast(Page, trace.page).body))
-    return count
+    return list_learned(base, cancel=cancel).unharvested
 
 
 def _canonical_utc_seconds(value: datetime) -> str:
@@ -2398,25 +2311,19 @@ def _canonical_int(value: str, *, base: int = 10) -> int:
     return parsed
 
 
+# Canonical fragments encode exactly the bytes outside this ASCII alphabet.
+# Compile once: every lookup validates all entry URIs before trusting offsets.
+_FRAGMENT_LITERAL = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/@+-")
+_FRAGMENT_PATTERN = re.compile(
+    r"(?:[A-Za-z0-9._:/@+\-]|%(?:"
+    + "|".join(f"{value:02X}" for value in range(256) if chr(value) not in _FRAGMENT_LITERAL)
+    + r"))*"
+)
+_LEXICAL_LAYERS = frozenset(str(layer) for layer in LAYERS)
+
+
 def _valid_lexical_fragment(fragment: str) -> bool:
-    safe = frozenset("._:/@+-")
-    raw = fragment.encode()
-    index = 0
-    while index < len(raw):
-        value = raw[index]
-        if (chr(value).isalnum() and value < 128) or chr(value) in safe:
-            index += 1
-            continue
-        if value != ord("%") or index + 2 >= len(raw):
-            return False
-        pair = raw[index + 1 : index + 3]
-        if any(not (48 <= item <= 57 or 65 <= item <= 70) for item in pair):
-            return False
-        decoded = int(pair.decode(), 16)
-        if decoded < 128 and (chr(decoded).isalnum() or chr(decoded) in safe):
-            return False
-        index += 3
-    return True
+    return _FRAGMENT_PATTERN.fullmatch(fragment) is not None
 
 
 def _valid_lexical_uri(uri: str) -> bool:
@@ -2436,7 +2343,7 @@ def _valid_lexical_uri(uri: str) -> bool:
 
 
 def _validate_entry(entry: LexicalEntry) -> None:
-    if entry.kind not in {str(layer) for layer in LAYERS}:
+    if entry.kind not in _LEXICAL_LAYERS:
         raise _LexicalIndexCorrupt(f"lexical entry {entry.id} has invalid layer {entry.kind!r}")
     for value in (entry.date, entry.valid_from, entry.valid_until):
         if value:

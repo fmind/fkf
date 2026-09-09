@@ -25,8 +25,9 @@ GRAPH_GENERATION_FILE: Final = "graph.generation.json"
 TASK_TRACE_FILE: Final = "TASKS.md"
 BASE_AGENTS_FILE: Final = "AGENTS.md"
 BASE_SKILLS_DIR: Final = ".agents/skills"
-BASE_BIN_DIR: Final = "bin"
+BASE_SOURCES_DIR: Final = "sources"
 BASE_TESTS_DIR: Final = "tests"
+BASE_CLIENTS_DIR: Final = "clients"
 CONFIG_FILE_NAME: Final = "fkf.yaml"
 LOCAL_CONFIG_NAME: Final = "fkf.local.yaml"
 MARKDOWN_EXTENSION: Final = ".md"
@@ -366,8 +367,12 @@ class Store:
         return self.root / LOCAL_CONFIG_NAME
 
     @property
-    def bin_dir(self) -> Path:
-        return self.root / BASE_BIN_DIR
+    def sources_dir(self) -> Path:
+        return self.root / BASE_SOURCES_DIR
+
+    @property
+    def clients_dir(self) -> Path:
+        return self.root / BASE_CLIENTS_DIR
 
     @property
     def tests_dir(self) -> Path:
@@ -460,11 +465,12 @@ def discover_base(explicit: str) -> tuple[Path, str]:
 
 __all__ = [
     "BASE_AGENTS_FILE",
-    "BASE_BIN_DIR",
+    "BASE_CLIENTS_DIR",
     "BASE_DIR_MODE",
     "BASE_ENV_VAR",
     "BASE_FILE_MODE",
     "BASE_SKILLS_DIR",
+    "BASE_SOURCES_DIR",
     "BASE_TESTS_DIR",
     "CONFIG_FILE_NAME",
     "GRAPH_DST_FILE",

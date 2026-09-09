@@ -150,6 +150,8 @@ def _status_text(status: Status) -> str:
         for source in status.sources:
             state_name = "gone" if source.undeclared else "on" if source.enabled else "off"
             suffix = f"  quiet: {source.quiet_reason}" if source.quiet else ""
+            if source.missing_dates:
+                suffix += "  missing: " + ", ".join(source.missing_dates)
             if source.auth_required:
                 suffix += "  auth-required"
             lines.append(
@@ -209,7 +211,7 @@ def register_operate_commands(app: typer.Typer) -> typer.Typer:
                     f"one or more enabled sources are missing or older than --max-age-hours {max_age_hours}"
                 )
             raise OperationalError(
-                "one or more enabled index sources are missing or older than their configured max_age_hours"
+                "one or more enabled sources have missing completed days or exceed their configured freshness limit"
             )
         if not result.ok:
             raise OperationalError(f"status found {result.errors} error(s) in {base.root}")

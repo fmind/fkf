@@ -74,6 +74,15 @@ _INVISIBLE_RUNES = {
 PROJECT_STATUSES = ("active", "paused", "done")
 
 
+def page_commitments(page: Page) -> tuple[tuple[str, str], ...]:
+    """Expose supported commitment metadata without indexing arbitrary frontmatter."""
+    return tuple(
+        (name, value.strip())
+        for name in ("next_action", "blocker", "reviewed", "due")
+        if isinstance(value := page.frontmatter.get(name), str) and value.strip()
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class Link:
     """One rendered Markdown link and the extractor that found it."""
@@ -630,6 +639,17 @@ def _validate_page(
             f"frontmatter `status` is required and must be active, paused, or done (got {page.status!r})",
         )
     _validate_page_validity(report, page)
+    if layer == "projects":
+        for name in ("next_action", "blocker"):
+            if name in page.frontmatter and (
+                not isinstance(page.frontmatter[name], str) or not page.frontmatter[name].strip()
+            ):
+                report.fail(page.uri, 0, f"frontmatter `{name}` must be a non-empty string")
+        for name in ("due", "reviewed"):
+            if name in page.frontmatter and not _valid_iso_date(
+                _frontmatter_scalar_string(page.frontmatter[name]).removesuffix("T00:00:00Z")
+            ):
+                report.fail(page.uri, 0, f"frontmatter `{name}` must be an absolute YYYY-MM-DD date")
     if not page.tags and not structural:
         report.warn(page.uri, 0, "no tags: the page is absent from tag-filtered navigation and harder to discover")
     for tag in page.tags:

@@ -70,6 +70,7 @@ class ScaleCorpus:
     edges: int
     window: Window
     first_record_uri: str
+    mixed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +106,7 @@ def create_scale_corpus(
     *,
     records: int = DEFAULT_RECORDS,
     relations_per_record: int = DEFAULT_RELATIONS_PER_RECORD,
+    mixed: bool = False,
 ) -> ScaleCorpus:
     """Create one deterministic base and its validated relation graph."""
 
@@ -121,7 +123,12 @@ def create_scale_corpus(
     (runtime / "home").mkdir(mode=BASE_DIR_MODE)
     (runtime / "state").mkdir(mode=BASE_DIR_MODE)
     config_path = root / "fkf.yaml"
-    config_path.write_text(_SCALE_CONFIG, encoding="utf-8")
+    config = (
+        _SCALE_CONFIG.replace("projects: false", "projects: true").replace("tasks: false", "tasks: true")
+        if mixed
+        else _SCALE_CONFIG
+    )
+    config_path.write_text(config, encoding="utf-8")
     config_path.chmod(BASE_FILE_MODE)
 
     base = open_base(str(root))
@@ -164,6 +171,29 @@ def create_scale_corpus(
             )
         )
 
+    if mixed:
+        directory = root / "projects"
+        directory.mkdir(mode=BASE_DIR_MODE)
+        for page_index in range(min(64, record_count)):
+            # Broad queries and long Markdown expose work hidden by exact-ID probes.
+            page = directory / f"migration-{page_index}.md"
+            page.write_text(
+                f"---\ntype: project\ntitle: Scale migration {page_index}\nstatus: active\n---\n\n"
+                f"# Scale migration {page_index}\n\n"
+                + "Historical scale benchmark context and implementation notes.\n\n" * 512
+                + "## Decisions\n\nUse Python for scale migration to reuse tested boundaries.\n",
+                encoding="utf-8",
+            )
+            page.chmod(BASE_FILE_MODE)
+        for task_index in range(min(2048, record_count)):
+            trace = root / "tasks" / first_date.isoformat() / f"task-{task_index}" / "TASKS.md"
+            trace.parent.mkdir(parents=True, mode=BASE_DIR_MODE)
+            trace.write_text(
+                f"---\ntitle: Scale task {task_index}\nstatus: active\ndue: '{first_date.isoformat()}'\n---\n"
+                f"# Scale task {task_index}\n\n" + "Synthetic retained execution evidence.\n" * 64,
+                encoding="utf-8",
+            )
+            trace.chmod(BASE_FILE_MODE)
     graph = build_graph(base)
     expected_edges = record_count * relation_count
     if graph.edges != expected_edges:
@@ -176,6 +206,7 @@ def create_scale_corpus(
         edges=expected_edges,
         window=Window(first_date.isoformat(), last_date.isoformat()),
         first_record_uri=f"{event_document_uri(first_date.isoformat(), source.name)}#record-000000",
+        mixed=mixed,
     )
 
 
@@ -216,7 +247,7 @@ def _summarize_navigation(payload: dict[str, Any]) -> str:
 def _operations(corpus: ScaleCorpus) -> tuple[_Operation, ...]:
     last_record = f"record-{corpus.records - 1:06d}"
     since, until = corpus.window.since, corpus.window.until
-    return (
+    operations = (
         _Operation(
             "find-count",
             ("find", "benchmark", "--source", "scale", "--since", since, "--until", until, "--count"),
@@ -234,6 +265,40 @@ def _operations(corpus: ScaleCorpus) -> tuple[_Operation, ...]:
             _summarize_navigation,
         ),
     )
+    if corpus.mixed:
+        operations += (
+            _Operation(
+                "context-mixed",
+                (
+                    "context",
+                    "What decisions did I make about scale migration?",
+                    "--since",
+                    since,
+                    "--until",
+                    until,
+                    "--budget",
+                    "850",
+                ),
+                _summarize_context,
+            ),
+            _Operation("build-index", ("build", "index"), lambda _payload: "rebuilt lexical cache"),
+            _Operation("brief-mixed", ("brief", "--budget", "1200"), lambda _payload: "bounded daily brief"),
+            _Operation(
+                "context-mixed-indexed",
+                (
+                    "context",
+                    "What decisions did I make about scale migration?",
+                    "--since",
+                    since,
+                    "--until",
+                    until,
+                    "--budget",
+                    "850",
+                ),
+                _summarize_context,
+            ),
+        )
+    return operations
 
 
 def _command_environment(corpus: ScaleCorpus) -> dict[str, str]:
@@ -318,6 +383,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--records", type=_positive_integer, default=DEFAULT_RECORDS)
     parser.add_argument("--relations", type=_positive_integer, default=DEFAULT_RELATIONS_PER_RECORD)
     parser.add_argument("--timeout", type=_positive_seconds, default=DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--mixed", action="store_true", help="Add long project Markdown and broad scan/indexed query observations."
+    )
     return parser
 
 
@@ -330,6 +398,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 Path(temporary),
                 records=options.records,
                 relations_per_record=options.relations,
+                mixed=options.mixed,
             )
             setup_elapsed = time.perf_counter() - setup_started
             observations = tuple(

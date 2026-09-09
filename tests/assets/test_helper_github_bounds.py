@@ -105,6 +105,15 @@ def test_github_commits_rejects_provider_results_outside_the_requested_window(
         collect(START_EPOCH, END_EPOCH)
 
 
+@pytest.mark.parametrize("timestamp", ["2026-05-05T01:30:00+02:00", "2026-05-03T23:30:00-02:00"])
+def test_github_commit_window_compares_instants_not_timezone_spellings(
+    helpers: HelperInstallation, monkeypatch: pytest.MonkeyPatch, timestamp: str
+) -> None:
+    collect = _module(helpers, "github-commits-json.py")["collect"]
+    monkeypatch.setitem(collect.__globals__, "invoke", lambda _arguments: json.dumps([_commit(1, timestamp)]).encode())
+    assert len(collect(START_EPOCH, END_EPOCH)) == 1
+
+
 @pytest.mark.parametrize("name", ["github-commits-json.py", "github-search-json.py"])
 def test_recursive_github_collectors_enforce_exact_newline_inclusive_output_bound(
     helpers: HelperInstallation,

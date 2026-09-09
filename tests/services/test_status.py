@@ -116,6 +116,36 @@ def _finding(status: Status, check: str, contains: str = "") -> Finding | None:
     )
 
 
+def test_default_health_identifies_per_source_completed_day_gaps(tmp_path: Path) -> None:
+    base = _base(tmp_path)
+    base.config.sync = replace(base.config.sync, days=3)
+    base.config.sources["healthy"] = replace(base.source("daily"), name="healthy")
+    for day in ("2026-09-03", "2026-09-04", "2026-09-05"):
+        _write_event(base, day, 0, source="healthy")
+    _write_event(base, "2026-09-03", 1)
+    _write_index(base)
+    status = report(base, StatusRequest(skip_git_audit=True))
+    sources = {source.name: source for source in status.sources}
+    assert status.stale
+    assert sources["daily"].missing_dates == ("2026-09-04", "2026-09-05")
+    assert sources["daily"].stale
+    assert not sources["healthy"].stale
+    assert sources["healthy"].missing_dates == ()
+    assert not sources["snapshot"].stale
+
+
+def test_new_event_source_requires_the_configured_window_but_disabled_source_does_not(tmp_path: Path) -> None:
+    base = _base(tmp_path)
+    base.config.sync = replace(base.config.sync, days=1)
+    status = report(base, StatusRequest(skip_git_audit=True))
+    assert status.sources[0].missing_dates == ("2026-09-05",)
+    assert status.sources[0].stale
+    base.source("daily").enabled = False
+    disabled = report(base, StatusRequest(skip_git_audit=True)).sources[0]
+    assert not disabled.stale
+    assert disabled.missing_dates == ()
+
+
 def test_public_status_types_are_typed_dataclasses() -> None:
     requirement = RequirementStatus("git", True)
     source = SourceStatus("source", True, Layer.EVENTS, requires=(requirement,))
@@ -201,6 +231,7 @@ def test_legacy_event_freshness_uses_the_transition_safe_local_day_boundary(
     monkeypatch.setenv("TZ", "Pacific/Apia")
     now = datetime(2011, 12, 30, 11, tzinfo=UTC)
     base = _base(tmp_path, now=now)
+    base.config.sync = replace(base.config.sync, days=1)
     declared = base.config.sources["daily"]
     base.write_document(
         Document(
@@ -394,7 +425,7 @@ def test_missing_graph_is_a_warning_and_keeps_build_in_next(tmp_path: Path, monk
 
 def test_permission_audit_is_read_only_relative_and_skips_symlinks(tmp_path: Path) -> None:
     base = _base(tmp_path)
-    helper = base.root / "bin/lib/helper"
+    helper = base.root / "sources/lib/helper"
     helper.parent.mkdir(parents=True)
     helper.write_text("#!/bin/sh\n", encoding="utf-8")
     helper.chmod(0o755)
@@ -411,7 +442,7 @@ def test_permission_audit_is_read_only_relative_and_skips_symlinks(tmp_path: Pat
     finding = _finding(status, "permissions")
 
     assert finding is not None
-    assert "bin/lib/helper" in finding.paths
+    assert "sources/lib/helper" in finding.paths
     assert all(not Path(path).is_absolute() for path in finding.paths)
     assert "wiki/external" not in finding.paths
     assert helper.stat().st_mode & 0o777 == 0o755
@@ -447,7 +478,7 @@ def test_git_audit_uses_host_git_and_reports_only_relative_tracked_paths(tmp_pat
     secret.write_text("SECRET=1\n", encoding="utf-8")
     subprocess.run((git, "-C", str(base.root), "add", "-f", ".env"), check=True)  # noqa: S603
     marker = base.root / "base-git-ran"
-    fake = base.root / "bin/git"
+    fake = base.root / "sources/git"
     fake.parent.mkdir()
     fake.write_text(f"#!/bin/sh\ntouch {marker}\nexit 99\n", encoding="utf-8")
     fake.chmod(0o700)

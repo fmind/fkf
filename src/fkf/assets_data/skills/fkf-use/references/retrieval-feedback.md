@@ -4,7 +4,7 @@ Use this only when the user reports incorrect, missing, or irrelevant retrieval 
 
 1. Record the selected base, original question, date window, delivery format, budget, and receipt digest if available. Remove secrets and unnecessary personal details before retaining anything.
 1. Read the expected URI and confirm that it exists and supports the intended answer. Distinguish missing collection, stale evidence, a poor query, ranking, and output-budget loss.
-1. Add one reviewed query under the existing `evals/queries.yaml` `queries:` list. Match the consumer's format and budget; name incorrect evidence in `forbidden_uris` when relevant.
+1. Add one reviewed query under the existing `checks/queries.yaml` `queries:` list. Match the consumer's format and budget; name incorrect evidence in `forbidden_uris` when relevant.
 1. Run `fkf --base <selected-base> eval`. Preserve a failing result until the underlying problem is fixed. Keep the original assertion when testing a candidate change.
 1. Treat this exposed example as a development regression. Use fresh cases and comparable repeated agent trials before claiming a general improvement.
 

@@ -22,7 +22,7 @@ Root `identities:` and authored pages may merge exact aliases. FKF never infers 
 Prefer, in order:
 
 1. direct provider argv in `run:`;
-1. a reviewed `.sh` or `.py` helper under `bin/` for pipelines or expansion;
+1. a reviewed `.sh` or `.py` helper under `sources/` for pipelines or expansion;
 1. another executable for structured or stateful work.
 
 `run:`, optional `test:`, `auth:`, and `body:` are direct argv. A helper's shebang chooses its interpreter. Declare every ordinary executable and non-standard interpreter in `requires:`. Source hooks live under `tests/`; FKF prepends that tree only for `test:` so fixtures cannot shadow collectors.
@@ -48,10 +48,16 @@ The two declared-alias forms emit auditable `same-as` edges from each alias to i
 
 The graph is a digest-bound cache over exact documents and authored pages. Root rows are `src`, `dst`, `kind`, `at`, `via`, and `indexed`. Rebuild after source or authored changes; `graph --verify` hashes every input and artifact without writing.
 
+For a project handoff, retrieve context and read the selected project first, then traverse that page’s declared links. A repository entity can have thousands of historical neighbours; the first graph page is an ordered slice, not a relevance or recency ranking. Narrow the edge kind or follow the opaque cursor when the broader evidence is needed.
+
 For a neighbourhood, `--kind` filters edge kinds such as `participant`; for `graph nodes`, it filters node kinds such as the `person` entity scheme.
 
 ## Failure and concurrency
 
 Collection is all-or-nothing per unit. Non-zero exit, timeout, excessive output, invalid or multiple JSON documents, or missing required values leaves that unit absent. Diagnostics name only reviewed source/window/argv context and never provider stderr or record-derived body arguments.
 
-One writer lock covers every mutating path for the physical base, including symlink aliases. CLI `context` takes it for the machine-local receipt snapshot; MCP context does not. Do not retry around it. Other readers, dry runs, previews, `trust --check`, and build checks are lock-free.
+One writer lock covers every mutating path for the physical base, including symlink aliases. Explicit CLI `context --save-receipt` takes it for a machine-local receipt snapshot; ordinary CLI and MCP context do not. Do not retry around it. Other readers, dry runs, previews, `trust --check`, and build checks are lock-free.
+
+## App clients
+
+Declare app clients under root `clients:` with an HTTPS `url` and one `script` filename under `clients/`. Use a single Python script with inline uv dependency metadata for each app. Sources call it with explicit `uv run --script` argv and declare `uv` in `requires:`. App clients own provider access; source helpers under `sources/` own collection and projection. `clients/` stays outside PATH and published reads. Its complete tree and the app declarations are trust-covered; changes require renewed execution trust. Keep credentials out of configuration and scripts.

@@ -21,6 +21,25 @@ from fkf.markdown import (
 MODIFIED = datetime(2026, 5, 10, 12, 0, tzinfo=UTC)
 
 
+@pytest.mark.parametrize("declaration", ["next_action: 42", "blocker: []", "due: tomorrow", "reviewed: '2026-02-30'"])
+def test_project_commitments_reject_ambiguous_values(declaration: str) -> None:
+    page = parse_page(
+        "projects/p.md",
+        f"---\ntype: project\ntitle: P\nstatus: active\ntags: [planning]\n{declaration}\n---\n# P\n".encode(),
+    )
+    report = validate_pages([page], layer="projects", require_status=True, strict=True)
+    assert report.errors == 1
+
+
+def test_project_commitments_accept_explicit_dates_and_action() -> None:
+    page = parse_page(
+        "projects/p.md",
+        b"---\ntype: project\ntitle: P\nstatus: active\ntags: [planning]\nnext_action: Verify recovery\ndue: '2026-09-08'\nreviewed: 2026-09-07\n---\n# P\n",
+    )
+    report = validate_pages([page], layer="projects", require_status=True, strict=True)
+    assert report.errors == report.warnings == 0
+
+
 def test_parse_page_preserves_unknown_frontmatter_and_extracts_real_links() -> None:
     page = parse_page(
         "wiki/a.md",

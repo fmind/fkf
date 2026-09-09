@@ -38,12 +38,12 @@ HOOK_HARNESSES = {"claude", "codex", "gemini", "kiro"}
 
 def make_base(tmp_path: Path, name: str = "brain") -> Path:
     root = tmp_path / f"{name}-base"
-    (root / "bin").mkdir(parents=True)
+    (root / "sources").mkdir(parents=True)
     (root / "fkf.yaml").write_text(
         f"fkf: 1\nname: {name}\nschema:\n  id: {{description: Stable identity., cardinality: one}}\nlayers: {{}}\n",
         encoding="utf-8",
     )
-    hook = root / "bin" / "fkf-hook.py"
+    hook = root / "sources" / "fkf-hook.py"
     hook.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
     hook.chmod(0o700)
     return root

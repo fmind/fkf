@@ -83,8 +83,8 @@ Initialization creates:
 - managed blocks in `.gitignore` and `.gitattributes`;
 - a minimal base-specific `AGENTS.md` and the copied `fkf-use`, `fkf-learn`, and `daily-brief` skills;
 - non-overwriting Claude bridges;
-- helpers required by initially enabled sources and the session-start hook under trust-digested `bin/`;
-- `evals/queries.yaml`, the owner-controlled retrieval acceptance set `fkf eval` runs;
+- helpers required by initially enabled sources and the session-start hook under trust-digested `sources/`;
+- `checks/queries.yaml`, the owner-controlled retrieval acceptance set `fkf eval` runs;
 - a git repository with owner-only files.
 
 Running `fkf init ~/brain` again refreshes FKF-owned skills and managed blocks. It preserves `fkf.yaml`, `AGENTS.md`, custom skills, existing bridges, and existing helpers. After enabling a preset source, run `fkf config helpers --refresh` to install any newly required official helper. `fkf config helpers` compares official helpers with the running binary, and refresh leaves custom scripts untouched.

@@ -8,6 +8,7 @@ import pytest
 
 from fkf.base import Base
 from fkf.bodies import (
+    MAX_BODY_CACHE_ENTRIES,
     BodyCacheError,
     BodyManifest,
     BodyManifestEntry,
@@ -111,6 +112,25 @@ def test_manifest_is_strict_bounded_and_canonical(tmp_path: Path) -> None:
     write_body_manifest(base, BodyManifest(entries={uri: bad}))
     with pytest.raises(BodyCacheError, match="canonical cache path"):
         load_body_manifest(base)
+
+
+def test_body_manifest_can_hold_the_declared_entry_capacity(tmp_path: Path) -> None:
+    base, _document, _record = make_base(tmp_path)
+    entries = {}
+    for number in range(MAX_BODY_CACHE_ENTRIES):
+        uri = f"index/snapshot.json#prompt-{number:04d}-{'a' * 160}"
+        entries[uri] = BodyManifestEntry(
+            uri=uri,
+            source="snapshot",
+            path=body_cache_relative("snapshot", uri),
+            sha256="0" * 64,
+            bytes=0,
+            fetched_at="2026-09-08T00:00:00Z",
+        )
+    manifest = BodyManifest(entries=entries)
+    write_body_manifest(base, manifest)
+    assert (base.root / "bodies/manifest.json").stat().st_size > 1 << 20
+    assert load_body_manifest(base) == manifest
 
 
 @pytest.mark.parametrize("payload", [b'{"schema_version":1}', b'{"schema_version":1,"entries":null}'])

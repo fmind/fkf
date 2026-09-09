@@ -29,7 +29,7 @@ The demo base is synthetic, but it is a real base: 30 days of events across six 
 ... 3 more selected items ...
  80 wiki   wiki/index.md  Wiki · navigation-page:-50(curated navigation ranks below concept pages)
 receipt pack for "retrieval boundary" · 9/736 selected · <1024 text tokens · floor 10
-window <30 days> · as_of <today> · digest <hex> · ranking v7 · dropped 717
+window <30 days> · as_of <today> · digest <hex> · ranking v10 · dropped 717
 ```
 
 One decision, scattered across a commit, a calendar invite, an email, and a Jira issue, pulled back together under a token budget.
@@ -92,7 +92,7 @@ fkf context "repo:github.com/OWNER/REPOSITORY" --since 30d --explain --base ~/br
 
 Set `FKF_BASE=~/brain`, or run from inside the base, to drop `--base`.
 
-`fkf init` creates the five layers, `fkf.yaml`, managed git rules, the helpers your enabled sources need under `bin/`, and three agent skills under `.agents/skills/`. It contacts no provider and asks for no token. Browser, mail, and shell-history sources stay disabled until you turn them on.
+`fkf init` creates the five layers, `fkf.yaml`, managed git rules, the helpers your enabled sources need under `sources/`, and three agent skills under `.agents/skills/`. It contacts no provider and asks for no token. Browser, mail, and shell-history sources stay disabled until you turn them on.
 
 From there, `fkf sync` is safe to re-run: existing event documents are skipped, due index snapshots refresh, the graph follows document writes, and the lexical cache rebuilds only when searchable bytes change. `fkf brief` gives you the daily loop — yesterday's digest, today's calendar, assigned work, failing CI, stale or login-blocked sources.
 
@@ -111,7 +111,7 @@ wiki/               reusable decisions, patterns, tools, and insights
 graph.tsv           rebuildable relation cache at the base root
 ```
 
-**A source is a command.** A source runs a reviewed command that prints one JSON document, and the named CLI owns its login. Adding GitHub, Google Workspace, Jira, or a local database needs no framework adapter — just YAML and, when the glue gets real, a small reviewed helper under the base's `bin/`:
+**A source is a command.** A source runs a reviewed command that prints one JSON document, and the named CLI owns its login. Adding GitHub, Google Workspace, Jira, or a local database needs no framework adapter — just YAML and, when the glue gets real, a small reviewed helper under the base's `sources/`:
 
 ```yaml
 sources:
@@ -153,7 +153,7 @@ The MCP server is read-only and bounded: `context`, `find`, `day`, `timeline`, `
 
 - **FKF reads no credential** and expands no secret environment variable. Provider credentials stay with the provider CLI.
 - **Collected content is untrusted data** — evidence, never instructions. A stored value never becomes shell syntax or an executable name.
-- **`fkf trust` hashes the executable plan**: the effective `auth:`, `run:`, `test:`, and `body:` argv plus every file under the base's `bin/` and `tests/`. A meaningful change requires review again. It detects change; it is not a sandbox.
+- **`fkf trust` hashes the executable plan**: the effective `auth:`, `run:`, `test:`, and `body:` argv plus every file under the base's `sources/` and `tests/`. A meaningful change requires review again. It detects change; it is not a sandbox.
 - **Stored reads are offline, including `brief`.** `read --body` is the explicit read-time fetch; `sync` may prefetch bodies under the opt-in `bodies: sync` policy. Explicit `status --live` runs only bounded trusted `auth:` probes.
 - **FKF encrypts nothing and provides no backup.** Protect the disk and the remote. Whether event and index documents enter git history is your choice at `init`, recorded in `.gitignore`.
 
@@ -181,3 +181,5 @@ Full documentation: <https://fmind.github.io/fkf/>
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Online apps without a provider CLI can declare one uv Python script each in `clients/` through root `clients:` configuration. Collection helpers live in `sources/`; source hooks live in `tests/`. All three execution trees are trust-covered. Repository checks and retrieval acceptance live under `checks/`, including `checks/queries.yaml`. See [app clients](docs/docs/sources.md#app-clients).

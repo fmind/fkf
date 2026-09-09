@@ -76,7 +76,7 @@ def test_package_version_has_extractable_release_notes() -> None:
 
 
 def test_release_tag_verifier_accepts_a_direct_tag_on_current_main(tmp_path: Path) -> None:
-    fake_bin = tmp_path / "bin"
+    fake_bin = tmp_path / "sources"
     fake_bin.mkdir()
     gh = fake_bin / "gh"
     gh.write_text(
@@ -107,7 +107,7 @@ esac
 
 
 def test_release_tag_verifier_peels_an_annotated_tag(tmp_path: Path) -> None:
-    fake_bin = tmp_path / "bin"
+    fake_bin = tmp_path / "sources"
     fake_bin.mkdir()
     gh = fake_bin / "gh"
     gh.write_text(
@@ -140,7 +140,7 @@ esac
 
 
 def test_release_tag_verifier_rejects_a_moved_tag(tmp_path: Path) -> None:
-    fake_bin = tmp_path / "bin"
+    fake_bin = tmp_path / "sources"
     fake_bin.mkdir()
     gh = fake_bin / "gh"
     gh.write_text("#!/bin/sh\nprintf 'commit\\tmoved-commit\\n'\n", encoding="utf-8")
@@ -165,7 +165,7 @@ def test_release_tag_verifier_rejects_a_moved_tag(tmp_path: Path) -> None:
 
 
 def test_release_tag_verifier_rejects_a_commit_not_on_current_main(tmp_path: Path) -> None:
-    fake_bin = tmp_path / "bin"
+    fake_bin = tmp_path / "sources"
     fake_bin.mkdir()
     gh = fake_bin / "gh"
     gh.write_text(
@@ -200,7 +200,7 @@ esac
 
 
 def test_release_tag_verifier_accepts_an_ancestor_after_main_advances(tmp_path: Path) -> None:
-    fake_bin = tmp_path / "bin"
+    fake_bin = tmp_path / "sources"
     fake_bin.mkdir()
     gh = fake_bin / "gh"
     gh.write_text(
@@ -241,7 +241,7 @@ def run_release_asset_verifier(
 ) -> subprocess.CompletedProcess[str]:
     dist = tmp_path / "dist"
     remote = tmp_path / "remote"
-    fake_bin = tmp_path / "bin"
+    fake_bin = tmp_path / "sources"
     dist.mkdir()
     remote.mkdir()
     fake_bin.mkdir()
@@ -520,7 +520,7 @@ def test_link_gate_scans_the_existing_working_tree_markdown_set(tmp_path: Path) 
     )
     (repository / "deleted.md").unlink()
 
-    fake_bin = tmp_path / "bin"
+    fake_bin = tmp_path / "sources"
     fake_bin.mkdir()
     capture = tmp_path / "lychee-argv"
     lychee = fake_bin / "lychee"

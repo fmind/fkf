@@ -40,6 +40,8 @@ An MCP-only reinstall preserves existing workspace hooks. Changing a hook's work
 
 `status --live` reports old singleton `fkf` registrations as manual cleanup candidates. Installation does not delete them.
 
+Both `harness print` and `harness install` accept `--executable /absolute/path/to/fkf`. Use it when package-manager environments put a different FKF version on `PATH`; the selected persistent launcher is recorded in both MCP and hook configuration. Without this option, FKF resolves the launcher from `PATH`.
+
 ## Supported harnesses
 
 | Name          | MCP configuration                                       | Automatic context with `--workspace` |
@@ -74,9 +76,11 @@ The server title, instructions, result metadata, resources, and delivery receipt
 
 ## Context-hook boundary
 
-The managed hook command pins the FKF executable, physical base, and physical workspace. It checks execution trust before dispatching `<base>/bin/fkf-hook.py`. The hook accepts only the host event's cwd or workspace field, resolves it physically, and emits nothing unless it is the configured workspace or a descendant. Missing or malformed input, sibling-prefix paths, and symlink escapes produce the host's empty envelope.
+The managed hook command pins the FKF executable, physical base, and physical workspace. It checks execution trust before dispatching `<base>/sources/fkf-hook.py`. The hook accepts only the host event's cwd or workspace field, resolves it physically, and emits nothing unless it is the configured workspace or a descendant. Missing or malformed input, sibling-prefix paths, and symlink escapes produce the host's empty envelope.
 
 On startup it reads yesterday with 600 tokens and repository context with 850 tokens. Claude compact starts skip yesterday and use a 600-token repository reminder. The repository query is the exact `repo:github.com/owner/name` identity projected from the GitHub origin. Branch names do not become retrieval terms; without a valid repository identity, the hook omits repository context. Every FKF call includes `--base`; the hook never collects, fetches a body, or uses ambient cwd as session identity.
+
+Each child has a six-second deadline, below the host’s 20-second envelope for the three startup calls. A timeout terminates the child process group, returns the host’s empty envelope, and emits a fixed diagnostic on stderr so delivery failures are observable without leaking child output.
 
 Workspace scope prevents accidental context injection into another checkout. It is not an execution sandbox. Overlapping scopes are rejected because the host cannot reliably distinguish which base should inject context.
 
@@ -96,6 +100,8 @@ When enabled, the bundled `agent-sessions.py` and `agent-memory-files.py` collec
 | Antigravity CLI | `~/.gemini/antigravity-cli/history.jsonl`         | none                                   |
 
 A session record contains its id, first activity time inside the collected day, harness, working directory, branch, canonical repository identifier when available, and harness-authored title. A file timestamp is never substituted for missing activity evidence.
+
+`agent-prompts` uses the normalized archive’s immutable generation manifests to exclude transcripts whose high-water mark precedes the requested window. Metadata must match the archive identity and must not predate the transcript; missing metadata takes the bounded full-read path. Enumeration caps at 131,072 generations and 64 MiB of metadata, with at most 8,192 retained transcript candidates. Exact prompt-body reads address the session lineage directly and examine its generations, preserving old bodies as the archive grows. No transcript is deleted by collection.
 
 The separate `agent-session-traces` source reads only `~/.agents/sessions/v1`, the normalized append-only store shared across harnesses. For each newest complete session generation in the requested window it projects bounded user requests, changed paths from `git status`, verification-looking lines from the last assistant message, harness, and model into ordinary JSON event records. It makes no model call, reads no changed file content, and refuses links in the store. Collection never creates or overwrites `tasks/` pages. The personal preset enables this source; the team preset leaves it disabled because session prose may cross a shared-base privacy boundary.
 

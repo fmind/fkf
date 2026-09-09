@@ -82,7 +82,7 @@ def test_new_rejects_unsafe_metadata_before_any_write(tmp_path: Path, case: NewR
     assert not (base.root / "tasks").exists()
     assert not (base.root / "projects").exists()
     assert not (base.root / "wiki").exists()
-    assert not (base.root / "bin").exists()
+    assert not (base.root / "sources").exists()
 
 
 def test_parse_new_kind_keeps_first_letter_aliases() -> None:

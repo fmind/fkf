@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Final, Protocol, cast
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -34,7 +35,8 @@ from fkf.fields import (
     validate_field_schema,
 )
 from fkf.store import (
-    BASE_BIN_DIR,
+    BASE_CLIENTS_DIR,
+    BASE_SOURCES_DIR,
     BASE_TESTS_DIR,
     CONFIG_FILE_NAME,
     LOCAL_CONFIG_NAME,
@@ -206,6 +208,14 @@ class Source:
         return tuple(names)
 
 
+@dataclass(frozen=True, slots=True)
+class Client:
+    """One online app and its single base-owned uv Python script."""
+
+    url: str
+    script: str
+
+
 @dataclass(slots=True)
 class Config:
     """One base's complete resolved definition."""
@@ -221,6 +231,7 @@ class Config:
     path: Path
     local_path: Path | None = None
     origins: dict[str, Path] = field(default_factory=dict)
+    clients: dict[str, Client] = field(default_factory=dict)
 
     def source_names(self) -> tuple[str, ...]:
         """Return source names in stable order."""
@@ -295,6 +306,11 @@ class _FileSync(_BoundaryModel):
     concurrency: int | None = None
 
 
+class _FileClient(_BoundaryModel):
+    url: str
+    script: str
+
+
 class _FileConfig(_BoundaryModel):
     fkf: int = 0
     name: str = ""
@@ -303,6 +319,7 @@ class _FileConfig(_BoundaryModel):
     identities: dict[str, _FileIdentity] = PydanticField(default_factory=dict)
     bin: list[str] = PydanticField(default_factory=list)
     sources: dict[str, _FileSource] = PydanticField(default_factory=dict)
+    clients: dict[str, _FileClient] = PydanticField(default_factory=dict)
     sync: _FileSync | None = None
 
 
@@ -695,6 +712,7 @@ def _build_config(raw: _FileConfig, path: Path) -> Config:
         sync=sync,
         bin=tuple(raw.bin),
         path=path,
+        clients={name: Client(client.url, client.script) for name, client in raw.clients.items()},
     )
 
 
@@ -777,11 +795,43 @@ def _validate_config(config: Config) -> None:
         validate_field_schema(config.schema)
     except ValueError as error:
         raise _error(f"{path}: {error}", cause=error) from error
+    _validate_clients(config)
     _validate_identities(config)
     _validate_command_bin(config)
     _validate_sync(config.sync, path)
     for name in config.source_names():
         _validate_source(config, config.sources[name])
+
+
+def _validate_clients(config: Config) -> None:
+    scripts: set[str] = set()
+    for name, client in config.clients.items():
+        label = f"{config.path}: clients.{name}"
+        if _SOURCE_NAME_PATTERN.fullmatch(name) is None or len(name) > MAX_BASE_NAME_LENGTH:
+            raise _error(f"{label}: name must be 1..{MAX_BASE_NAME_LENGTH} lowercase letters, digits, or hyphens")
+        if re.fullmatch(r"[a-z0-9][a-z0-9_-]*\.py", client.script) is None or len(client.script) > 255:
+            raise _error(f"{label}: script must be one Python filename under {BASE_CLIENTS_DIR}/")
+        if client.script in scripts:
+            raise _error(f"{label}: script {client.script!r} is already associated with another app")
+        scripts.add(client.script)
+        # URLs describe the app, never credentials, account selectors, or request arguments.
+        try:
+            url = urlsplit(client.url)
+            valid = (
+                url.scheme == "https"
+                and bool(url.hostname)
+                and url.username is None
+                and url.password is None
+                and not url.query
+                and not url.fragment
+                and not any(character.isspace() or ord(character) < 32 for character in client.url)
+                and not _execution_text_problem(client.url)
+                and url.port != 0
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise _error(f"{label}: url must be an HTTPS app URL without credentials, query, or fragment")
 
 
 def _validate_sync(sync: SyncConfig, path: Path) -> None:
@@ -993,7 +1043,7 @@ def _machine_local_path_problem(config: Config, declared: str) -> str:
     absolute = expanded.absolute()
     if _path_is_within(root, absolute):
         return (
-            f"value {declared!r} resolves inside the base; put base-controlled executables in bin/ "
+            f"value {declared!r} resolves inside the base; put base-controlled executables in sources/ "
             "and keep extra PATH directories outside the base"
         )
     try:
@@ -1003,7 +1053,7 @@ def _machine_local_path_problem(config: Config, declared: str) -> str:
         raise _error(f"{config.path}: cannot inspect {declared!r}: {error}", cause=error) from error
     if _path_is_within(resolved_root, resolved):
         return (
-            f"value {declared!r} resolves inside the base through a symlink; put base-controlled executables in bin/ "
+            f"value {declared!r} resolves inside the base through a symlink; put base-controlled executables in sources/ "
             "and keep extra PATH directories outside the base"
         )
     return ""
@@ -1028,7 +1078,7 @@ def _validate_argv_executable(config: Config, label: str, executable: str, fail:
         )
     problem = _machine_local_path_problem(config, executable)
     if problem:
-        tree = BASE_TESTS_DIR if label == "test" else BASE_BIN_DIR
+        tree = BASE_TESTS_DIR if label == "test" else BASE_SOURCES_DIR
         raise fail(
             f"{label}[0] must resolve outside the base; put base-controlled code in {tree}/ and name it without a path"
         )
@@ -1096,6 +1146,7 @@ __all__ = [
     "RUN_PLACEHOLDERS",
     "TEST_PLACEHOLDERS",
     "BodyPolicy",
+    "Client",
     "Config",
     "ConfigError",
     "Identity",

@@ -21,7 +21,7 @@ REPOSITORY_BUDGET = 850
 COMPACT_BUDGET = 600
 MAX_INPUT_BYTES = 1 << 16
 MAX_INVOKE_BYTES = 1 << 20
-INVOKE_TIMEOUT_SECONDS = 5.0
+INVOKE_TIMEOUT_SECONDS = 6.0
 READ_BYTES = 64 << 10
 GITHUB_PART = re.compile(r"^[A-Za-z0-9._-]+$")
 SYSTEM_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin"
@@ -214,6 +214,9 @@ def main(arguments: list[str]) -> int:
                 pack = f"{pack}\n\nRepository:\n{repository}" if pack else repository
         if not pack:
             return empty(harness)
+    except TimeoutError:
+        sys.stderr.write("fkf-hook.py: context delivery timed out; run fkf context explicitly\n")
+        return empty(harness)
     except OSError, UnicodeError, ValueError, json.JSONDecodeError:
         return empty(harness)
 

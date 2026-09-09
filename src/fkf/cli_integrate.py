@@ -111,12 +111,16 @@ def register_integration_commands(app: typer.Typer) -> None:
         ctx: typer.Context,
         name: Annotated[str, typer.Argument()],
         workspace: Annotated[str, typer.Option("--workspace")] = "",
+        executable: Annotated[
+            str, typer.Option("--executable", help="Persistent FKF launcher; defaults to PATH.")
+        ] = "",
     ) -> None:
         invocation = state(ctx)
         invocation.emit(
             harness_plan_for(
                 invocation.base().root,
                 name,
+                executable=executable,
                 workspace=workspace,
                 path=os.environ.get("PATH", ""),
             )
@@ -130,6 +134,9 @@ def register_integration_commands(app: typer.Typer) -> None:
         dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
         check: Annotated[bool, typer.Option("--check")] = False,
         workspace: Annotated[str, typer.Option("--workspace")] = "",
+        executable: Annotated[
+            str, typer.Option("--executable", help="Persistent FKF launcher; defaults to PATH.")
+        ] = "",
     ) -> None:
         selected = tuple(names or ())
         if all_harnesses and selected:
@@ -146,7 +153,7 @@ def register_integration_commands(app: typer.Typer) -> None:
             dry_run,
             check,
             Path.home(),
-            "",
+            executable,
             workspace,
             os.environ.get("PATH", ""),
         )

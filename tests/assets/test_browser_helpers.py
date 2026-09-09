@@ -106,6 +106,24 @@ def _write_bookmarks(
     return path
 
 
+@pytest.mark.parametrize("title", [None, "", " \t\u200b\n"])
+def test_browser_visits_project_a_meaningful_title_when_the_page_has_none(
+    helpers: HelperInstallation, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str], title: str | None
+) -> None:
+    database = _write_history(helpers)
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("update urls set title = ?", (title,))
+        connection.commit()
+    finally:
+        connection.close()
+    monkeypatch.setenv("HOME", os.fspath(helpers.home))
+    assert _main(helpers, "chromium-pages.py")([START, END]) == 0
+    output = json.loads(capfd.readouterr().out)
+    assert output[0]["title"] == "Visit https://example.test/path"
+    assert "private=yes" not in output[0]["title"]
+
+
 def test_chrome_bookmarks_accepts_the_exact_input_limit_and_rejects_one_byte_over(
     helpers: HelperInstallation,
     monkeypatch: pytest.MonkeyPatch,
@@ -447,3 +465,263 @@ def test_browser_helpers_do_not_follow_symlinked_inputs(
     pages = capfd.readouterr()
     assert pages.out == ""
     assert "not a regular file" in pages.err
+
+
+@pytest.mark.parametrize("linked_component", ["browser-root", "profile"])
+def test_chrome_bookmarks_rejects_symlinked_profile_components(
+    helpers: HelperInstallation,
+    linked_component: str,
+) -> None:
+    bookmark = _write_bookmarks(helpers)
+    component = bookmark.parent.parent if linked_component == "browser-root" else bookmark.parent
+    outside = helpers.root / f"outside-bookmarks-{linked_component}"
+    component.rename(outside)
+    component.symlink_to(outside, target_is_directory=True)
+
+    result = helpers.run("chrome-bookmarks.py")
+
+    assert result.returncode != 0
+    assert result.stdout == b""
+    assert b"linked" in result.stderr
+
+
+@pytest.mark.parametrize("linked_component", ["browser-root", "profile"])
+def test_chromium_pages_rejects_symlinked_profile_components(
+    helpers: HelperInstallation,
+    linked_component: str,
+) -> None:
+    database = _write_history(helpers)
+    component = database.parent.parent if linked_component == "browser-root" else database.parent
+    outside = helpers.root / f"outside-history-{linked_component}"
+    component.rename(outside)
+    component.symlink_to(outside, target_is_directory=True)
+
+    result = helpers.run("chromium-pages.py", START, END)
+
+    assert result.returncode != 0
+    assert result.stdout == b""
+    assert b"linked" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("helper_name", "leaf_name", "arguments"),
+    [
+        ("chrome-bookmarks.py", "Bookmarks", ()),
+        ("chromium-pages.py", "History", ("--profiles",)),
+    ],
+)
+@pytest.mark.parametrize("linked_component", ["browser-root", "profile"])
+def test_browser_helpers_reject_an_empty_linked_profile_component(
+    helpers: HelperInstallation,
+    helper_name: str,
+    leaf_name: str,
+    arguments: tuple[str, ...],
+    linked_component: str,
+) -> None:
+    empty = helpers.root / f"outside-empty-{leaf_name.lower()}"
+    empty.mkdir()
+    config = helpers.home / ".config"
+    config.mkdir()
+    browser = config / "chromium"
+    if linked_component == "browser-root":
+        browser.symlink_to(empty, target_is_directory=True)
+    else:
+        browser.mkdir()
+        (browser / "Default").symlink_to(empty, target_is_directory=True)
+    valid = config / "google-chrome" / "Default" / leaf_name
+    valid.parent.mkdir(parents=True)
+    valid.write_text(json.dumps(_bookmark_document()) if leaf_name == "Bookmarks" else "", encoding="utf-8")
+
+    result = helpers.run(helper_name, *arguments)
+
+    assert result.returncode == 1
+    assert result.stdout == b""
+    assert b"linked" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("helper_name", "leaf_name", "arguments"),
+    [
+        ("chrome-bookmarks.py", "Bookmarks", ()),
+        ("chromium-pages.py", "History", ("--profiles",)),
+    ],
+)
+def test_browser_helpers_report_an_unreadable_browser_root(
+    helpers: HelperInstallation,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    helper_name: str,
+    leaf_name: str,
+    arguments: tuple[str, ...],
+) -> None:
+    blocked = helpers.home / ".config" / "chromium"
+    blocked.mkdir(parents=True)
+    blocked_status = blocked.stat()
+    valid = helpers.home / ".config" / "google-chrome" / "Default" / leaf_name
+    valid.parent.mkdir(parents=True)
+    valid.write_text(json.dumps(_bookmark_document()) if leaf_name == "Bookmarks" else "", encoding="utf-8")
+    real_scandir = os.scandir
+
+    def unavailable(path: int | str | os.PathLike[str]) -> Any:
+        status = os.fstat(path) if isinstance(path, int) else Path(path).stat()
+        if (status.st_dev, status.st_ino) == (blocked_status.st_dev, blocked_status.st_ino):
+            raise PermissionError("simulated browser-root enumeration failure")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", unavailable)
+    monkeypatch.setenv("HOME", os.fspath(helpers.home))
+    monkeypatch.setenv("TMPDIR", os.fspath(helpers.temporary))
+    main = _main(helpers, helper_name)
+
+    assert main(list(arguments)) == 1
+    captured = capfd.readouterr()
+
+    assert captured.out == ""
+    assert "unreadable" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("helper_name", "leaf_name", "arguments"),
+    [
+        ("chrome-bookmarks.py", "Bookmarks", ()),
+        ("chromium-pages.py", "History", ("--profiles",)),
+    ],
+)
+@pytest.mark.parametrize("link_name", ["SingletonCookie", "SingletonLock", "SingletonSocket"])
+def test_browser_helpers_ignore_non_profile_links_and_empty_roots(
+    helpers: HelperInstallation,
+    helper_name: str,
+    leaf_name: str,
+    arguments: tuple[str, ...],
+    link_name: str,
+) -> None:
+    browser = helpers.home / ".config" / "chromium"
+    browser.mkdir(parents=True)
+    singleton_target = helpers.root / "singleton-target"
+    singleton_target.write_text("browser-instance", encoding="utf-8")
+    (browser / link_name).symlink_to(singleton_target)
+    valid = helpers.home / ".config" / "google-chrome" / "Default" / leaf_name
+    valid.parent.mkdir(parents=True)
+    valid.write_text(json.dumps(_bookmark_document()) if leaf_name == "Bookmarks" else "", encoding="utf-8")
+
+    result = helpers.run(helper_name, *arguments)
+
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+
+
+@pytest.mark.parametrize(
+    ("helper_name", "arguments"),
+    [
+        ("chrome-bookmarks.py", ()),
+        ("chromium-pages.py", ("--profiles",)),
+    ],
+)
+def test_browser_helpers_do_not_query_link_target_metadata(
+    helpers: HelperInstallation,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    helper_name: str,
+    arguments: tuple[str, ...],
+) -> None:
+    outside = helpers.root / "outside-linked-profile"
+    outside.mkdir()
+    browser = helpers.home / ".config" / "chromium"
+    browser.mkdir(parents=True)
+    (browser / "Default").symlink_to(outside, target_is_directory=True)
+    real_scandir = os.scandir
+
+    class GuardedEntry:
+        def __init__(self, entry: os.DirEntry[str]) -> None:
+            self._entry = entry
+
+        @property
+        def name(self) -> str:
+            return self._entry.name
+
+        def stat(self, *, follow_symlinks: bool = True) -> os.stat_result:
+            if follow_symlinks:
+                raise AssertionError("linked target metadata was queried")
+            return self._entry.stat(follow_symlinks=False)
+
+        def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+            raise AssertionError(f"linked target metadata was queried: follow={follow_symlinks}")
+
+    class GuardedScandir:
+        def __init__(self, path: int | str | os.PathLike[str]) -> None:
+            self._entries = real_scandir(path)
+
+        def __enter__(self) -> GuardedScandir:
+            return self
+
+        def __exit__(self, *_arguments: object) -> None:
+            self._entries.close()
+
+        def __iter__(self) -> Any:
+            return (GuardedEntry(entry) for entry in self._entries)
+
+    monkeypatch.setattr(os, "scandir", GuardedScandir)
+    monkeypatch.setenv("HOME", os.fspath(helpers.home))
+    monkeypatch.setenv("TMPDIR", os.fspath(helpers.temporary))
+    main = _main(helpers, helper_name)
+
+    assert main(list(arguments)) == 1
+    captured = capfd.readouterr()
+
+    assert captured.out == ""
+    assert "linked" in captured.err
+
+
+def test_chromium_snapshot_stays_bound_during_a_profile_path_swap(
+    helpers: HelperInstallation,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_cwd = Path.cwd()
+    database = _write_history(helpers)
+    outside_profile = helpers.root / "outside-profile"
+    outside_profile.mkdir()
+    outside_database = outside_profile / "History"
+    outside_database.write_bytes(database.read_bytes())
+    outside = sqlite3.connect(outside_database)
+    outside.execute("update urls set url = 'https://outside.example.test/'")
+    outside.commit()
+    outside.close()
+    writer = sqlite3.connect(database)
+    assert writer.execute("pragma journal_mode = wal").fetchone()[0] == "wal"
+    writer.execute("pragma wal_autocheckpoint = 0")
+    writer.execute(
+        "insert into urls values (?, ?, ?, ?, ?)",
+        (2, "https://wal.example.test/committed", "WAL", 1, 0),
+    )
+    writer.commit()
+    parked_profile = helpers.root / "parked-profile"
+    main = _main(helpers, "chromium-pages.py")
+    sqlite = main.__globals__["sqlite3"]
+    real_connect = sqlite.connect
+    swapped = False
+
+    def swapping_connect(database_name: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        nonlocal swapped
+        if isinstance(database_name, str) and "mode=ro" in database_name and not swapped:
+            swapped = True
+            database.parent.rename(parked_profile)
+            database.parent.symlink_to(outside_profile, target_is_directory=True)
+            try:
+                return real_connect(database_name, *args, **kwargs)
+            finally:
+                database.parent.unlink()
+                parked_profile.rename(database.parent)
+        return real_connect(database_name, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite, "connect", swapping_connect)
+    try:
+        copied = main.__globals__["snapshot"](helpers.home, database, helpers.temporary / "snapshot.sqlite")
+        try:
+            assert copied.execute("select url from urls order by id").fetchall() == [
+                ("https://example.test/path?private=yes#fragment",),
+                ("https://wal.example.test/committed",),
+            ]
+        finally:
+            copied.close()
+    finally:
+        writer.close()
+    assert Path.cwd() == original_cwd

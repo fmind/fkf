@@ -77,13 +77,19 @@ def _item_text(tokens: list[Token], start: int) -> str:
     return " ".join(" ".join(parts).split())
 
 
-def learned_bullets(page: Page) -> tuple[str, ...]:
+def learned_bullets(page: Page, *, cancel: Cancellation | None = None) -> tuple[str, ...]:
     """Extract unordered items under headings named exactly ``Learned``."""
+    _check_cancel(cancel)
+    # Parsed pages already carry rendered CommonMark headings. Most imported traces
+    # have no Learned section, so avoid parsing their full transcript a second time.
+    if not any(heading.text == "Learned" for heading in page.headings):
+        return ()
     tokens = _MARKDOWN.parse(page.body)
     active_level = 0
     list_kinds: list[str] = []
     bullets: list[str] = []
     for index, token in enumerate(tokens):
+        _check_cancel(cancel)
         if token.type == "heading_open":
             level = int(token.tag.removeprefix("h"))
             inline = tokens[index + 1] if index + 1 < len(tokens) else None
@@ -109,6 +115,27 @@ def learned_bullets(page: Page) -> tuple[str, ...]:
     return tuple(bullets)
 
 
+def cited_task_traces(page: Page, *, cancel: Cancellation | None = None) -> frozenset[str]:
+    """Resolve authored source citations to exact task files, ignoring fragments."""
+    cited: set[str] = set()
+    values = page.frontmatter.get("sources")
+    if not isinstance(values, list):
+        return frozenset()
+    for item in values:
+        _check_cancel(cancel)
+        candidate = scalar_string(item)
+        if candidate is None:
+            continue
+        try:
+            resolved = resolve_link(page.uri, candidate)
+        except InvalidUsageError:
+            continue
+        target = resolved.node_uri().partition("#")[0]
+        if target.endswith(f"/{TASK_TRACE_FILE}"):
+            cited.add(target)
+    return frozenset(cited)
+
+
 def _cited_traces(base: Base, cancel: Cancellation | None) -> frozenset[str]:
     cited: set[str] = set()
     for layer in (Layer.WIKI, Layer.PROJECTS):
@@ -117,20 +144,7 @@ def _cited_traces(base: Base, cancel: Cancellation | None) -> frozenset[str]:
         pages, _nested = load_markdown_layer(base, layer, cancel=cancel)
         for page in pages:
             _check_cancel(cancel)
-            values = page.frontmatter.get("sources")
-            if not isinstance(values, list):
-                continue
-            for item in values:
-                candidate = scalar_string(item)
-                if candidate is None:
-                    continue
-                try:
-                    resolved = resolve_link(page.uri, candidate)
-                except InvalidUsageError:
-                    continue
-                target = resolved.node_uri().partition("#")[0]
-                if target.endswith(f"/{TASK_TRACE_FILE}"):
-                    cited.add(target)
+            cited.update(cited_task_traces(page, cancel=cancel))
     return frozenset(cited)
 
 
@@ -152,7 +166,7 @@ def list_learned(
     for trace in traces.traces:
         _check_cancel(cancel)
         is_harvested = trace.uri in cited
-        for text in learned_bullets(cast(Page, trace.page)):
+        for text in learned_bullets(cast(Page, trace.page), cancel=cancel):
             if is_harvested:
                 harvested += 1
             else:

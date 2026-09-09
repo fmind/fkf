@@ -4,6 +4,37 @@ All notable changes to `fkf` are documented here. This project follows [Semantic
 
 ## Unreleased
 
+### Changed
+
+- Select a persistent launcher explicitly with `harness print/install --executable` when package-manager PATH entries disagree.
+- Reuse status narrative pages for briefing commitments instead of reading and parsing task/project files again.
+
+- Rename base collection helpers from `bin/` to `sources/` and retrieval acceptance to `checks/queries.yaml`.
+- Declare single-script uv app clients under `clients:`; hash and disclose their separate execution tree.
+
+- Make CLI context receipt persistence opt-in with `--save-receipt`, keeping ordinary context reads lock-free.
+- Surface explicit project next actions, review dates, deadlines, and blockers in the offline brief.
+- Improve multi-term lexical ranking and excerpts, reuse Unicode-preserving text analysis, and reduce exact-budget packing work.
+- Let retrieval evaluations require answer-bearing excerpts and verified offline reads, beyond URI recall.
+- Describe harvested lessons as trace citations rather than a knowledge-quality measure.
+
+### Fixed
+
+- Report exact missing completed dates per enabled event source using the configured collection window, including in briefing attention.
+- Reuse task pages for fallback selection and the global learned backlog, and skip a second Markdown parse when rendered headings contain no Learned section.
+- Keep conjunctions out of question scoring and select commitment and body excerpts independently so metadata cannot displace the answer.
+- Give body-cache manifests an independent 8 MiB bound, retaining the 4,096-entry and 512 MiB content limits.
+- Select prompt transcripts through bounded archive metadata and resolve bodies from stored lineage, generation, and turn provenance without changing evidence IDs or deleting history.
+- Search project commitments and preserve active handoffs in compact identity context; unify indexed and fallback lesson backlog semantics.
+- Compile canonical fragment validation once per process and report hook timeouts without exposing child output.
+- Compare GitHub commit bounds as instants, project safe fallback titles for untitled browser visits, and discard RSS stylesheet metadata without fetching it.
+
+## [v5.0.2](https://github.com/fmind/fkf/releases/tag/v5.0.2) - 2026-09-07
+
+### Fixed
+
+- Open Chromium-family browser roots and profile directories through retained no-follow descriptors so linked path components cannot redirect local history or bookmark collection.
+
 ## [v5.0.1](https://github.com/fmind/fkf/releases/tag/v5.0.1) - 2026-09-07
 
 ### Fixed

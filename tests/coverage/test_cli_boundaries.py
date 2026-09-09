@@ -158,7 +158,7 @@ def test_operate_commands_cover_checks_mutations_and_short_circuits(tmp_path: Pa
     assert code in {0, 1}
     assert "brain" in stdout
     if code:
-        assert "older than" in stderr
+        assert "missing completed days or exceed their configured freshness limit" in stderr
 
     code, stdout, stderr = with_base(base.root, "test")
     assert code == 0
@@ -245,15 +245,17 @@ def test_integration_commands_are_safe_in_dry_run_check_and_status_modes(
         root: Path,
         name: str,
         *,
+        executable: str = "",
         workspace: str = "",
         path: str = "",
     ) -> HarnessPlan:
         return original_plan(
             root,
             name,
+            executable=executable,
             workspace=workspace,
             path=path,
-            launcher_resolver=lambda _requested, _path: executable,
+            launcher_resolver=lambda _requested, _path: tmp_path / "tools" / "fkf",
         )
 
     def install(

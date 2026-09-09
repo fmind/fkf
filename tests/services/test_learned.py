@@ -130,3 +130,11 @@ def test_list_learned_honors_window_and_cancellation(tmp_path: Path) -> None:
     canceled.set()
     with pytest.raises(CommandCanceledError):
         list_learned(base, cancel=canceled)
+
+
+@pytest.mark.parametrize(
+    "heading", ["## Le**arn**ed", "## Le&#97;rned", "Learned\n=======", "## [Learned](https://example.test)"]
+)
+def test_rendered_heading_prefilter_preserves_commonmark(heading: str) -> None:
+    page = parse_page("tasks/2026-05-04/session/TASKS.md", (heading + "\n\n- Preserve this lesson.\n").encode())
+    assert learned_bullets(page) == ("Preserve this lesson.",)

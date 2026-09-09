@@ -79,9 +79,23 @@ def config_schema() -> dict[str, object]:
                 },
                 "additionalProperties": _identity_schema(),
             },
+            "clients": {
+                "type": "object",
+                "description": "Online apps with one uv Python script each under clients/; called through explicit uv argv.",
+                "propertyNames": {"pattern": r"^[a-z0-9][a-z0-9-]*$", "maxLength": MAX_BASE_NAME_LENGTH},
+                "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["url", "script"],
+                    "properties": {
+                        "url": {"type": "string", "pattern": r"^https://[^\s?#@]+$"},
+                        "script": {"type": "string", "pattern": r"^[a-z0-9][a-z0-9_-]*\.py$", "maxLength": 255},
+                    },
+                },
+            },
             "bin": _string_array(
                 "Absolute or ~-relative machine-local directories outside the base, prepended to PATH for every "
-                "declared command. Put base-controlled executables in <base>/bin so trust hashes them."
+                "declared command. Put base-controlled executables in <base>/sources so trust hashes them."
             ),
             "sources": {
                 "type": "object",

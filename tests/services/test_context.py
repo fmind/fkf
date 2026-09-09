@@ -147,7 +147,7 @@ def test_context_scoring_receipt_and_reproducibility(tmp_path: Path) -> None:
     assert by_id["old1"].score == 150
     assert by_id["fresh1"].score == 164
     assert all(sum(reason.points for reason in item.reasons) == item.score for item in first.items)
-    assert first.receipt.ranking_version == RANKING_VERSION == 7
+    assert first.receipt.ranking_version == RANKING_VERSION == 10
     assert first.receipt.input_digest
     assert first.receipt.encoded_tokens <= first.receipt.budget
     assert dumps(first) == dumps(second)
@@ -170,7 +170,7 @@ def test_input_digest_preserves_the_empty_repeatable_pin_collection(tmp_path: Pa
         context_module._input_digest(  # noqa: SLF001 - exact internal receipt-domain contract
             base, request, (), (), (), "abc"
         )
-        == "bb7294c72a3c2ba2"
+        == "a449f87e7c709923"
     )
 
 

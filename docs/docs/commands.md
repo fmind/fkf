@@ -30,12 +30,13 @@ fkf context "repo:github.com/fmind/fkf" --expand
 fkf context "collection" --pin wiki/explicit-sync-boundary.md
 fkf context "What did I do yesterday?"
 fkf context "last meeting notes"
+fkf context "retrieval boundary" --save-receipt
 fkf context "retrieval boundary" --since-receipt 0123456789abcdef
 ```
 
 Use `--since` and `--until` for an explicit dated window, or put one supported temporal expression at the start or end of the query. Repeat `--pin` for approved wiki or project pages, use `--expand` for one shared-entity join, and `--explain` for the integer score breakdown. See [Context packs](context.md).
 
-`--since-receipt` compares the current semantic candidates with the owner-only machine-local snapshot saved for an earlier `input_digest`. Only new or changed records and pages remain. The same query must be reused; a missing or expired snapshot fails with the command needed to seed it rather than treating every item as new.
+`--save-receipt` explicitly saves an owner-only machine-local snapshot. Ordinary context calls are lock-free and save nothing. `--since-receipt` compares current candidates with an earlier saved `input_digest`; only new or changed records and pages remain. Reuse the same query. A missing snapshot fails rather than treating every item as new.
 
 ### `brief`
 
@@ -46,7 +47,7 @@ fkf brief
 fkf brief --budget 800
 ```
 
-The fixed sections cover attention, today's stored evidence, authored tasks due, yesterday's stored evidence, and active projects touched this week. Attention includes sources beyond their configured freshness limit and unharvested learning bullets. Brief is entirely offline and never runs `auth:`, collection, or body commands; use `fkf status --live` separately for provider readiness. Text and JSON share one receipt and both fit `--budget`.
+The fixed sections cover attention, today's stored evidence, authored commitments due, yesterday's stored evidence, and active project commitments. An active project's optional `next_action`, `due`, `reviewed`, and `blocker` frontmatter describes one next commitment; `due` and `reviewed` use absolute dates. Missing next actions or reviews are named, never inferred from modification time. Existing task `due` dates remain supported. Attention includes source freshness limits and uncited learning traces, not a validated-lesson score. Brief remains offline; text and JSON share a receipt and fit `--budget`.
 
 ### `day` and `timeline`
 
@@ -164,7 +165,7 @@ Tags are listed with usage counts, most-used first. The bare command is the wiki
 fkf eval
 ```
 
-`evals/queries.yaml` is the base-owned retrieval acceptance set. It declares default `k`, `budget`, and `delivery` values, a recall threshold, and optional per-query overrides. `delivery` selects `json` (the default), `jsonl`, or `text` for the context pack; it is independent of the evaluation report's `--format`. Each ordinary query names expected URIs that must arrive within its top-k delivery and forbidden URIs that must be absent from the complete delivered pack. An explicit `expect_empty: true` case requires a genuinely empty answer and cannot declare URI expectations.
+`checks/queries.yaml` is the base-owned retrieval acceptance set. It declares default `k`, `budget`, and `delivery` values, a recall threshold, and optional per-query overrides. `delivery` selects `json` (the default), `jsonl`, or `text` for the context pack; it is independent of the evaluation report's `--format`. Each ordinary query names expected URIs that must arrive within its top-k delivery and forbidden URIs that must be absent from the complete delivered pack. An explicit `expect_empty: true` case requires a genuinely empty answer and cannot declare URI expectations.
 
 `fkf init` creates one runnable entry-point check plus commented target-journey prompts, then leaves the file entirely owner-controlled on refresh. Replace or extend that baseline with exact URIs from the base. Evaluation calls the same final budgeted context path used for delivery and reads stored evidence only. Its report includes effective budgets and delivery formats, delivered bytes and tokens, expected ranks, omissions, forbidden hits, input digests, the ranking version, and one evaluation time. An unmet rank, recall, empty-answer, or forbidden-delivery assertion exits `1`; an invalid suite exits `2`.
 
@@ -190,7 +191,7 @@ fkf trust
 fkf trust --all
 ```
 
-Trust prints the base's executable plan, the ordinary `bin/` tree, and the test-only `tests/` tree, then records their canonical digest. A changed base leads with per-item differences; `--all` prints the complete disclosure. `--check` records nothing. Comments, YAML order, descriptions, examples, and retrieval-only mappings do not re-arm an unchanged execution plan.
+Trust prints the base's executable plan, the ordinary `sources/` tree, and the test-only `tests/` tree, then records their canonical digest. A changed base leads with per-item differences; `--all` prints the complete disclosure. `--check` records nothing. Comments, YAML order, descriptions, examples, and retrieval-only mappings do not re-arm an unchanged execution plan.
 
 ### `test`
 
@@ -200,7 +201,7 @@ fkf test github-pull-requests
 fkf test --all
 ```
 
-With no arguments, test runs hooks declared by enabled sources in stable name order. Naming sources includes disabled ones; `--all` runs every declared hook and cannot be combined with names. An empty selection preserves the compatible successful 0/0 report, so completion gates should name every mandatory source. A base-owned hook lives under the fully trust-digested `tests/` tree, which is prepended only for source tests; collection and body commands keep `bin/` first and never search `tests/`. Hooks run sequentially under the source timeout, capture no printable provider output, write no evidence, and continue after an ordinary failure so the report names every failed source. An untrusted base exits `3`; one or more hook failures exit `1`.
+With no arguments, test runs hooks declared by enabled sources in stable name order. Naming sources includes disabled ones; `--all` runs every declared hook and cannot be combined with names. An empty selection preserves the compatible successful 0/0 report, so completion gates should name every mandatory source. A base-owned hook lives under the fully trust-digested `tests/` tree, which is prepended only for source tests; collection and body commands keep `sources/` first and never search `tests/`. Hooks run sequentially under the source timeout, capture no printable provider output, write no evidence, and continue after an ordinary failure so the report names every failed source. An untrusted base exits `3`; one or more hook failures exit `1`.
 
 ### `sync`
 
@@ -255,7 +256,7 @@ fkf status --max-age-hours 48
 fkf status --live
 ```
 
-Status is the whole-base view: layers, evidence-envelope integrity, explicitly declared ordinary command requirements, separately checked source-hook entrypoints, collector volume, trust, graph integrity, lexical-index cache health, repository tracking policy, permissions, official-helper drift, managed skills, links, and unharvested task learning. It locates executables but never runs a probe or declared source command. The JSON summary keeps `missing_requirements` and `missing_test_hooks` distinct. Findings include exact repair commands, but status never mutates the base. With `--max-age-hours`, every enabled source must have evidence within the requested age.
+Status is the whole-base view: layers, evidence-envelope integrity, explicitly declared ordinary command requirements, separately checked source-hook entrypoints, collector volume, trust, graph integrity, lexical-index cache health, repository tracking policy, permissions, official-helper drift, managed skills, links, and unharvested task learning. It locates executables but never runs a probe or declared source command. The JSON summary keeps `missing_requirements` and `missing_test_hooks` distinct. Findings include exact repair commands, but status never mutates the base. Enabled event sources must have a valid document for every completed local day in `sync.days`; JSON `sources[].missing_dates` names exact gaps and an empty collected day satisfies coverage. This includes a new source’s initial window and reports yesterday as pending from midnight, before the next scheduled run. Default index freshness uses its configured maximum age. With `--max-age-hours`, every enabled source must additionally have evidence within the requested age. Missing coverage or stale evidence returns exit 1.
 
 `--live` additionally runs each enabled source's trusted `auth:` probe and inspects user-scope harness registrations. Probe output is discarded; the report exposes only the source names that require login. Because this crosses the declared execution boundary, ordinary `status` remains the offline default.
 
@@ -284,7 +285,7 @@ fkf new helper collect-prs.py
 
 The subcommands scaffold the strict write shape for task traces, projects, wiki concepts, and owner-only helpers without overwriting existing files. Project and wiki pages require at least one `--tag`; repeat the flag to add more. Helpers require an explicit `.sh` or `.py` extension; the generated `requires:` list includes `python3` for a Python helper.
 
-`new helper` creates collection or body support under `bin/`. Source verification hooks belong under the base's `tests/` tree and are declared directly in `test:`.
+`new helper` creates collection or body support under `sources/`. Source verification hooks belong under the base's `tests/` tree and are declared directly in `test:`.
 
 ### `config`
 
@@ -332,3 +333,5 @@ FKF has no self-replacing `upgrade` command. Upgrade it through the package mana
 One-letter aliases are the command's first letter, assigned to the command typed most often when commands collide; built-in `help` keeps `h`. A command without the available first letter is typed in full. Subcommand aliases follow the same fixed vocabulary shown in `fkf --help`.
 
 `--since` and `--until` accept `YYYY-MM-DD`, `today`, `yesterday`, or a positive relative window such as `7d`, `6w`, `3m`, or `1y`. Day keywords name one absolute day; use the same keyword on both bounds to select exactly that day.
+
+Both `harness print` and `harness install` accept `--executable /absolute/path/to/fkf`. Use it when package-manager environments put a different FKF version on `PATH`; the selected persistent launcher is recorded in both MCP and hook configuration. Without this option, FKF resolves the launcher from `PATH`.

@@ -439,9 +439,9 @@ def test_agent_memory_body_is_confined_and_bounded(helpers: HelperInstallation) 
 
 
 def test_provider_body_reads_enforce_the_command_bound_while_children_run() -> None:
-    calendar = read_asset("presets/bin/gws-calendar-body.py")
+    calendar = read_asset("presets/sources/gws-calendar-body.py")
     assert b".read(MAX_PROVIDER_BYTES + 1)" in calendar
     assert b"process.kill()" in calendar
-    gmail = read_asset("presets/bin/gmail-body.py")
+    gmail = read_asset("presets/sources/gmail-body.py")
     assert b".read(MAX_PROVIDER_BYTES + 1)" in gmail
     assert b"process.kill()" in gmail

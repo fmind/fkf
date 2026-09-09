@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 import fkf.day as day_module
+import fkf.status as status_module
 from fkf.base import Base
 from fkf.config import ConfigError, load_config
 from fkf.day import (
@@ -35,6 +36,7 @@ from fkf.day import (
 from fkf.documents import Document, Record, day_window, fields_of, parse_day_in_location, schema_of
 from fkf.graph import build_graph
 from fkf.query import Window
+from fkf.scan import ScanGuard
 from fkf.store import Layer
 from fkf.timeutil import parse_duration
 
@@ -283,7 +285,7 @@ def test_brief_composes_attention_evidence_tasks_projects_and_exact_budget(
     write_page(
         base,
         "projects/fkf.md",
-        "---\ntype: project\ntitle: FKF\nstatus: active\n---\n\n# FKF\n",
+        "---\ntype: project\ntitle: FKF\nstatus: active\nreviewed: '2026-05-08'\nnext_action: Verify retrieval\n---\n\n# FKF\n",
         modified=datetime(2026, 5, 8, 12, tzinfo=UTC),
     )
     cancel = Event()
@@ -291,8 +293,8 @@ def test_brief_composes_attention_evidence_tasks_projects_and_exact_budget(
     original_load = day_module.IdentityResolver.load
     original_status = day_module.status_report
     original_find = day_module.find
-    original_list_tasks = day_module.list_tasks
-    original_load_layer = day_module.load_markdown_layer
+    original_list_tasks = status_module.list_tasks
+    original_load_layer = status_module.list_pages
 
     def load(_cls: object, selected: Base, *, cancel: object) -> Any:
         assert cancel is cancel_event
@@ -309,22 +311,22 @@ def test_brief_composes_attention_evidence_tasks_projects_and_exact_budget(
         forwarded.add("find")
         return original_find(selected, filters, cancel=cancel_event)
 
-    def list_tasks(selected: Base, window: Any = None, *, cancel: object) -> Any:
+    def list_tasks(selected: Base, window: Any = None, *, cancel: object, scan: ScanGuard | None = None) -> Any:
         assert cancel is cancel_event
         forwarded.add("tasks")
-        return original_list_tasks(selected, window, cancel=cancel_event)
+        return original_list_tasks(selected, window, cancel=cancel_event, scan=scan)
 
-    def load_layer(selected: Base, layer: Layer, *, cancel: object) -> Any:
+    def load_layer(selected: Base, layer: Layer, filters: Any, *, cancel: object, scan: ScanGuard | None = None) -> Any:
         assert cancel is cancel_event
         forwarded.add("pages")
-        return original_load_layer(selected, layer, cancel=cancel_event)
+        return original_load_layer(selected, layer, filters, cancel=cancel_event, scan=scan)
 
     cancel_event = cancel
     monkeypatch.setattr(day_module.IdentityResolver, "load", classmethod(load))
     monkeypatch.setattr(day_module, "status_report", status)
     monkeypatch.setattr(day_module, "find", find)
-    monkeypatch.setattr(day_module, "list_tasks", list_tasks)
-    monkeypatch.setattr(day_module, "load_markdown_layer", load_layer)
+    monkeypatch.setattr(status_module, "list_tasks", list_tasks)
+    monkeypatch.setattr(status_module, "list_pages", load_layer)
 
     with pytest.raises(BriefBudgetError) as raised:
         brief(base, BriefRequest(budget=1), cancel=cancel)
@@ -335,13 +337,31 @@ def test_brief_composes_attention_evidence_tasks_projects_and_exact_budget(
     assert set(sections) == {"attention", "today", "tasks_due", "yesterday", "active_projects"}
     assert sections["today"].total == 1
     assert sections["tasks_due"].items[0].title == "Finish the daily brief"
-    assert sections["active_projects"].items[0].detail == "touched 2026-05-08"
+    assert sections["active_projects"].items[0].detail == "Verify retrieval · reviewed 2026-05-08"
     assert report.receipt.unharvested == 1
     assert report.receipt.selected + report.receipt.dropped == report.receipt.candidates
     assert floor.receipt.used_tokens <= raised.value.minimum
     assert len(encode_brief_json(report)) <= report.receipt.budget * 4
     assert len(render_brief_text(report).encode()) <= report.receipt.budget * 4
     assert forwarded == {"identity", "status", "find", "tasks", "pages"}
+
+
+def test_brief_uses_project_commitments_not_file_modification_dates(tmp_path: Path) -> None:
+    base = make_base(tmp_path)
+    write_page(
+        base,
+        "projects/commitment.md",
+        "---\ntype: project\ntitle: Commitment\nstatus: active\n"
+        "next_action: Run the recovery drill\ndue: '2026-05-09'\n"
+        "reviewed: '2026-04-01'\nblocker: Await access\n---\n\n# Commitment\n",
+        modified=datetime(2020, 1, 1, tzinfo=UTC),
+    )
+    sections = {section.name: section for section in brief(base, BriefRequest(budget=4096)).sections}
+    assert sections["tasks_due"].items[0].uri == "projects/commitment.md"
+    detail = sections["active_projects"].items[0].detail
+    assert "Run the recovery drill" in detail
+    assert "reviewed 2026-04-01" in detail
+    assert "blocked: Await access" in detail
 
 
 def test_who_joins_identity_pages_graph_neighbours_and_recent_records(
@@ -447,3 +467,31 @@ def test_who_joins_identity_pages_graph_neighbours_and_recent_records(
 def test_who_rejects_an_empty_query(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="name or URI"):
         who(make_base(tmp_path), "  ")
+
+
+def test_brief_reuses_status_tasks_for_due_items(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from collections import Counter
+
+    import fkf.pages as pages
+
+    base = make_base(tmp_path)
+    write_page(base, "tasks/2026-05-10/once/TASKS.md", "---\ntitle: One read\ndue: '2026-05-10'\n---\n# One read\n")
+    write_page(
+        base,
+        "projects/once.md",
+        "---\ntype: project\ntitle: One project\nstatus: active\nnext_action: Verify once\n---\n# One project\n",
+    )
+    calls: Counter[str] = Counter()
+    original = pages.parse_page
+
+    def parse(uri: str, *args: Any, **kwargs: Any) -> Any:
+        calls[uri] += 1
+        return original(uri, *args, **kwargs)
+
+    monkeypatch.setattr(pages, "parse_page", parse)
+    result = brief(base, BriefRequest(budget=4096))
+    assert calls["tasks/2026-05-10/once/TASKS.md"] == 1
+    assert any(item.title == "One read" for section in result.sections for item in section.items)
+    assert any(
+        item.detail == "Verify once · review not recorded" for section in result.sections for item in section.items
+    )

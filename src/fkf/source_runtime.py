@@ -27,7 +27,7 @@ from fkf.process import (
     resolve_executable,
     sanitize_path,
 )
-from fkf.store import BASE_BIN_DIR, BASE_DIR_MODE, expand_home, validate_directory_confinement
+from fkf.store import BASE_DIR_MODE, BASE_SOURCES_DIR, expand_home, validate_directory_confinement
 from fkf.timeutil import DurationNS, format_duration
 from fkf.trust import trust_check
 
@@ -387,9 +387,9 @@ def normalize_github_noreply_actor(value: str) -> str | None:
     return f"actor:github.com/{local.lower()}"
 
 
-def ensure_bin_dir(root: str | os.PathLike[str]) -> Path:
+def ensure_sources_dir(root: str | os.PathLike[str]) -> Path:
     """Create the trusted helper directory after checking every existing component."""
-    directory = Path(os.path.normpath(root)) / BASE_BIN_DIR
+    directory = Path(os.path.normpath(root)) / BASE_SOURCES_DIR
     validate_directory_confinement(directory)
     directory.mkdir(mode=BASE_DIR_MODE, parents=True, exist_ok=True)
     return directory
@@ -406,6 +406,6 @@ __all__ = [
     "build_run_command",
     "build_test_command",
     "describe_policy",
-    "ensure_bin_dir",
+    "ensure_sources_dir",
     "normalize_github_noreply_actor",
 ]

@@ -10,7 +10,7 @@ Turn session evidence into a bounded proposal another person can review. Never e
 
 When several FKF registrations are available, select the base named by the user or delivery receipt and pass `--base <selected-base>` to every command. Never infer a base from this skill's filesystem location. Preserve base-qualified citations such as `fkf://<base-name>/<relative-uri>` in review notes.
 
-If nothing is worth retaining, leave the trace unchanged and stop. A useful run should reduce `fkf list tasks learned --unharvested` only after its proposal is applied.
+If nothing is worth retaining, leave the trace unchanged and stop. Harvested counts measure trace citations, not validated lessons; do not manufacture a promotion to clear an inbox.
 
 ## Evidence
 
@@ -45,7 +45,7 @@ Open a cached memory body only when it supports a specific candidate. Reuse an e
 | `wiki/<slug>.md`     | One verified idea is reusable beyond the current effort.         |
 | `projects/<slug>.md` | An effort needs durable intent, status, questions, or decisions. |
 
-Keep wiki and projects flat. A project is not a task tracker; link to tickets rather than copying them.
+Keep wiki and projects flat. A project carries one `next_action`, optional `due` and `blocker`, and a dated `reviewed` handoff; link to tickets instead of copying their backlog.
 
 When evidence suggests changing a skill, follow the [skill outcome boundary](references/skill-evolution.md). The host's evaluation workflow owns trial design; FKF retains only the cited result.
 
@@ -77,11 +77,13 @@ sources:
   - ../tasks/2026-08-24/window-sources/TASKS.md#learned
 ```
 
-That citation marks the trace harvested. Add a declared `relations:` entry too only when the trace should be navigable in the graph.
+That citation marks every bullet in the trace harvested; it does not certify each bullet. Name the specific supported finding in the page. Add `relations:` only when the trace should be navigable in the graph.
 
 ### 4. Stop for review
 
 Show the exact proposal with `fkf learn review <id> --diff`. Do not apply a concept, create a project, or change project status without explicit approval.
+
+An explicit request to implement an already-reviewed set of findings supplies approval for those bounded findings; retain the proposal and provenance without asking for the same decision again. New scope still needs review.
 
 After the decision:
 

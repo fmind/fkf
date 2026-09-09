@@ -8,7 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from functools import cmp_to_key
-from typing import Final, cast
+from typing import Final
 
 from fkf import DISPLAY_VERSION
 from fkf.base import Base
@@ -27,15 +27,14 @@ from fkf.graph import (
     open_validated_graph_cache,
 )
 from fkf.jsoncodec import dumps
-from fkf.listings import list_tasks
 from fkf.markdown import Page
-from fkf.pages import load_markdown_layer, read_page, require_known
+from fkf.pages import read_page, require_known
 from fkf.process import Cancellation, CommandCanceledError
 from fkf.query import TemporalQuery, Window, parse_temporal_query, parse_window
 from fkf.status import Status, StatusRequest
 from fkf.status import report as status_report
 from fkf.store import MAX_NARRATIVE_BYTES, Layer
-from fkf.timeutil import DurationNS, format_duration, parse_duration, parse_record_time, parse_rfc3339
+from fkf.timeutil import DurationNS, format_duration, parse_duration, parse_record_time
 from fkf.uri import Scheme, parse_uri
 
 DEFAULT_DIGEST_BUDGET: Final = 600
@@ -1053,9 +1052,9 @@ def brief(base: Base, request: BriefRequest | None = None, *, cancel: Cancellati
 
     sections = [_brief_attention(status)]
     sections.append(_brief_recent_evidence(base, now, 0, "today", "Today", cancel))
-    sections.append(_brief_tasks_due(base, now, cancel))
+    sections.append(_brief_tasks_due(status, now, cancel))
     sections.append(_brief_recent_evidence(base, now, -1, "yesterday", "Yesterday", cancel))
-    sections.append(_brief_active_projects(base, now, cancel))
+    sections.append(_brief_active_projects(status.project_pages, cancel))
     stale = tuple(sorted(source.name for source in status.sources if source.enabled and source.stale))
     receipt = BriefReceipt(
         base.config.name,
@@ -1087,7 +1086,9 @@ def _brief_attention(status: Status) -> BriefSection:
         if not source.enabled or not source.stale:
             continue
         detail = "missing or beyond its configured freshness limit"
-        if source.last_collected_at:
+        if source.missing_dates:
+            detail = f"missing {len(source.missing_dates)} completed day(s): " + ", ".join(source.missing_dates)
+        elif source.last_collected_at:
             detail = f"{source.lag_hours}h since last collection"
         section.items.append(BriefItem("fkf.yaml", title=f"Refresh stale source {source.name}", detail=detail))
     if status.unharvested > 0:
@@ -1155,43 +1156,41 @@ def _brief_date(value: str) -> str:
     return candidate if parsed.isoformat() == candidate else ""
 
 
-def _brief_tasks_due(base: Base, now: datetime, cancel: Cancellation | None) -> BriefSection:
-    section = BriefSection("tasks_due", "Authored tasks due")
-    if not base.store.enabled(Layer.TASKS):
-        return section
+def _brief_tasks_due(status: Status, now: datetime, cancel: Cancellation | None) -> BriefSection:
+    section = BriefSection("tasks_due", "Authored commitments due")
+    pages = (*status.task_pages, *(page for page in status.project_pages if page.status == "active"))
     today = now.date().isoformat()
-    for trace in list_tasks(base, cancel=cancel).traces:
+    for page in pages:
         _check_canceled(cancel)
-        page = cast(Page, trace.page)
         due = _brief_date(_frontmatter_string(page, "due"))
         if not due or due > today or page.status.strip().lower() in _CLOSED_STATUSES:
             continue
-        section.items.append(BriefItem(page.uri, title=_brief_page_title(page), detail=f"due {due}"))
+        action = _one_line(_frontmatter_string(page, "next_action"))
+        section.items.append(
+            BriefItem(page.uri, title=_brief_page_title(page), detail=f"due {due}" + (f" · {action}" if action else ""))
+        )
     _sort_brief_items(section.items)
     section.total = len(section.items)
     return section
 
 
-def _brief_active_projects(base: Base, now: datetime, cancel: Cancellation | None) -> BriefSection:
-    section = BriefSection("active_projects", "Active projects touched this week")
-    if not base.store.enabled(Layer.PROJECTS):
-        return section
-    pages, _ = load_markdown_layer(base, Layer.PROJECTS, cancel=cancel)
-    since = (now.date() - timedelta(days=now.weekday())).isoformat()
-    today = now.date().isoformat()
-    location = now.tzinfo or UTC
+def _brief_active_projects(pages: Sequence[Page], cancel: Cancellation | None) -> BriefSection:
+    section = BriefSection("active_projects", "Active project commitments")
+    due_dates: dict[str, str] = {}
     for page in pages:
         _check_canceled(cancel)
         if page.status and page.status.casefold() != "active":
             continue
-        try:
-            touched = parse_rfc3339(page.updated).to_datetime().astimezone(location).date().isoformat()
-        except ValueError:
-            continue
-        if since <= touched <= today:
-            section.items.append(BriefItem(page.uri, title=_brief_page_title(page), detail=f"touched {touched}"))
-    section.items.sort(key=lambda item: item.uri)
-    section.items.sort(key=lambda item: item.detail, reverse=True)
+        action = _one_line(_frontmatter_string(page, "next_action")) or "next action not recorded"
+        reviewed = _brief_date(_frontmatter_string(page, "reviewed"))
+        details = [action, f"reviewed {reviewed}" if reviewed else "review not recorded"]
+        if due := _brief_date(_frontmatter_string(page, "due")):
+            details.append(f"due {due}")
+            due_dates[page.uri] = due
+        if blocker := _one_line(_frontmatter_string(page, "blocker")):
+            details.append(f"blocked: {blocker}")
+        section.items.append(BriefItem(page.uri, title=_brief_page_title(page), detail=" · ".join(details)))
+    section.items.sort(key=lambda item: (due_dates.get(item.uri, "9999-12-31"), item.uri))
     section.total = len(section.items)
     return section
 

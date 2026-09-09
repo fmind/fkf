@@ -41,6 +41,7 @@ def test_context_cli_selects_delivery_and_persists_a_receipt_snapshot(tmp_path: 
     base = seeded_base(tmp_path)
     code, stdout, stderr = invoke(
         "context",
+        "--save-receipt",
         "retrieval",
         "boundary",
         "--since",
@@ -80,11 +81,20 @@ def test_context_cli_takes_the_physical_base_writer_lock(tmp_path: Path) -> None
     alias.symlink_to(base.root, target_is_directory=True)
 
     with WriterLock.acquire(base.root):
-        code, stdout, stderr = invoke("context", "retrieval", "--base", str(alias))
+        code, stdout, stderr = invoke("context", "retrieval", "--save-receipt", "--base", str(alias))
 
     assert code == 1
     assert stdout == ""
     assert "active writer" in stderr
+
+
+def test_context_default_reads_while_writer_is_locked_without_saving(tmp_path: Path) -> None:
+    base = seeded_base(tmp_path)
+    with WriterLock.acquire(base.root):
+        code, stdout, stderr = invoke("context", "retrieval", "--base", str(base.root))
+    assert code == 0, stderr
+    assert json.loads(stdout)["items"]
+    assert not tuple((tmp_path / "home" / "state" / "fkf" / "receipts").glob("*/*.json.gz"))
 
 
 @pytest.mark.parametrize(
