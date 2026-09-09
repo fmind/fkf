@@ -2,6 +2,14 @@
 
 All notable changes to `fkf` are documented here. This project follows [Semantic Versioning](https://semver.org/) from its first public release.
 
+## [v6.0.2](https://github.com/fmind/fkf/releases/tag/v6.0.2) - 2026-09-09
+
+### Fixed
+
+- Share a fifteen-second deadline across passive-hook children while allowing individual context calls up to ten seconds. Expired budgets prevent new children, and timed-out process groups are terminated.
+- Create every missing parent directory with owner-only permissions during atomic writes, without changing existing directory modes.
+- Isolate the security-rule checkout from Git environment variables inherited by linked-worktree hooks, while retaining rejection of local rule edits.
+
 ## [v6.0.1](https://github.com/fmind/fkf/releases/tag/v6.0.1) - 2026-09-09
 
 ### Fixed
