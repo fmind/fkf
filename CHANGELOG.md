@@ -2,16 +2,18 @@
 
 All notable changes to `fkf` are documented here. This project follows [Semantic Versioning](https://semver.org/) from its first public release.
 
-## Unreleased
+## [v6.0.0](https://github.com/fmind/fkf/releases/tag/v6.0.0) - 2026-09-09
+
+### Breaking changes
+
+- Consolidate source execution and improve offline retrieval. Base-owned helpers now live in `sources/`, retrieval evaluations in `checks/queries.yaml`, and optional app scripts in `clients/`. Update declarations and reinstall managed harness hooks, review the resulting execution plan, and renew trust before collecting. Stored evidence remains readable without re-collection.
 
 ### Changed
 
 - Select a persistent launcher explicitly with `harness print/install --executable` when package-manager PATH entries disagree.
 - Reuse status narrative pages for briefing commitments instead of reading and parsing task/project files again.
-
 - Rename base collection helpers from `bin/` to `sources/` and retrieval acceptance to `checks/queries.yaml`.
 - Declare single-script uv app clients under `clients:`; hash and disclose their separate execution tree.
-
 - Make CLI context receipt persistence opt-in with `--save-receipt`, keeping ordinary context reads lock-free.
 - Surface explicit project next actions, review dates, deadlines, and blockers in the offline brief.
 - Improve multi-term lexical ranking and excerpts, reuse Unicode-preserving text analysis, and reduce exact-budget packing work.
@@ -28,10 +30,6 @@ All notable changes to `fkf` are documented here. This project follows [Semantic
 - Search project commitments and preserve active handoffs in compact identity context; unify indexed and fallback lesson backlog semantics.
 - Compile canonical fragment validation once per process and report hook timeouts without exposing child output.
 - Compare GitHub commit bounds as instants, project safe fallback titles for untitled browser visits, and discard RSS stylesheet metadata without fetching it.
-
-## [v5.0.2](https://github.com/fmind/fkf/releases/tag/v5.0.2) - 2026-09-07
-
-### Fixed
 
 - Open Chromium-family browser roots and profile directories through retained no-follow descriptors so linked path components cannot redirect local history or bookmark collection.
 
