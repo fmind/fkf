@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,10 @@ def isolated_user_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     state = home / "state"
     home.mkdir()
     state.mkdir()
+    # Git hooks export repository selectors that otherwise redirect fixture Git calls.
+    for name in tuple(os.environ):
+        if name.startswith("GIT_"):
+            monkeypatch.delenv(name)
     monkeypatch.delenv("FKF_BASE", raising=False)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
